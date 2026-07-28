@@ -1,0 +1,10 @@
+.planning/
+node_modules/
+.env
+.env.local
+out/
+cache/
+broadcast/
+.next/
+dist/
+*.log
