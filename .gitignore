@@ -26,3 +26,7 @@ packages/abi/generated/
 # Local
 *.log
 .DS_Store
+
+# Next regenerates this, and it flips between the dev and build route-type
+# paths depending on which command ran last. Pure churn in diffs.
+apps/*/next-env.d.ts
