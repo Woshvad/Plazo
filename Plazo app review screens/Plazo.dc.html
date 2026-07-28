@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#F6F2EA;color:#141412;font-family:'Instrument Sans',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#141412;text-decoration:underline;text-underline-offset:2px;text-decoration-thickness:1.5px}
+a:hover{background:#FFD23F}
+*:focus-visible{outline:2px solid #FFD23F;outline-offset:2px}
+@keyframes thunk{0%{transform:scale(1.15) rotate(-6deg);opacity:0}70%{transform:scale(.97) rotate(-3deg);opacity:1}85%{transform:scale(1.01) translateX(1px) rotate(-3deg)}100%{transform:scale(1) rotate(-3deg);opacity:1}}
+@keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@keyframes toastin{from{transform:translate(-50%,8px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+@media (max-width:1023px){[data-desk]{display:none !important}[data-desk-msg]{display:flex !important}}
+@media (min-width:1024px){[data-desk-msg]{display:none !important}}
+</style>
+</helmet>
+<div style="min-height:100vh;background:#F6F2EA;padding-bottom:72px">
+<header style="display:flex;align-items:center;gap:20px;padding:10px 24px;border-bottom:2px solid #141412;background:#F6F2EA;position:sticky;top:0;z-index:40">
+  <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:20px;letter-spacing:-0.02em">PLAZO<span style="color:#0E7C4A">.</span></div>
+  <nav style="display:flex;gap:2px">
+    <button onClick="{{ goCheckout }}" style="background:none;border:none;cursor:pointer;padding:8px 10px 5px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;color:#141412;display:flex;flex-direction:column;gap:3px;align-items:stretch">Checkout<sc-if value="{{ isCheckout }}" hint-placeholder-val="{{ true }}"><span style="display:block;height:3px;background:#FFD23F"></span></sc-if></button>
+    <button onClick="{{ goPlans }}" style="background:none;border:none;cursor:pointer;padding:8px 10px 5px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;color:#141412;display:flex;flex-direction:column;gap:3px;align-items:stretch">My plans<sc-if value="{{ isPlans }}" hint-placeholder-val="{{ false }}"><span style="display:block;height:3px;background:#FFD23F"></span></sc-if></button>
+    <button onClick="{{ goMerchant }}" style="background:none;border:none;cursor:pointer;padding:8px 10px 5px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;color:#141412;display:flex;flex-direction:column;gap:3px;align-items:stretch">Merchant<sc-if value="{{ isMerchant }}" hint-placeholder-val="{{ false }}"><span style="display:block;height:3px;background:#FFD23F"></span></sc-if></button>
+    <button onClick="{{ goYield }}" style="background:none;border:none;cursor:pointer;padding:8px 10px 5px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:14px;color:#141412;display:flex;flex-direction:column;gap:3px;align-items:stretch">Yield<sc-if value="{{ isYield }}" hint-placeholder-val="{{ false }}"><span style="display:block;height:3px;background:#FFD23F"></span></sc-if></button>
+  </nav>
+  <div style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">on Arc — finality &lt;1s</div>
+</header>
+
+<sc-if value="{{ isCheckout }}" hint-placeholder-val="{{ true }}">
+<div>
+<div style="display:flex;gap:8px;justify-content:center;align-items:center;padding:20px 16px 0;flex-wrap:wrap">
+  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">scenario —</span>
+  <button onClick="{{ scHappy }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ scHappyBg }};color:{{ scHappyFg }}">happy path</button>
+  <button onClick="{{ scFirst }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ scFirstBg }};color:{{ scFirstFg }}">first run</button>
+  <button onClick="{{ scLow }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ scLowBg }};color:{{ scLowFg }}">low balance</button>
+  <button onClick="{{ scOver }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ scOverBg }};color:{{ scOverFg }}">over limit</button>
+</div>
+<div style="display:flex;justify-content:center;padding:20px 16px 56px">
+<div style="width:400px;max-width:100%;position:relative;border:2px solid #141412;border-radius:2px;background:#FFFFFF;box-shadow:8px 8px 0 #141412;overflow:hidden;min-height:780px">
+  <div style="padding:20px 20px 0">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid #141412;padding-bottom:10px">
+      <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:0.04em">ANDEAN SUPPLY CO.</span>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px">BAG (1)</span>
+    </div>
+    <div style="margin-top:16px;height:200px;border:1.5px solid #D9D2C3;border-radius:2px;background:repeating-linear-gradient(45deg,#EFEAE0 0 10px,#F6F2EA 10px 20px);display:flex;align-items:center;justify-content:center">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E;background:#FFFFFF;border:1px solid #D9D2C3;padding:3px 8px">field jacket — product shot</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:14px">
+      <span style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:18px">Waxed Field Jacket</span>
+      <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:16px;font-variant-numeric:tabular-nums">$95.00</span>
+    </div>
+    <div style="font-size:13px;color:#6F6A5E;margin-top:4px">Size M — olive. Ships from Cusco in 2 days.</div>
+  </div>
+  <div style="position:absolute;inset:0;background:rgba(20,20,18,0.55)"></div>
+
+  <div style="position:absolute;left:0;right:0;bottom:0;background:#F6F2EA;border-top:2px solid #141412;max-height:94%;overflow-y:auto">
+    <sc-if value="{{ showMain }}" hint-placeholder-val="{{ true }}">
+    <div style="padding:16px 16px 18px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px">Plazo — Pay in 4</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">USDC · ARC</span>
+      </div>
+      <sc-if value="{{ limitGranted }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:10px;border:2px solid #0E7C4A;border-radius:2px;background:#FFFFFF;padding:8px 12px;font-size:13px">Your starting limit: <span style="font-family:'IBM Plex Mono',monospace;font-weight:600">$50</span> — earned, not begged. It grows every plan you clear.</div>
+      </sc-if>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;padding-bottom:10px;border-bottom:1.5px solid #D9D2C3">
+        <span style="font-size:13px">Waxed Field Jacket — Andean Supply Co.</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-variant-numeric:tabular-nums">$95.00</span>
+      </div>
+      <sc-if value="{{ showOverlimit }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:12px;border:2px solid #141412;border-radius:2px;background:#FFFFFF;padding:14px">
+          <div style="display:inline-block;border:2px solid #D64528;color:#D64528;border-radius:999px;padding:2px 10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:10px;letter-spacing:0.08em;transform:rotate(-2deg)">OVER LIMIT</div>
+          <p style="font-size:14px;line-height:1.5;margin:10px 0 12px">This plan needs a <span style="font-family:'IBM Plex Mono',monospace;font-weight:600">$33.75</span> first check to fit your <span style="font-family:'IBM Plex Mono',monospace;font-weight:600">$85</span> limit — or pay it off in 3 instead. Never a dead end.</p>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button onClick="{{ pickBigFirst }}" style="text-align:left;background:#F6F2EA;border:2px solid #141412;border-radius:2px;padding:10px 12px;cursor:pointer;font-size:13px;box-shadow:3px 3px 0 #141412;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)"><span style="font-family:'Space Grotesk',sans-serif;font-weight:700">Pay in 4</span> — <span style="font-family:'IBM Plex Mono',monospace">$33.75</span> today, then <span style="font-family:'IBM Plex Mono',monospace">$20.42 × 3</span></button>
+            <button onClick="{{ pickPay3 }}" style="text-align:left;background:#F6F2EA;border:2px solid #141412;border-radius:2px;padding:10px 12px;cursor:pointer;font-size:13px;box-shadow:3px 3px 0 #141412;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)"><span style="font-family:'Space Grotesk',sans-serif;font-weight:700">Pay in 3</span> — <span style="font-family:'IBM Plex Mono',monospace">$31.67 × 3</span>, every 14 days</button>
+          </div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ showPlanBody }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+          <button onClick="{{ pickPay4 }}" style="text-align:left;display:flex;justify-content:space-between;align-items:center;background:{{ sel4Bg }};border:2px solid {{ sel4Bd }};border-radius:2px;padding:11px 12px;cursor:pointer;font-size:14px">
+            <span><span style="font-family:'Space Grotesk',sans-serif;font-weight:700">{{ planName }}</span> — <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">{{ firstAmt }}</span> now</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;background:#FFD23F;border:1.5px solid #141412;padding:1px 6px;border-radius:2px">0% ON TIME</span>
+          </button>
+          <button onClick="{{ pickFull }}" style="text-align:left;display:flex;justify-content:space-between;align-items:center;background:{{ selFBg }};border:2px solid {{ selFBd }};border-radius:2px;padding:11px 12px;cursor:pointer;font-size:14px">
+            <span>Pay in full — <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">$95.00</span></span>
+          </button>
+        </div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:12px;letter-spacing:0.06em;margin:14px 0 6px;color:#6F6A5E">YOUR FOUR CHECKS</div>
+        <div style="display:flex;gap:10px;overflow-x:auto;padding:2px 2px 10px">
+          <sc-for list="{{ coChecks }}" as="c" hint-placeholder-count="4">
+            <div style="min-width:150px;flex-shrink:0;background:#FFFFFF;border:1.5px solid #D9D2C3;border-radius:2px;border-left:2px dashed #B9B09C;padding:10px 12px;position:relative">
+              <div style="display:flex;justify-content:space-between;font-size:10px;font-family:'IBM Plex Mono',monospace;color:#6F6A5E"><span>{{ c.num }}</span><span style="color:#141412">{{ c.date }}</span></div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:19px;margin:8px 0 3px;font-variant-numeric:tabular-nums">{{ c.amt }}</div>
+              <sc-if value="{{ fx }}" hint-placeholder-val="{{ false }}"><div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#0E7C4A;margin-bottom:3px">₩33,000 · rate locked</div></sc-if>
+              <div style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:#6F6A5E;letter-spacing:0.02em">PAY TO — PLAZO PLAN 0x8A3F…C2</div>
+              <div style="display:inline-block;margin-top:9px;border:1.5px solid {{ c.tagBd }};background:{{ c.tagBg }};color:#141412;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:9px;letter-spacing:0.08em;padding:2px 7px;border-radius:999px;transform:rotate({{ c.rot }})">{{ c.tag }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <button onClick="{{ toggleFx }}" style="width:100%;text-align:left;display:flex;align-items:center;gap:8px;background:none;border:none;border-top:1.5px solid #D9D2C3;border-bottom:1.5px solid #D9D2C3;padding:9px 2px;cursor:pointer;font-size:12.5px;font-family:'IBM Plex Mono',monospace">
+          <span style="display:inline-block;width:14px;height:14px;border:2px solid #141412;border-radius:2px;background:{{ fxBg }}"></span>
+          <span>Repay in KRW1 — rate locked: ₩33,000 × 4</span>
+        </button>
+        <sc-if value="{{ showLowbal }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px;border:2px solid #141412;border-radius:2px;background:#FFFFFF;padding:12px">
+            <div style="font-size:13px;line-height:1.5">You have <span style="font-family:'IBM Plex Mono',monospace;font-weight:600">$14.20</span> on Arc — this plan needs <span style="font-family:'IBM Plex Mono',monospace;font-weight:600">{{ firstAmt }}</span> today. Top up from Base — arrives in under a second.</div>
+            <button onClick="{{ doTopup }}" style="margin-top:10px;width:100%;display:flex;justify-content:space-between;align-items:center;background:#F6F2EA;border:2px solid #141412;border-radius:2px;padding:10px 12px;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;box-shadow:3px 3px 0 #141412;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)">
+              <span>From: Base · $412.80</span><span>→</span><span>To: Arc</span>
+            </button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ showArrived }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px;border:2px solid #0E7C4A;border-radius:2px;background:#FFFFFF;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#0E7C4A">arrived — 0.4s · Arc balance $39.20</div>
+        </sc-if>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E;margin:12px 0">0% if on time · late fee $5 flat · terms hash <a href="https://testnet.arcscan.app/tx/0x91bd44e7" target="_blank" style="color:#141412">0x91bd…44e7</a></div>
+        <button onClick="{{ openSigning }}" disabled="{{ signDisabled }}" style="width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:15px 20px;cursor:pointer;transition:all 140ms ease-out;opacity:{{ signOpacity }}" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">{{ signLabel }}</button>
+        <div style="text-align:center;font-size:12px;color:#6F6A5E;margin-top:10px">The money stays yours until the date on the check.</div>
+        <div style="text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#6F6A5E;margin-top:12px;border-top:1.5px solid #D9D2C3;padding-top:10px">Final in under a second on Arc.</div>
+      </div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showOnboard }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:18px 16px 22px">
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">Create your wallet</div>
+      <div style="font-size:13.5px;color:#6F6A5E;margin-top:4px">Email and a fingerprint — nothing to write down.</div>
+      <sc-if value="{{ onb0 }}" hint-placeholder-val="{{ true }}">
+      <div style="margin-top:16px">
+        <label for="onb-email" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">EMAIL</label>
+        <input id="onb-email" value="{{ email }}" onChange="{{ setEmail }}" placeholder="you@anywhere.xyz" style="width:100%;box-sizing:border-box;margin-top:5px;padding:11px 12px;border:2px solid #141412;border-radius:2px;background:#FFFFFF;font-size:14px;font-family:'IBM Plex Mono',monospace"></input>
+        <button onClick="{{ onbNext }}" style="margin-top:12px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Continue</button>
+      </div>
+      </sc-if>
+      <sc-if value="{{ onb1 }}" hint-placeholder-val="{{ false }}">
+      <div style="margin-top:16px;border:2px solid #141412;border-radius:2px;background:#FFFFFF;padding:18px;text-align:center">
+        <div style="width:44px;height:44px;border:2px solid #141412;border-radius:999px;margin:0 auto;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px">⌘</div>
+        <div style="font-size:14px;margin-top:10px">Enroll a passkey for <span style="font-family:'IBM Plex Mono',monospace">{{ emailShown }}</span></div>
+        <div style="font-size:12px;color:#6F6A5E;margin-top:4px">Your device holds the key — Plazo never sees it.</div>
+        <button onClick="{{ onbNext }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Use fingerprint</button>
+      </div>
+      </sc-if>
+      <sc-if value="{{ onb2 }}" hint-placeholder-val="{{ false }}">
+      <div style="margin-top:16px;border:2px solid #0E7C4A;border-radius:2px;background:#FFFFFF;padding:18px;text-align:center">
+        <div style="display:inline-block;border:2px solid #0E7C4A;color:#0E7C4A;border-radius:999px;padding:3px 12px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.08em;transform:rotate(-2deg);animation:thunk 140ms ease-out">WALLET CREATED</div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px;margin-top:12px">Your starting limit: <span style="font-family:'IBM Plex Mono',monospace">$50</span></div>
+        <div style="font-size:12.5px;color:#6F6A5E;margin-top:6px">No plans yet — your first limit is $50. Earn the rest.</div>
+        <button onClick="{{ onbDone }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Back to checkout</button>
+      </div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showSigning }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:18px 16px 22px">
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">You're signing exactly this</div>
+      <div style="font-size:13px;color:#6F6A5E;margin-top:4px">Four checks. One signature — the rest happens on schedule.</div>
+      <div style="margin-top:14px;border:2px solid #141412;border-radius:2px;background:#FFFFFF">
+        <sc-for list="{{ coChecks }}" as="c" hint-placeholder-count="4">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;padding:10px 12px;border-bottom:1.5px solid #D9D2C3;font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-variant-numeric:tabular-nums">
+            <span style="font-weight:600">{{ c.amt }}</span>
+            <span>{{ c.date }}</span>
+            <span style="color:#6F6A5E">PLAZO PLAN 0x8A3F…C2</span>
+          </div>
+        </sc-for>
+        <div style="padding:9px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">terms hash <a href="https://testnet.arcscan.app/tx/0x91bd44e7" target="_blank" style="color:#141412">0x91bd…44e7</a> · EIP-3009 · single-use · date-locked</div>
+      </div>
+      <button onClick="{{ confirmSign }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:15px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Confirm with passkey</button>
+      <button onClick="{{ cancelSign }}" style="margin-top:10px;width:100%;background:none;border:none;cursor:pointer;font-size:13px;text-decoration:underline;text-underline-offset:2px;color:#141412">Cancel — nothing gets created</button>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showSuccess }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:18px 16px 22px">
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">Signed — the schedule takes it from here</div>
+      <div style="margin-top:14px;background:#FFFFFF;border:1.5px solid #D9D2C3;border-left:2px dashed #B9B09C;border-radius:2px;padding:12px 14px;position:relative">
+        <div style="display:flex;justify-content:space-between;font-size:10px;font-family:'IBM Plex Mono',monospace;color:#6F6A5E"><span>Nº 001</span><span style="color:#141412">{{ demoDate }}</span></div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:22px;margin:8px 0 3px;font-variant-numeric:tabular-nums">{{ firstAmt }}</div>
+        <div style="font-size:9.5px;font-family:'IBM Plex Mono',monospace;color:#6F6A5E">PAY TO — PLAZO PLAN 0x8A3F…C2</div>
+        <div style="position:absolute;right:12px;top:26px;border:2.5px solid #0E7C4A;color:#0E7C4A;border-radius:999px;padding:3px 12px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:12px;letter-spacing:0.1em;transform:rotate(-3deg);animation:thunk 140ms ease-out">CLEARED</div>
+      </div>
+      <div style="margin-top:12px;border-top:1.5px solid #D9D2C3;border-bottom:1.5px solid #D9D2C3;padding:10px 2px;display:flex;justify-content:space-between;align-items:baseline;font-size:13.5px">
+        <span>Andean Supply Co. — <span style="color:#0E7C4A;font-weight:600">paid in full, 0.4s</span></span>
+        <a href="https://testnet.arcscan.app/tx/0x7fe2a9c1" target="_blank" style="font-family:'IBM Plex Mono',monospace;font-size:11px">0x7fe2…a9c1</a>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E;margin-top:10px">Settled 0.4s ago — final, not pending. Three checks stay in your wallet until their dates.</div>
+      <button onClick="{{ goPlans }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">See the plan →</button>
+      <button onClick="{{ resetCheckout }}" style="margin-top:10px;width:100%;background:none;border:none;cursor:pointer;font-size:13px;text-decoration:underline;text-underline-offset:2px;color:#141412">Back to checkout</button>
+    </div>
+    </sc-if>
+  </div>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isPlans }}" hint-placeholder-val="{{ false }}"><div style="max-width:940px;margin:0 auto;padding:26px 16px 64px">
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+    <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:26px;margin:0">My plans</h1>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">wallet 0x71C4…8D2E · Arc balance <span style="color:#141412;font-weight:600;font-variant-numeric:tabular-nums">{{ balStr }}</span></span>
+    <button onClick="{{ toggleEmpty }}" style="margin-left:auto;background:none;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#141412;text-decoration:underline;text-underline-offset:2px">{{ viewLabel }}</button>
+  </div>
+  <sc-if value="{{ plansEmpty }}" hint-placeholder-val="{{ false }}">
+    <div style="margin-top:24px;border:2px dashed #B9B09C;border-radius:2px;padding:48px 24px;text-align:center">
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:19px">No plans yet — your first limit is $50. Earn the rest.</div>
+      <div style="font-size:13px;color:#6F6A5E;margin-top:8px">Every plan you clear grows it. Every check is yours until its date.</div>
+      <button onClick="{{ goCheckout }}" style="margin-top:16px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:11px 18px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Find a Plazo merchant →</button>
+    </div>
+  </sc-if>
+  <sc-if value="{{ plansFull }}" hint-placeholder-val="{{ true }}">
+  <div style="display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;margin-top:18px">
+    <div style="flex:1 1 480px;min-width:300px;display:flex;flex-direction:column;gap:16px">
+      <div style="border:2px solid {{ planBd }};border-radius:2px;padding:16px;position:relative;opacity:{{ planOp }}">
+        <sc-if value="{{ planStampOn }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;right:14px;top:14px;border:2.5px solid {{ planStampCol }};color:{{ planStampCol }};border-radius:999px;padding:3px 12px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:12px;letter-spacing:0.1em;transform:rotate(2deg);animation:thunk 140ms ease-out;background:#F6F2EA">{{ planStampTxt }}</div>
+        </sc-if>
+        <div style="display:flex;gap:12px;align-items:center">
+          <div style="width:52px;height:52px;flex-shrink:0;border:1.5px solid #D9D2C3;border-radius:2px;background:repeating-linear-gradient(45deg,#EFEAE0 0 6px,#F6F2EA 6px 12px)"></div>
+          <div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px">Waxed Field Jacket</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E;margin-top:2px">Andean Supply Co. · plan <a href="https://testnet.arcscan.app/address/0x8A3FC2" target="_blank">0x8A3F…C2</a> · $95.00 in 4</div>
+          </div>
+        </div>
+        <sc-if value="{{ delinquent }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px;border:2px solid #D64528;border-radius:2px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+            <span style="font-size:13.5px">{{ bounceLine }}</span>
+            <button onClick="{{ cureNow }}" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:3px 3px 0 #141412;padding:8px 14px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)">Cure now — $28.75</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ refundedOn }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px;border:1.5px solid #B9B09C;border-radius:2px;padding:10px 12px;font-size:13px;color:#565248">{{ refundLine }}</div>
+        </sc-if>
+        <sc-if value="{{ lowBalOn }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px;border:2px solid #141412;border-left:6px solid #FFD23F;border-radius:2px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+            <span style="font-size:13.5px">{{ lowLine }}</span>
+            <button onClick="{{ topUpBuyer }}" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;background:#FFD23F;color:#141412;border:2px solid #141412;border-radius:2px;box-shadow:3px 3px 0 #141412;padding:8px 14px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)">Top up from Base</button>
+          </div>
+        </sc-if>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px">
+          <sc-for list="{{ pStubs }}" as="st" hint-placeholder-count="4">
+            <div style="background:#FFFFFF;border:2px solid {{ st.edge }};border-left:2px dashed #B9B09C;border-radius:2px;padding:8px;opacity:{{ st.op }};min-width:0">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#6F6A5E">{{ st.date }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:14px;font-variant-numeric:tabular-nums">{{ st.amt }}</div>
+              <div style="margin-top:6px"><span style="display:inline-block;border:1.5px solid {{ st.stampBd }};background:{{ st.stampBg }};color:{{ st.stampCol }};font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:8.5px;letter-spacing:0.06em;padding:1px 6px;border-radius:999px;transform:rotate({{ st.rot }});white-space:nowrap">{{ st.stampTxt }}</span></div>
+              <div style="font-size:9.5px;font-family:'IBM Plex Mono',monospace;color:#6F6A5E;margin-top:4px;min-height:12px">{{ st.sub }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;gap:14px;margin-top:14px;align-items:center;flex-wrap:wrap">
+          <sc-if value="{{ canPayoff }}" hint-placeholder-val="{{ true }}">
+            <button onClick="{{ openPrepay }}" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13.5px;background:#F6F2EA;color:#141412;border:2px solid #141412;border-radius:2px;box-shadow:3px 3px 0 #141412;padding:9px 15px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)">{{ payoffLabel }}</button>
+          </sc-if>
+          <button onClick="{{ toggleDetail }}" style="background:none;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#141412;text-decoration:underline;text-underline-offset:2px">{{ detailLabel }}</button>
+        </div>
+        <sc-if value="{{ detailOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:14px;border-top:2px solid #141412;padding-top:12px">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">TERMS — 0% if on time · late fee $5 flat · hash <a href="https://testnet.arcscan.app/tx/0x91bd44e7" target="_blank">0x91bd…44e7</a></div>
+            <div style="margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:12px">
+              <sc-for list="{{ events }}" as="ev" hint-placeholder-count="3">
+                <div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #D9D2C3;align-items:baseline;flex-wrap:wrap">
+                  <span style="color:#6F6A5E;white-space:nowrap;min-width:110px">{{ ev.t }}</span>
+                  <span style="flex:1;min-width:200px">{{ ev.txt }}</span>
+                  <a href="{{ ev.link }}" target="_blank">{{ ev.hash }}</a>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="border:1.5px solid #D9D2C3;border-radius:2px;padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px">Trail Runner Pack</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E;margin-top:2px">Seoul Alpine · plan <a href="https://testnet.arcscan.app/address/0x3D9A77" target="_blank">0x3D9A…77</a> · KRW1 corridor</div>
+          </div>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#0E7C4A">Rate locked — ₩33,000 × 4, whatever the market does.</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px">
+          <sc-for list="{{ fxStubs }}" as="fs" hint-placeholder-count="4">
+            <div style="background:#FFFFFF;border:2px solid #D9D2C3;border-left:2px dashed #B9B09C;border-radius:2px;padding:8px;opacity:{{ fs.op }};min-width:0">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#6F6A5E">{{ fs.date }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:13px;font-variant-numeric:tabular-nums">{{ fs.leg }}</div>
+              <div style="margin-top:6px"><span style="display:inline-block;border:1.5px solid {{ fs.stampBd }};background:{{ fs.stampBg }};color:{{ fs.stampCol }};font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:8.5px;letter-spacing:0.06em;padding:1px 6px;border-radius:999px;transform:rotate({{ fs.rot }});white-space:nowrap">{{ fs.stampTxt }}</span></div>
+              <div style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:#6F6A5E;margin-top:4px">{{ fs.sub }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="border:1.5px solid #D9D2C3;border-radius:2px;padding:16px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <sc-if value="{{ notLinked }}" hint-placeholder-val="{{ true }}">
+          <span style="font-size:13.5px;flex:1;min-width:240px">Paid in USDC? Split installments from your paycheck — you'll never think about due dates, and merchants give you better pricing.</span>
+          <button onClick="{{ toggleSalary }}" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;background:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:3px 3px 0 #141412;padding:9px 14px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)">Link my paycheck</button>
+        </sc-if>
+        <sc-if value="{{ salaryLinked }}" hint-placeholder-val="{{ false }}">
+          <span style="display:inline-block;border:2px solid #0E7C4A;color:#0E7C4A;border-radius:999px;padding:2px 10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:10px;letter-spacing:0.08em;transform:rotate(-2deg)">LINKED</span>
+          <span style="font-size:13.5px;flex:1">Linked: Northline Freight — next split <span style="font-family:'IBM Plex Mono',monospace">Aug 2</span></span>
+          <button onClick="{{ toggleSalary }}" style="background:none;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;text-decoration:underline;text-underline-offset:2px;color:#141412">unlink</button>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="flex:0 1 320px;min-width:280px">
+      <div style="border:2px solid #141412;border-radius:2px;padding:18px;box-shadow:6px 6px 0 #141412;background:#F6F2EA">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;letter-spacing:0.1em">PASSPORT</span>
+          <span style="border:2px solid #141412;background:#FFD23F;border-radius:999px;padding:2px 10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:10px;letter-spacing:0.08em;transform:rotate(2deg)">YOUR LIMIT</span>
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:64px;line-height:1;margin-top:14px;font-variant-numeric:tabular-nums">$85</div>
+        <div style="display:flex;gap:3px;margin-top:16px;height:14px">
+          <div style="flex:50;background:#141412"></div>
+          <div style="flex:35;background:#0E7C4A"></div>
+          <div style="flex:21;border:1.5px dashed #8A8474;box-sizing:border-box"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6F6A5E;margin-top:5px"><span>$50 start</span><span>$85 now</span><span>$106 next</span></div>
+        <div style="font-size:13px;line-height:1.55;margin-top:14px;border-top:1.5px solid #D9D2C3;padding-top:12px;font-family:'IBM Plex Mono',monospace;font-size:12px">{{ passLine }}</div>
+        <div style="font-size:13px;color:#565248;line-height:1.5;margin-top:10px">Your limit is $85 because you paid two plans on time — that's the whole algorithm.</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#6F6A5E;margin-top:12px">record 0xPA55…71 · <a href="https://testnet.arcscan.app/address/0xPA5571" target="_blank">verify on Arcscan</a></div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ prepayOn }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;background:rgba(20,20,18,0.55);z-index:50;display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="background:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:8px 8px 0 #141412;padding:22px;max-width:400px;width:100%">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">Pay it off early</div>
+        <p style="font-size:14px;line-height:1.55;margin:10px 0 0">{{ prepayLine }}</p>
+        <button onClick="{{ confirmPrepay }}" style="margin-top:16px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">{{ payoffLabel }}</button>
+        <button onClick="{{ closePrepay }}" style="margin-top:10px;width:100%;background:none;border:none;cursor:pointer;font-size:13px;text-decoration:underline;text-underline-offset:2px;color:#141412">Not now</button>
+      </div>
+    </div>
+  </sc-if>
+</div></sc-if>
+<sc-if value="{{ isMerchant }}" hint-placeholder-val="{{ false }}"><div>
+<div data-desk-msg style="display:none;justify-content:center;padding:48px 24px">
+  <div style="border:2px solid #141412;border-radius:2px;box-shadow:6px 6px 0 #141412;padding:24px 28px;max-width:380px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px">This desk needs a desk — open on a wider screen.</div>
+</div>
+<div data-desk style="max-width:1360px;margin:0 auto;padding:26px 24px 64px">
+  <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;border-bottom:2px solid #141412;padding-bottom:12px">
+    <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:24px;margin:0">Andean Supply Co. — settlements</h1>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-variant-numeric:tabular-nums">Today $4&#8239;180 — 44 orders — 0 chargebacks <span style="color:#6F6A5E">(there are no chargebacks)</span></span>
+    <button onClick="{{ toggleMFeed }}" style="margin-left:auto;background:none;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#141412;text-decoration:underline;text-underline-offset:2px">{{ mFeedLabel }}</button>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 372px;gap:26px;margin-top:18px;align-items:start">
+    <div>
+      <sc-if value="{{ mEmptyOn }}" hint-placeholder-val="{{ false }}">
+        <div style="border:2px dashed #B9B09C;border-radius:2px;padding:56px 24px;text-align:center;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:17px">Nothing settled today — yet.</div>
+      </sc-if>
+      <sc-if value="{{ mFeedOn }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="display:grid;grid-template-columns:78px 62px 108px 90px 76px 90px 1fr 96px;gap:10px;padding:6px 8px;border-bottom:2px solid #141412;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;color:#6F6A5E">
+          <span>TIME</span><span>ORDER</span><span>BUYER</span><span style="text-align:right">AMOUNT</span><span style="text-align:right">MDR</span><span style="text-align:right">NET</span><span>STATUS</span><span style="text-align:right">BLOCK</span>
+        </div>
+        <sc-for list="{{ mRows }}" as="r" hint-placeholder-count="15">
+          <div style="display:grid;grid-template-columns:78px 62px 108px 90px 76px 90px 1fr 96px;gap:10px;padding:8px 8px;border-bottom:1px solid #D9D2C3;font-size:12.5px;align-items:baseline">
+            <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">{{ r.t }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace">{{ r.o }}</span>
+            <a href="{{ r.wLink }}" target="_blank" style="font-family:'IBM Plex Mono',monospace;font-size:11.5px">{{ r.w }}</a>
+            <span style="font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums">{{ r.amt }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums;color:#6F6A5E">{{ r.mdr }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums;font-weight:600">{{ r.net }}</span>
+            <span style="min-width:0"><span style="display:inline-block;border:1.5px solid {{ r.stampCol }};color:{{ r.stampCol }};font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:9px;letter-spacing:0.07em;padding:1px 7px;border-radius:999px;transform:rotate({{ r.rot }});white-space:nowrap">{{ r.stampTxt }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6F6A5E;margin-left:8px">{{ r.note }}</span></span>
+            <a href="{{ r.bLink }}" target="_blank" style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;text-align:right;font-variant-numeric:tabular-nums">{{ r.block }}</a>
+          </div>
+        </sc-for>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#6F6A5E;padding:10px 8px">Escrow releases on shipment scan — or on the date, whichever comes first. Digital goods settle instantly.</div>
+      </div>
+      </sc-if>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div style="border:2px solid #141412;border-radius:2px;padding:16px">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:0.04em">TREASURY AUTOPILOT</div>
+        <div style="display:flex;height:22px;margin-top:12px;border:1.5px solid #141412">
+          <div style="flex:60;background:#F6F2EA;border-right:1.5px solid #141412"></div>
+          <div style="flex:30;background:#0E7C4A;border-right:1.5px solid #141412"></div>
+          <div style="flex:10;background:#FFD23F"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#565248;margin-top:6px;gap:6px">
+          <span>60% stays liquid</span><span>30% earns</span><span>10% → suppliers on Base</span>
+        </div>
+        <button onClick="{{ editTreasury }}" style="margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:11px;background:none;border:1.5px solid #141412;border-radius:2px;padding:5px 12px;cursor:pointer;color:#141412" style-hover="background:#141412;color:#F6F2EA">edit split</button>
+        <div style="border-top:1.5px solid #D9D2C3;margin-top:14px;padding-top:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">Settle me on:</span>
+          <button onClick="{{ setChArc }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ chArcBg }};color:{{ chArcFg }}">Arc</button>
+          <button onClick="{{ setChBase }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ chBaseBg }};color:{{ chBaseFg }}">Base</button>
+          <button onClick="{{ setChSol }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ chSolBg }};color:{{ chSolFg }}">Solana</button>
+        </div>
+      </div>
+
+      <div style="border:1.5px solid #D9D2C3;border-radius:2px;padding:16px">
+        <button onClick="{{ toggleRefund }}" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:none;border:none;cursor:pointer;padding:0;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;color:#141412;letter-spacing:0.04em">REFUNDS<span style="font-family:'IBM Plex Mono',monospace;font-size:13px">{{ refundCaret }}</span></button>
+        <sc-if value="{{ refundOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:12px">
+            <div style="font-size:13px;line-height:1.5;color:#565248">Unspent checks don't need clawing back — they simply never cash.</div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button onClick="{{ setRFull }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 12px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ rFullBg }};color:{{ rFullFg }}">full refund</button>
+              <button onClick="{{ setRPart }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 12px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ rPartBg }};color:{{ rPartFg }}">partial</button>
+            </div>
+            <div style="margin-top:12px;border:1.5px solid #D9D2C3;border-left:4px solid #141412;border-radius:2px;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.7">{{ refundMath }}</div>
+            <button onClick="{{ doRefund }}" style="margin-top:12px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:3px 3px 0 #141412;padding:10px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(3px,3px)">Refund order #1847</button>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="border:2px solid #141412;border-radius:2px;padding:16px;box-shadow:4px 4px 0 #141412">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;letter-spacing:0.04em">ADD PAY IN 4 TO YOUR CHECKOUT</span>
+        </div>
+        <div style="margin-top:10px;background:#141412;color:#F6F2EA;border-radius:2px;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.6;overflow-x:auto;white-space:nowrap">&lt;script src="connect.plazo.xyz/v1.js"<br>&#160;&#160;data-merchant="andean-supply"&gt;</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button onClick="{{ copySnip }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:none;border:1.5px solid #141412;border-radius:2px;padding:5px 12px;cursor:pointer;color:#141412" style-hover="background:#141412;color:#F6F2EA">{{ copyLabel }}</button>
+          <span style="flex:1"></span>
+          <button onClick="{{ setTestnet }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ envTBg }};color:{{ envTFg }}">Testnet</button>
+          <button onClick="{{ setMainnet }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 10px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ envMBg }};color:{{ envMFg }}">Mainnet</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:7px;margin-top:12px;border-top:1.5px solid #D9D2C3;padding-top:10px;font-family:'IBM Plex Mono',monospace;font-size:11px">
+          <span style="width:8px;height:8px;border-radius:999px;background:#0E7C4A;display:inline-block"></span>
+          <span>Live — last event 14:02:11</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div></sc-if>
+<sc-if value="{{ isYield }}" hint-placeholder-val="{{ false }}"><div>
+<div data-desk-msg style="display:none;justify-content:center;padding:48px 24px">
+  <div style="border:2px solid #141412;border-radius:2px;box-shadow:6px 6px 0 #141412;padding:24px 28px;max-width:380px;font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:16px">This desk needs a desk — open on a wider screen.</div>
+</div>
+<div data-desk style="max-width:1360px;margin:0 auto;padding:26px 24px 64px">
+  <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;border-bottom:2px solid #141412;padding-bottom:12px">
+    <h1 style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:24px;margin:0">Plazo Yield — the open book</h1>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#6F6A5E">42-day self-liquidating consumer paper · marked in real time</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:16px;border:2px solid {{ stripBd }};background:{{ stripBg }};border-radius:2px;padding:12px 16px;align-items:center">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-variant-numeric:tabular-nums">JUNIOR <span style="font-weight:600;font-size:16px">{{ juniorPct }}</span> of capital <span style="color:#6F6A5E">(floor 15%)</span></div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-variant-numeric:tabular-nums;border-left:1.5px solid #D9D2C3;padding-left:16px">RESERVE <span style="font-weight:600;font-size:16px">2.0%</span> <span style="color:#6F6A5E">(target 2.0%)</span></div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;border-left:1.5px solid #D9D2C3;padding-left:16px">ORIGINATIONS <span style="font-weight:600;font-size:16px;color:{{ origCol }}">{{ origTxt }}</span></div>
+    <sc-if value="{{ gated }}" hint-placeholder-val="{{ false }}">
+      <div style="grid-column:1 / -1;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#946300;border-top:1.5px solid #946300;padding-top:8px">Originations paused — subordination below floor. New deposits to Junior reopen the gate.</div>
+    </sc-if>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:18px">
+    <div style="border:2px solid #141412;border-radius:2px;padding:18px;box-shadow:5px 5px 0 #141412">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px">SENIOR</span>
+        <svg width="120" height="28" viewBox="0 0 120 28" style="display:block"><polyline points="0,20 15,19 30,21 45,17 60,16 75,14 90,13 105,11 120,10" fill="none" stroke="#0E7C4A" stroke-width="2"></polyline></svg>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:34px;margin-top:8px;font-variant-numeric:tabular-nums">7.2%<span style="font-size:13px;font-weight:400;color:#6F6A5E"> target</span></div>
+      <div style="font-size:13.5px;color:#565248;margin-top:4px">First claim on every check — 42-day paper, senior to losses.</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap">
+        <button onClick="{{ openDepS }}" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:11px 18px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Deposit</button>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">from Base · arrives in &lt;1s via Gateway</span>
+      </div>
+    </div>
+    <div style="border:2px solid #141412;border-radius:2px;padding:18px;box-shadow:5px 5px 0 #141412">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px">JUNIOR</span>
+        <span style="border:2px solid #141412;background:#FFD23F;border-radius:999px;padding:2px 10px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:9.5px;letter-spacing:0.08em;transform:rotate(-2deg)">FIRST LOSS</span>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:34px;margin-top:8px;font-variant-numeric:tabular-nums">19.4%<span style="font-size:13px;font-weight:400;color:#6F6A5E"> current</span></div>
+      <div style="font-size:13.5px;color:#565248;margin-top:4px">Levered residual — absorbs first losses, keeps what's left.</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap">
+        <button onClick="{{ openDepJ }}" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:11px 18px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Deposit</button>
+        <button onClick="{{ openWd }}" style="background:none;border:none;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;text-decoration:underline;text-underline-offset:2px;color:#141412">withdraw</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:22px">
+    <div style="display:grid;grid-template-columns:130px 100px 90px 110px 1fr;gap:12px;padding:6px 8px;border-bottom:2px solid #141412;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;color:#6F6A5E">
+      <span>PLAN</span><span style="text-align:right">TICKET</span><span>CORRIDOR</span><span>CHECKS</span><span>STATUS</span>
+    </div>
+    <sc-for list="{{ yRows }}" as="y" hint-placeholder-count="12">
+      <div style="display:grid;grid-template-columns:130px 100px 90px 110px 1fr;gap:12px;padding:8px 8px;border-bottom:1px solid #D9D2C3;font-size:12.5px;align-items:baseline">
+        <a href="{{ y.link }}" target="_blank" style="font-family:'IBM Plex Mono',monospace;font-size:11.5px">{{ y.id }}</a>
+        <span style="font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums">{{ y.ticket }}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px">{{ y.cor }}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">{{ y.cl }} cleared</span>
+        <span><span style="display:inline-block;border:1.5px solid {{ y.stampCol }};color:{{ y.stampCol }};font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:9px;letter-spacing:0.07em;padding:1px 7px;border-radius:999px;transform:rotate({{ y.rot }});white-space:nowrap">{{ y.stampTxt }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6F6A5E;margin-left:8px">{{ y.prov }}</span></span>
+      </div>
+    </sc-for>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#565248;padding:10px 8px;border-bottom:2px solid #141412">Every check that clears or bounces marks this book — the same second it happens.</div>
+  </div>
+
+  <div style="margin-top:14px;overflow:hidden">
+    <div style="display:flex;gap:56px;white-space:nowrap;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E;animation:tick 45s linear infinite;width:max-content">
+      <span>keeper 0x3f…9c collected plan 0x8A…C2 check 2/4 — bounty $0.05 — block 4,182,077 · keeper 0x71…e4 collected plan 0x4B…E9 check 1/4 — bounty $0.05 — block 4,182,081 · keeper 0x3f…9c collected plan 0x9C…1A check 3/4 — bounty $0.05 — block 4,182,090 · keeper 0xb2…08 collected plan 0x62…F0 check 3/4 — bounty $0.05 — block 4,182,101</span>
+      <span>keeper 0x3f…9c collected plan 0x8A…C2 check 2/4 — bounty $0.05 — block 4,182,077 · keeper 0x71…e4 collected plan 0x4B…E9 check 1/4 — bounty $0.05 — block 4,182,081 · keeper 0x3f…9c collected plan 0x9C…1A check 3/4 — bounty $0.05 — block 4,182,090 · keeper 0xb2…08 collected plan 0x62…F0 check 3/4 — bounty $0.05 — block 4,182,101</span>
+    </div>
+  </div>
+</div>
+
+<sc-if value="{{ sheetOn }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;inset:0;background:rgba(20,20,18,0.55);z-index:50;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div style="background:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:8px 8px 0 #141412;padding:22px;max-width:420px;width:100%">
+      <sc-if value="{{ stElig }}" hint-placeholder-val="{{ false }}">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">One formality first</div>
+        <p style="font-size:14px;line-height:1.55;margin:10px 0 0">Plazo Yield is a private offering — verify accredited status to continue. Dry, not scary.</p>
+        <button onClick="{{ toggleElig }}" style="margin-top:14px;width:100%;text-align:left;display:flex;gap:10px;align-items:center;background:#F6F2EA;border:2px solid #141412;border-radius:2px;padding:11px 12px;cursor:pointer;font-size:13.5px">
+          <span style="display:inline-block;width:15px;height:15px;flex-shrink:0;border:2px solid #141412;border-radius:2px;background:{{ eligBg }}"></span>
+          <span>I'm an accredited investor and I read the risk sheet — all 2 pages of it.</span>
+        </button>
+        <button onClick="{{ confirmElig }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out;opacity:{{ eligOpacity }}" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Continue</button>
+      </sc-if>
+      <sc-if value="{{ stAmt }}" hint-placeholder-val="{{ false }}">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">Deposit — {{ depTranche }}</div>
+        <div style="margin-top:14px;border:2px solid #141412;border-radius:2px;background:#FFFFFF;padding:12px;display:flex;justify-content:space-between;align-items:baseline">
+          <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:24px;font-variant-numeric:tabular-nums">$2&#8239;500.00</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#6F6A5E">USDC</span>
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#565248;margin-top:10px">From Base — arrives in &lt;1s via Gateway</div>
+        <button onClick="{{ depositGo }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">Deposit $2&#8239;500.00</button>
+      </sc-if>
+      <sc-if value="{{ stPending }}" hint-placeholder-val="{{ false }}">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">Moving…</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;margin-top:12px">Loading the ledger…</div>
+      </sc-if>
+      <sc-if value="{{ stDone }}" hint-placeholder-val="{{ false }}">
+        <div style="display:inline-block;border:2px solid #0E7C4A;color:#0E7C4A;border-radius:999px;padding:3px 12px;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.08em;transform:rotate(-2deg);animation:thunk 140ms ease-out">RECEIVED</div>
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px;margin-top:10px">Arrived — 0.4s</div>
+        <p style="font-size:14px;line-height:1.55;margin:8px 0 0">Credited at next epoch NAV — <span style="font-family:'IBM Plex Mono',monospace">Friday 00:00 UTC</span>. Until then it sits in the reserve, earning nothing and risking nothing.</p>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:10px"><a href="https://testnet.arcscan.app/tx/0xdep2500" target="_blank">0xde9a…25f0</a> · block 4,182,140</div>
+      </sc-if>
+      <sc-if value="{{ stWd }}" hint-placeholder-val="{{ false }}">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:17px">Withdraw — the honest version</div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button onClick="{{ setWdSmall }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 12px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ wdSBg }};color:{{ wdSFg }}">$5&#8239;000</button>
+          <button onClick="{{ setWdBig }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 12px;border:1.5px solid #141412;border-radius:2px;cursor:pointer;background:{{ wdBBg }};color:{{ wdBFg }}">$40&#8239;000</button>
+        </div>
+        <p style="font-size:14px;line-height:1.55;margin:12px 0 0">Redemptions fill from the buffer and runoff — queue position <span style="font-family:'IBM Plex Mono',monospace">4 of 11</span> — this book self-liquidates in ≤42 days.</p>
+        <sc-if value="{{ wdFeeOn }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:10px;border:1.5px solid #946300;border-radius:2px;padding:10px 12px;font-size:13px;color:#946300">This exceeds the buffer — exit today costs <span style="font-family:'IBM Plex Mono',monospace;font-weight:600">0.75%</span> ($300.00), or queue for free and let the paper run off.</div>
+        </sc-if>
+        <button onClick="{{ closeSheet }}" style="margin-top:14px;width:100%;font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;background:#141412;color:#F6F2EA;border:2px solid #141412;border-radius:2px;box-shadow:4px 4px 0 #141412;padding:13px;cursor:pointer;transition:all 140ms ease-out" style-active="box-shadow:0 0 0 #141412;transform:translate(4px,4px)">{{ wdCta }}</button>
+      </sc-if>
+      <button onClick="{{ closeSheet }}" style="margin-top:12px;width:100%;background:none;border:none;cursor:pointer;font-size:13px;text-decoration:underline;text-underline-offset:2px;color:#141412">Close</button>
+    </div>
+  </div>
+</sc-if>
+</div></sc-if>
+
+<sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;left:50%;bottom:64px;transform:translateX(-50%);background:#141412;color:#F6F2EA;border-left:{{ toastEdge }};padding:12px 18px;font-size:14px;z-index:70;animation:toastin 140ms ease-out;border-radius:2px;max-width:calc(100vw - 48px)">{{ toastMsg }}</div>
+</sc-if>
+
+<sc-if value="{{ demoOn }}" hint-placeholder-val="{{ true }}">
+<div style="position:fixed;left:0;right:0;bottom:0;background:#141412;color:#F6F2EA;display:flex;align-items:center;gap:10px;padding:8px 16px;z-index:60;font-family:'IBM Plex Mono',monospace;font-size:12px;flex-wrap:wrap">
+  <span style="background:#FFD23F;color:#141412;font-weight:600;padding:2px 8px;border-radius:2px">DEMO — {{ demoDate }}</span>
+  <button onClick="{{ plus14 }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:none;color:#F6F2EA;border:1.5px solid #F6F2EA;border-radius:2px;padding:3px 10px;cursor:pointer" style-hover="background:#F6F2EA;color:#141412">+14 days</button>
+  <button onClick="{{ bounceNext }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:none;color:#F6F2EA;border:1.5px solid #F6F2EA;border-radius:2px;padding:3px 10px;cursor:pointer" style-hover="background:#F6F2EA;color:#141412">bounce next check</button>
+  <button onClick="{{ cureNow }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:none;color:#F6F2EA;border:1.5px solid #F6F2EA;border-radius:2px;padding:3px 10px;cursor:pointer" style-hover="background:#F6F2EA;color:#141412">cure</button>
+  <button onClick="{{ refundOrder }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:none;color:#F6F2EA;border:1.5px solid #F6F2EA;border-radius:2px;padding:3px 10px;cursor:pointer" style-hover="background:#F6F2EA;color:#141412">refund order</button>
+  <span style="margin-left:auto;opacity:0.55">press D to hide</span>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;showDemoBar&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Demo&quot;},&quot;fxCorridor&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;KRW1&quot;,&quot;MXNB&quot;],&quot;default&quot;:&quot;KRW1&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Demo&quot;}}">
+class Component extends DCLogic {
+  state = { screen:'checkout', demoDay:0, demoVisible:true,
+    scenario:'happy', step:'main', plan:'pay4', fx:false, email:'', onb:0,
+    toppedUp:false,
+    bouncedIdx:null, cured:false, refunded:false, prepaid:false, prepaidDay:null,
+    detailOpen:false, prepaySheet:false, salaryLinked:false, buyerTopped:false, plansEmpty:false,
+    merchantEmpty:false, refundOpen:false, refundMode:'full', env:'Mainnet', copied:false, payChain:'Arc',
+    sheet:null, depStep:0, eligible:false, eligChecked:false, wdBig:false,
+    toast:null };
+  componentDidMount(){ this._k=(e)=>{ const t=(e.target.tagName||''); if((e.key==='d'||e.key==='D')&&t!=='INPUT'&&t!=='TEXTAREA'){ this.setState(s=>({demoVisible:!s.demoVisible})); } }; window.addEventListener('keydown',this._k); }
+  componentWillUnmount(){ window.removeEventListener('keydown',this._k); clearTimeout(this._t); clearTimeout(this._d); }
+  toastMsg(msg, err){ clearTimeout(this._t); this.setState({toast:{msg,err:!!err}}); this._t=setTimeout(()=>this.setState({toast:null}),4600); }
+  fmt(n){ const neg=n<0; n=Math.abs(n); const p=n.toFixed(2).split('.'); return (neg?'−$':'$')+p[0].replace(/\B(?=(\d{3})+(?!\d))/g,'\u202F')+'.'+p[1]; }
+  date(off){ const d=new Date(2026,6,19+off); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+  planChecks(){ const s=this.state; const O=[0,14,28,42]; let next=false;
+    return O.map((o,i)=>{ let st;
+      if(s.refunded && o>0 && o>s.demoDay && i!==s.bouncedIdx) st='void';
+      else if(s.prepaid && o>s.prepaidDay && i!==s.bouncedIdx) st='void';
+      else if(i===s.bouncedIdx) st = s.cured?'cleared':'bounced';
+      else if(o<=s.demoDay) st='cleared';
+      else if(!next){ st='upnext'; next=true; }
+      else st='dormant';
+      return {i, o, st, date:this.date(o), days:o-s.demoDay}; });
+  }
+  clearedCount(){ return this.planChecks().filter(c=>c.st==='cleared').length; }
+  balance(){ const s=this.state; let b=60-23.75*this.clearedCount()+(s.buyerTopped?25:0)+(s.refunded?23.75:0); if(s.prepaid) b-=23.75*this.planChecks().filter(c=>c.st==='void').length; return b; }
+  coAmts(){ const p=this.state.plan; if(p==='big') return [33.75,20.42,20.42,20.41]; if(p==='p3') return [31.67,31.67,31.66]; return [23.75,23.75,23.75,23.75]; }
+  plus14 = ()=>{ const before=this.clearedCount(); this.setState(s=>({demoDay:s.demoDay+14}),()=>{ const cs=this.planChecks(); const after=cs.filter(c=>c.st==='cleared').length; if(after>before && !this.state.refunded && !this.state.prepaid){ const rem=cs.filter(c=>c.st==='upnext'||c.st==='dormant'||c.st==='bounced').length; const w=['None','One','Two','Three']; this.toastMsg('Check #'+after+' cleared — $23.75. '+(rem===0?'That was the last one — plan paid.':w[rem]+' to go.')); } }); }
+  bounceNext = ()=>{ const nx=this.planChecks().find(c=>c.st==='upnext'); if(!nx){ this.toastMsg('Nothing left to bounce — the plan is settled.'); return; } this.setState({demoDay:nx.o, bouncedIdx:nx.i, cured:false}); this.toastMsg('Check #'+(nx.i+1)+' bounced — no drama. Cure by '+this.date(nx.o+5)+' and nothing ages.', true); }
+  cureNow = ()=>{ if(this.state.bouncedIdx===null||this.state.cured){ this.toastMsg('Nothing to cure — the ledger is clean.'); return; } const i=this.state.bouncedIdx; this.setState({cured:true}); this.toastMsg('Cured — check #'+(i+1)+' cleared. Nothing aged, nothing on your record.'); }
+  refundOrder = ()=>{ if(this.state.refunded) return; this.setState({refunded:true, prepaid:false}); this.toastMsg('Andean Supply refunded you '+this.date(this.state.demoDay)+' — your unspent checks are void, $23.75 is back in your wallet.'); }
+  pStubs(lowBal){ const s=this.state;
+    return this.planChecks().map(c=>{ const base={date:c.date, amt:'$23.75', rot:(c.i%2?'1.5deg':'-1.5deg'), op:'1', edge:'#D9D2C3', stampBg:'transparent', stampBd:'#B9B09C', stampCol:'#6F6A5E', sub:''};
+      if(c.st==='cleared') return {...base, stampTxt:'CLEARED', stampCol:'#0E7C4A', stampBd:'#0E7C4A', sub:'cashed '+c.date};
+      if(c.st==='upnext') return {...base, stampTxt:'UP NEXT', stampBg:'#FFD23F', stampBd:'#141412', stampCol:'#141412', edge:(lowBal?'#FFD23F':'#D9D2C3'), sub:'cashes in '+c.days+' days'};
+      if(c.st==='bounced') return {...base, stampTxt:'BOUNCED', stampCol:'#D64528', stampBd:'#D64528', edge:'#D64528', sub:'cure by '+this.date(c.o+5)};
+      if(c.st==='void') return {...base, stampTxt:'VOID', op:'0.5', sub:'never cashes'};
+      return {...base, stampTxt:'DATE-LOCKED', op:'0.65', sub:'yours till '+c.date}; });
+  }
+  fxStubs(){ const mx=(this.props.fxCorridor??'KRW1')==='MXNB'; const leg=mx?'MX$412 → $23.75':'₩33,000 → $23.75';
+    return ['Jul 12','Jul 26','Aug 9','Aug 23'].map((d,i)=>({date:d, leg, op:i===0?'1':'0.8',
+      stampTxt:i===0?'CLEARED':(i===1?'UP NEXT':'DATE-LOCKED'),
+      stampCol:i===0?'#0E7C4A':(i===1?'#141412':'#6F6A5E'), stampBd:i===0?'#0E7C4A':(i===1?'#141412':'#B9B09C'), stampBg:i===1?'#FFD23F':'transparent',
+      rot:(i%2?'1.5deg':'-1.5deg'), sub:'rate locked Jul 12'}));
+  }
+  events(){ const s=this.state, pc=this.planChecks();
+    const blocks=['4,182,004','4,275,112','4,368,220','4,461,337'], times=['14:02:11','09:00:04','09:00:02','09:00:07'];
+    const ev=[{t:'Jul 19 13:59:58', txt:'plan signed — 4 checks created, terms locked', hash:'0x91bd…44e7'}];
+    pc.forEach((c,i)=>{ if(c.st==='cleared'&&i!==s.bouncedIdx) ev.push({t:this.date(c.o)+' '+times[i], txt:'check '+(i+1)+' cleared · block '+blocks[i], hash:'0x'+(7+i)+'fe2…a9c'+i}); });
+    if(s.bouncedIdx!==null){ const i=s.bouncedIdx; ev.push({t:this.date(pc[i].o)+' 09:00:02', txt:'check '+(i+1)+' bounced — insufficient balance, retry scheduled', hash:'0xb03a…1c4'+i});
+      if(s.cured) ev.push({t:this.date(pc[i].o+1)+' 17:41:20', txt:'check '+(i+1)+' cured — late fee $5.00 collected', hash:'0xc9d1…77a1'}); }
+    if(s.prepaid) ev.push({t:this.date(s.prepaidDay)+' 11:08:44', txt:'paid off early — remaining checks voided', hash:'0xee40…09f2'});
+    if(s.refunded) ev.push({t:this.date(s.demoDay)+' 10:12:30', txt:'merchant refund — unspent checks void, $23.75 returned', hash:'0x4fa0…12aa'});
+    return ev.map(e=>({...e, link:'https://testnet.arcscan.app/tx/'+e.hash.replace('…','')}));
+  }
+  mRows(){ const s=this.state;
+    const raw=[
+      {t:'14:02:11',o:'#1847',w:'0x8A3F…C2',a:95.00,st:s.refunded?'REFUNDED':'SETTLED',b:'4,182,004',note:s.refunded?'2 unspent checks void':'digital receipt · 0.4s'},
+      {t:'13:58:47',o:'#1846',w:'0x77B1…9E',a:189.00,st:'ESCROW',b:'4,181,966',note:'releases on shipment scan or Aug 22'},
+      {t:'13:51:02',o:'#1845',w:'0x2C90…4B',a:64.50,st:'SETTLED',b:'4,181,901',note:'0.4s'},
+      {t:'13:44:38',o:'#1844',w:'0xA1D4…77',a:230.00,st:'RELEASED',b:'4,181,850',note:'shipment scanned · 0.4s'},
+      {t:'13:37:15',o:'#1843',w:'0x5E2F…C0',a:42.00,st:'SETTLED',b:'4,181,799',note:'digital goods — instant'},
+      {t:'13:22:56',o:'#1842',w:'0x91BD…E7',a:118.25,st:'DISPUTED',b:'4,181,702',note:'operator arbitration — day 2 of 7'},
+      {t:'13:10:41',o:'#1841',w:'0x0F66…21',a:77.00,st:'SETTLED',b:'4,181,633',note:'0.4s'},
+      {t:'12:58:03',o:'#1840',w:'0xC4A8…5D',a:305.60,st:'ESCROW',b:'4,181,544',note:'releases on shipment scan or Aug 21'},
+      {t:'12:41:19',o:'#1839',w:'0x3B7E…F2',a:54.00,st:'SETTLED',b:'4,181,420',note:'0.4s'},
+      {t:'12:26:47',o:'#1838',w:'0x88C2…0A',a:139.99,st:'RELEASED',b:'4,181,311',note:'shipment scanned · 0.4s'},
+      {t:'12:09:33',o:'#1837',w:'0x6D19…B8',a:88.00,st:'SETTLED',b:'4,181,190',note:'0.4s'},
+      {t:'11:47:52',o:'#1836',w:'0xEF03…66',a:210.75,st:'SETTLED',b:'4,181,044',note:'0.4s'},
+      {t:'11:31:08',o:'#1835',w:'0x1A5C…D3',a:96.40,st:'ESCROW',b:'4,180,929',note:'releases on shipment scan or Aug 20'},
+      {t:'11:12:44',o:'#1834',w:'0xB2E7…19',a:67.25,st:'SETTLED',b:'4,180,791',note:'0.4s'},
+      {t:'10:58:21',o:'#1833',w:'0x40F8…AC',a:154.00,st:'SETTLED',b:'4,180,688',note:'0.4s'}];
+    const col={SETTLED:'#0E7C4A',RELEASED:'#0E7C4A',ESCROW:'#946300',DISPUTED:'#D64528',REFUNDED:'#8A8474'};
+    const txt={SETTLED:'SETTLED 0.4s',RELEASED:'RELEASED 0.4s',ESCROW:'IN ESCROW',DISPUTED:'DISPUTED',REFUNDED:'REFUNDED'};
+    return raw.map((r,i)=>{ const mdr=Math.round(r.a*4)/100;
+      return {t:r.t, o:r.o, w:r.w, wLink:'https://testnet.arcscan.app/address/'+r.w.replace('…',''), amt:this.fmt(r.a), mdr:'−'+this.fmt(mdr).slice(0), net:this.fmt(r.a-mdr), stampTxt:txt[r.st], stampCol:col[r.st], rot:(i%2?'1deg':'-1.5deg'), note:r.note, block:r.b, bLink:'https://testnet.arcscan.app/block/'+r.b.replace(/,/g,'')}; });
+  }
+  yRows(){ const s=this.state; const del=s.bouncedIdx!==null&&!s.cured;
+    const rows=[
+      {id:'0x8A3F…C2', t:95.00, cor:'USDC', cl:this.clearedCount()+'/4', st:del?'DELINQUENT':'CURRENT', prov:del?'−50% provisioned':''},
+      {id:'0x4B21…E9', t:189.00, cor:'USDC', cl:'1/4', st:'CURRENT'},
+      {id:'0x9C07…1A', t:312.40, cor:'KRW1', cl:'3/4', st:'CURRENT'},
+      {id:'0xD3F8…44', t:64.50, cor:'USDC', cl:'4/4', st:'CURRENT'},
+      {id:'0x77AE…02', t:141.75, cor:'MXNB', cl:'2/4', st:'GRACE'},
+      {id:'0x1C55…B7', t:96.00, cor:'USDC', cl:'2/4', st:'CURRENT'},
+      {id:'0xE90D…6C', t:230.00, cor:'USDC', cl:'1/4', st:'CURRENT'},
+      {id:'0x62B4…F0', t:58.25, cor:'KRW1', cl:'3/4', st:'CURRENT'},
+      {id:'0x0A97…3D', t:412.80, cor:'USDC', cl:'2/4', st:'DELINQUENT', prov:'−50% provisioned'},
+      {id:'0xB5E1…88', t:77.00, cor:'USDC', cl:'4/4', st:'CURRENT'},
+      {id:'0x3F6C…9C', t:120.00, cor:'MXNB', cl:'1/4', st:'CURRENT'},
+      {id:'0x8D40…21', t:305.60, cor:'USDC', cl:'2/4', st:'CURRENT'}];
+    const col={CURRENT:'#0E7C4A',GRACE:'#946300',DELINQUENT:'#D64528'};
+    return rows.map((r,i)=>({id:r.id, link:'https://testnet.arcscan.app/address/'+r.id.replace('…',''), ticket:this.fmt(r.t), cor:r.cor, cl:r.cl, stampTxt:r.st, stampCol:col[r.st], rot:(i%2?'1deg':'-1.5deg'), prov:r.prov||''}));
+  }
+  renderVals(){
+    const s=this.state, showDemo = (this.props.showDemoBar ?? true) && s.demoVisible;
+    const chip=(on)=> on?['#141412','#F6F2EA']:['#F6F2EA','#141412'];
+    const [scHappyBg,scHappyFg]=chip(s.scenario==='happy'), [scFirstBg,scFirstFg]=chip(s.scenario==='firstrun'), [scLowBg,scLowFg]=chip(s.scenario==='lowbal'), [scOverBg,scOverFg]=chip(s.scenario==='overlimit');
+    const A=this.coAmts();
+    const coChecks=A.map((a,i)=>({num:'Nº 00'+(i+1), date:this.date([0,14,28,42][i]), amt:this.fmt(a),
+      tag:i===0?'CASHES NOW':'DATE-LOCKED', tagBg:i===0?'#FFD23F':'transparent', tagBd:i===0?'#141412':'#D9D2C3', rot:(i%2?'1.5deg':'-1.5deg')}));
+    const overlimit = s.scenario==='overlimit' && s.plan==='pay4';
+    const lowbalPending = s.scenario==='lowbal' && !s.toppedUp;
+    const setSc=(sc)=>()=>this.setState({scenario:sc, step:'main', plan:'pay4', toppedUp:false, onb:0});
+    const planName = s.plan==='p3'?'Pay in 3':'Pay in 4';
+    const pc=this.planChecks();
+    const nextC=pc.find(c=>c.st==='upnext');
+    const bal=this.balance();
+    const lowBal = !!nextC && bal<23.75 && !s.refunded && !s.prepaid;
+    const delinquent = s.bouncedIdx!==null && !s.cured;
+    const remaining = pc.filter(c=>c.st==='upnext'||c.st==='dormant').length;
+    const payoffAmt = this.fmt(23.75*(remaining+(delinquent?1:0)));
+    return {
+      isCheckout:s.screen==='checkout', isPlans:s.screen==='plans', isMerchant:s.screen==='merchant', isYield:s.screen==='yield',
+      goCheckout:()=>this.setState({screen:'checkout'}), goPlans:()=>this.setState({screen:'plans'}), goMerchant:()=>this.setState({screen:'merchant'}), goYield:()=>this.setState({screen:'yield'}),
+      demoOn:showDemo, demoDate:this.date(s.demoDay),
+      plus14:this.plus14, bounceNext:this.bounceNext, cureNow:this.cureNow, refundOrder:this.refundOrder,
+      toastOn:!!s.toast, toastMsg:s.toast&&s.toast.msg, toastEdge:s.toast&&s.toast.err?'4px solid #D64528':'4px solid #FFD23F',
+      scHappy:setSc('happy'), scFirst:setSc('firstrun'), scLow:setSc('lowbal'), scOver:setSc('overlimit'),
+      scHappyBg,scHappyFg,scFirstBg,scFirstFg,scLowBg,scLowFg,scOverBg,scOverFg,
+      showMain: s.step==='main' && !(s.scenario==='firstrun'&&s.onb<3),
+      showOnboard: s.scenario==='firstrun' && s.onb<3 && s.step==='main',
+      showSigning: s.step==='signing', showSuccess: s.step==='success',
+      showOverlimit: overlimit && s.step==='main', showPlanBody: !overlimit,
+      limitGranted: s.scenario==='firstrun' && s.onb>=3 && s.step==='main',
+      onb0:s.onb===0, onb1:s.onb===1, onb2:s.onb===2,
+      email:s.email, emailShown:s.email||'you@anywhere.xyz',
+      setEmail:(e)=>this.setState({email:e.target.value}),
+      onbNext:()=>this.setState(st=>({onb:st.onb+1})), onbDone:()=>this.setState({onb:3}),
+      coChecks, fx:s.fx, toggleFx:()=>this.setState(st=>({fx:!st.fx})), fxBg:s.fx?'#FFD23F':'#FFFFFF',
+      planName, firstAmt:this.fmt(A[0]),
+      pickPay4:()=>{}, pickFull:()=>this.toastMsg('Paying in full skips Plazo entirely — this demo keeps you on the plan.'),
+      sel4Bg:'#FFFFFF', sel4Bd:'#141412', selFBg:'transparent', selFBd:'#D9D2C3',
+      pickBigFirst:()=>this.setState({plan:'big'}), pickPay3:()=>this.setState({plan:'p3'}),
+      showLowbal:lowbalPending, showArrived:s.scenario==='lowbal'&&s.toppedUp,
+      doTopup:()=>{ this.setState({toppedUp:true}); this.toastMsg('Gateway transfer arrived — 0.4s. Base → Arc, $25.00.'); },
+      signDisabled:lowbalPending, signOpacity:lowbalPending?'0.45':'1',
+      signLabel:'Sign once — '+this.fmt(A[0])+' today',
+      openSigning:()=>{ if(!lowbalPending) this.setState({step:'signing'}); },
+      confirmSign:()=>this.setState({step:'success'}),
+      cancelSign:()=>{ this.setState({step:'main'}); this.toastMsg('Signature declined — nothing was created.', true); },
+      resetCheckout:()=>this.setState({step:'main'}),
+      // buyer home
+      plansEmpty:s.plansEmpty, plansFull:!s.plansEmpty,
+      viewLabel:s.plansEmpty?'view: plans':'view: empty state',
+      toggleEmpty:()=>this.setState(st=>({plansEmpty:!st.plansEmpty})),
+      balStr:this.fmt(bal),
+      planBd: delinquent?'#D64528':(s.refunded?'#B9B09C':'#141412'),
+      planOp: s.refunded?'0.75':'1',
+      planStampOn: s.refunded||s.prepaid||(!delinquent&&remaining===0&&!nextC),
+      planStampTxt: s.refunded?'REFUNDED':(s.prepaid?'PAID OFF':'PAID'),
+      planStampCol: s.refunded?'#8A8474':'#0E7C4A',
+      delinquent,
+      bounceLine: delinquent?('Check #'+(s.bouncedIdx+1)+' bounced '+this.date(pc[s.bouncedIdx].o)+' — cure by '+this.date(pc[s.bouncedIdx].o+5)+'. No drama — nothing ages yet.'):'',
+      refundedOn:s.refunded,
+      refundLine:'Andean Supply refunded you '+this.date(s.demoDay)+' — your two unspent checks are void, $23.75 is back in your wallet.',
+      lowBalOn: lowBal && !delinquent,
+      lowLine: nextC?('Cashes in '+nextC.days+' days — you\u2019re '+this.fmt(23.75-bal)+' short. Top up now and forget it.'):'',
+      topUpBuyer:()=>{ this.setState({buyerTopped:true}); this.toastMsg('Topped up $25.00 from Base — arrived 0.4s. Forget it.'); },
+      pStubs:this.pStubs(lowBal), fxStubs:this.fxStubs(),
+      canPayoff: remaining>0 && !s.refunded && !s.prepaid && !delinquent,
+      payoffLabel:'Pay it off early — '+payoffAmt,
+      openPrepay:()=>this.setState({prepaySheet:true}), prepayOn:s.prepaySheet,
+      prepayLine:'Pay off now: '+payoffAmt+' — '+(remaining===1?'one check voids':['','one check','two checks','three checks'][remaining]+' void')+', nothing else to do. You keep the on-time record.',
+      confirmPrepay:()=>{ this.setState({prepaid:true, prepaidDay:s.demoDay, prepaySheet:false}); this.toastMsg('Paid off — '+payoffAmt+' sent, remaining checks void. Record stays clean.'); },
+      closePrepay:()=>this.setState({prepaySheet:false}),
+      detailOpen:s.detailOpen, toggleDetail:()=>this.setState(st=>({detailOpen:!st.detailOpen})),
+      detailLabel:s.detailOpen?'hide schedule & log':'schedule & log →',
+      events:this.events(),
+      salaryLinked:s.salaryLinked, notLinked:!s.salaryLinked,
+      toggleSalary:()=>{ const on=!s.salaryLinked; this.setState({salaryLinked:on}); this.toastMsg(on?'Linked: Northline Freight — next split Aug 2.':'Unlinked — due dates are yours to remember again.'); },
+      passLine: delinquent?'2 plans paid · '+this.clearedCount()+' check'+(this.clearedCount()===1?'':'s')+' cleared · 1 bounced — cure it and the record stays clean':'2 plans paid · 8 checks cleared · 0 bounced — next clean plan takes you to $106',
+      // merchant
+      mRows:this.mRows(), mEmptyOn:s.merchantEmpty, mFeedOn:!s.merchantEmpty,
+      mFeedLabel:s.merchantEmpty?'feed: today':'feed: empty state',
+      toggleMFeed:()=>this.setState(st=>({merchantEmpty:!st.merchantEmpty})),
+      editTreasury:()=>this.toastMsg('Treasury split is editable in ops settings — this demo keeps 60/30/10.'),
+      refundOpen:s.refundOpen, refundCaret:s.refundOpen?'−':'+',
+      toggleRefund:()=>this.setState(st=>({refundOpen:!st.refundOpen})),
+      setRFull:()=>this.setState({refundMode:'full'}), setRPart:()=>this.setState({refundMode:'part'}),
+      rFullBg:chip(s.refundMode==='full')[0], rFullFg:chip(s.refundMode==='full')[1],
+      rPartBg:chip(s.refundMode==='part')[0], rPartFg:chip(s.refundMode==='part')[1],
+      refundMath: s.refundMode==='full'
+        ? 'Refund $95.00 — 2 unspent checks void ($47.50 never cashes), $47.50 returns from you, MDR rebated in full (+$3.80).'
+        : 'Refund $47.50 — 2 unspent checks void, $23.75 returns from you, MDR rebated pro-rata (+$1.90).',
+      doRefund:()=>{ this.refundOrder(); },
+      setTestnet:()=>this.setState({env:'Testnet'}), setMainnet:()=>this.setState({env:'Mainnet'}),
+      envTBg:chip(s.env==='Testnet')[0], envTFg:chip(s.env==='Testnet')[1],
+      envMBg:chip(s.env==='Mainnet')[0], envMFg:chip(s.env==='Mainnet')[1],
+      copySnip:()=>{ const snip='<scr'+'ipt src="connect.plazo.xyz/v1.js" data-merchant="andean-supply"></scr'+'ipt>'; if(navigator.clipboard) navigator.clipboard.writeText(snip); this.setState({copied:true}); setTimeout(()=>this.setState({copied:false}),1800); },
+      copyLabel:s.copied?'copied':'copy snippet',
+      setChArc:()=>this.setState({payChain:'Arc'}), setChBase:()=>this.setState({payChain:'Base'}), setChSol:()=>this.setState({payChain:'Solana'}),
+      chArcBg:chip(s.payChain==='Arc')[0], chArcFg:chip(s.payChain==='Arc')[1],
+      chBaseBg:chip(s.payChain==='Base')[0], chBaseFg:chip(s.payChain==='Base')[1],
+      chSolBg:chip(s.payChain==='Solana')[0], chSolFg:chip(s.payChain==='Solana')[1],
+      // yield
+      gated:delinquent, stripBd:delinquent?'#946300':'#141412', stripBg:delinquent?'#FBF0D2':'transparent',
+      juniorPct:delinquent?'14.2%':'19.4%', origTxt:delinquent?'PAUSED':'OPEN', origCol:delinquent?'#946300':'#0E7C4A',
+      yRows:this.yRows(),
+      openDepS:()=>this.setState({sheet:'deposit', depTranche:'Senior', depStep:s.eligible?'amt':'elig'}),
+      openDepJ:()=>this.setState({sheet:'deposit', depTranche:'Junior', depStep:s.eligible?'amt':'elig'}),
+      openWd:()=>this.setState({sheet:'wd'}),
+      sheetOn:!!s.sheet,
+      stElig:s.sheet==='deposit'&&s.depStep==='elig', stAmt:s.sheet==='deposit'&&s.depStep==='amt',
+      stPending:s.sheet==='deposit'&&s.depStep==='pending', stDone:s.sheet==='deposit'&&s.depStep==='done',
+      stWd:s.sheet==='wd', depTranche:s.depTranche||'Senior',
+      toggleElig:()=>this.setState(st=>({eligChecked:!st.eligChecked})),
+      eligBg:s.eligChecked?'#FFD23F':'#FFFFFF', eligOpacity:s.eligChecked?'1':'0.45',
+      confirmElig:()=>{ if(s.eligChecked) this.setState({eligible:true, depStep:'amt'}); },
+      depositGo:()=>{ this.setState({depStep:'pending'}); this._d=setTimeout(()=>this.setState({depStep:'done'}),900); },
+      closeSheet:()=>this.setState({sheet:null, depStep:'elig'}),
+      setWdSmall:()=>this.setState({wdBig:false}), setWdBig:()=>this.setState({wdBig:true}),
+      wdSBg:chip(!s.wdBig)[0], wdSFg:chip(!s.wdBig)[1], wdBBg:chip(s.wdBig)[0], wdBFg:chip(s.wdBig)[1],
+      wdFeeOn:s.wdBig, wdCta:s.wdBig?'Queue for free — runoff pays me':'Join the queue — position 4 of 11',
+    };
+  }
+}
+</script>
+</body>
+</html>
