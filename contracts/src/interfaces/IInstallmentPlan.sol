@@ -55,6 +55,22 @@ interface IInstallmentPlan {
         Refunded
     }
 
+    /// @notice Per-installment terminal accounting.
+    /// @dev The collection guarantee is stated over this: for every installment,
+    ///      exactly one of `Cleared`, `Missed`, `Expired` or `Refunded` is reached
+    ///      within `validBefore + 1` block, given at least one honest keeper.
+    ///      `Bounced` is transient — it is a recorded failure awaiting a cure or a
+    ///      mark, and an installment resting there past grace is the exact condition
+    ///      that must block epoch settlement.
+    enum InstallmentStatus {
+        Pending,
+        Cleared,
+        Bounced,
+        Missed,
+        Expired,
+        Refunded
+    }
+
     /// @notice Why a pull failed.
     /// @dev These carry opposite Passport and provisioning treatments and lenders
     ///      will demand the distinction: a blocklisted borrower is a compliance
@@ -100,10 +116,21 @@ interface IInstallmentPlan {
     function planId() external view returns (bytes32);
     function state() external view returns (PlanState);
     function installmentCount() external view returns (uint256);
+    function principal() external view returns (uint256);
     function outstandingPrincipal() external view returns (uint256);
     function feesOutstanding() external view returns (uint256);
+    function feesPaid() external view returns (uint256);
+    function totalCollected() external view returns (uint256);
+    /// @notice Merchant refund applied to the plan, suppressing tail-check collection.
+    /// @dev Fixed-value checks cannot be reduced — you cannot turn check #3 from $50
+    ///      into $20 — and mandatory re-signing fails whenever the borrower is
+    ///      offline. A plan-level credit is the way a refund reaches the schedule.
+    function refundCredit() external view returns (uint256);
     function payoffAmount() external view returns (uint256);
     function dueDate(uint256 index) external view returns (uint256);
+    function graceEndsAt(uint256 index) external view returns (uint256);
+    function installmentAmount(uint256 index) external view returns (uint256);
+    function installmentStatus(uint256 index) external view returns (InstallmentStatus);
     function isCleared(uint256 index) external view returns (bool);
     function isMarked(uint256 index) external view returns (bool);
 
