@@ -26,6 +26,24 @@ export const ARC_TESTNET_EXPLORER = "https://testnet.arcscan.app";
  */
 export const ARC_USDC: Address = "0x3600000000000000000000000000000000000000";
 
+/**
+ * The `FiatTokenProxy` implementation behind Arc USDC, as of 2026-07-28.
+ *
+ * Pinned so that an upgrade fails CI rather than passing unnoticed. A borrower's
+ * authorization is a signature over a digest the token interprets; new logic can
+ * interpret it differently, so an implementation change is a re-verification and a
+ * re-audit, not a version bump.
+ *
+ * Read from `keccak256("org.zeppelinos.proxy.implementation")` — Circle's proxy
+ * predates EIP-1967 and the modern slot reads zero.
+ *
+ * Note: the project's Part 0 research recorded `0x3910B7cb…` here. It now reads the
+ * address below. Whether Arc upgraded or the earlier figure came from a
+ * delegatecall further down the trace, the pin is what makes the next change
+ * visible.
+ */
+export const ARC_USDC_IMPLEMENTATION: Address = "0xC6AD664ac6679F4Ce74e10E91449C93Ec1ae3cA6";
+
 /** Full EIP-3009, canonical typehashes, `version() == "2"`. The one buildable corridor. */
 export const ARC_EURC: Address = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
 

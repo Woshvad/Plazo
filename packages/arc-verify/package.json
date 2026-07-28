@@ -1,0 +1,25 @@
+{
+  "name": "@plazo/arc-verify",
+  "version": "0.1.0",
+  "description": "Asserts every Arc primitive the protocol depends on, against a live RPC. A CI gate, not a report.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "arc-verify": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify": "tsx src/cli.ts",
+    "verify:mainnet": "tsx src/cli.ts --network mainnet",
+    "test": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@plazo/plan-core": "workspace:*",
+    "viem": "2.55.10"
+  },
+  "devDependencies": {
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}
