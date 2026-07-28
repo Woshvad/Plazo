@@ -1,0 +1,9 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+  - "services/*"
+
+# esbuild ships a platform binary and needs its postinstall to run. Every other
+# dependency's build script stays blocked by default.
+allowBuilds:
+  esbuild: true

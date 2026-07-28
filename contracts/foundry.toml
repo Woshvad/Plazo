@@ -1,0 +1,61 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+
+# Pinned deliberately. Arc targets Osaka, a Prague superset, so Prague bytecode is
+# guaranteed valid while staying reproducible under local forge and third-party
+# fork tooling. Do not bump either of these without re-running the audit gate.
+solc_version = "0.8.30"
+evm_version = "prague"
+
+optimizer = true
+optimizer_runs = 1000
+via_ir = false
+
+bytecode_hash = "none"
+cbor_metadata = false
+
+fs_permissions = [
+    { access = "read-write", path = "./corpus" },
+    { access = "read", path = "./out" },
+]
+
+gas_reports = ["*"]
+
+[profile.default.fuzz]
+runs = 512
+max_test_rejects = 100000
+
+[profile.default.invariant]
+runs = 256
+depth = 64
+fail_on_revert = false
+call_override = false
+shrink_run_limit = 5000
+
+# Deeper campaign for CI and for the pre-audit gate.
+[profile.deep.fuzz]
+runs = 10000
+
+[profile.deep.invariant]
+runs = 2048
+depth = 256
+
+[rpc_endpoints]
+arc_testnet = "${ARC_TESTNET_RPC_URL}"
+arc_mainnet = "${ARC_MAINNET_RPC_URL}"
+
+[etherscan]
+arc_testnet = { key = "${ARCSCAN_API_KEY}", url = "https://testnet.arcscan.app/api", chain = 5042002 }
+
+[fmt]
+line_length = 110
+tab_width = 4
+bracket_spacing = false
+int_types = "long"
+multiline_func_header = "params_first"
+quote_style = "double"
+number_underscore = "thousands"

@@ -1,10 +1,28 @@
+# Planning docs stay local (config.json: commit_docs = false)
 .planning/
+
+# Dependencies
 node_modules/
+contracts/lib/
+
+# Secrets
 .env
-.env.local
+.env.*
+!.env.example
+
+# Build output
 out/
 cache/
 broadcast/
 .next/
 dist/
+.turbo/
+*.tsbuildinfo
+
+# Generated
+contracts/corpus/
+packages/abi/generated/
+
+# Local
 *.log
+.DS_Store
