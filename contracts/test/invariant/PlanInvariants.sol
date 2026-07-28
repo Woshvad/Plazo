@@ -171,10 +171,7 @@ abstract contract PlanInvariants is Test {
             assertEq(plan.feesOutstanding(), 0, "Repaid plan still carries fees");
         }
 
-        if (
-            state == IInstallmentPlan.PlanState.Refunded
-                || state == IInstallmentPlan.PlanState.Cancelled
-        ) {
+        if (state == IInstallmentPlan.PlanState.Refunded || state == IInstallmentPlan.PlanState.Cancelled) {
             assertEq(
                 plan.outstandingPrincipal(),
                 0,

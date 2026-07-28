@@ -74,11 +74,7 @@ contract PlanFactory {
     }
 
     /// @notice Every EIP-3009 nonce in a plan's strip, in installment order.
-    function checkNonces(bytes32 planId, uint256 installmentCount)
-        external
-        pure
-        returns (bytes32[] memory)
-    {
+    function checkNonces(bytes32 planId, uint256 installmentCount) external pure returns (bytes32[] memory) {
         return PlanId.checkNonces(planId, installmentCount);
     }
 

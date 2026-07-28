@@ -1,0 +1,39 @@
+Plazo Protocol
+==============
+
+Licensing in this repository is per directory. There is no single licence
+covering the whole tree, and the boundary is enforced in CI by
+`tools/check-boundaries.mjs` — the open tree may not import from the closed
+tree, so the open half can be split out with `git subtree split` and still
+build.
+
+Apache License 2.0 — see `LICENSE-APACHE`
+----------------------------------------
+
+  contracts/            The protocol itself.
+  packages/plan-core/   Plan identity, nonce and clone-address derivation.
+  packages/events/      The frozen event schema.
+  packages/arc-verify/  The Arc primitive verification gate.
+
+These are open for a reason that is load-bearing rather than promotional. A
+borrower holding a signed authorization strip must be able to recompute the
+plan id, the payee address and every nonce from the disclosed terms alone,
+without Plazo's cooperation. If verifying the deal required running Plazo's
+server, "the signed bytes commit to the disclosed deal" would be a claim
+rather than a property.
+
+Proprietary — see `LICENSE-PROPRIETARY`
+---------------------------------------
+
+  apps/                 Product surfaces.
+  services/             Operator services.
+  packages/ui/          The design system.
+
+All rights reserved.
+
+Third-party dependencies
+------------------------
+
+Solidity dependencies are vendored at pinned commits by
+`tools/install-libs.sh` and carry their own licences: forge-std (MIT),
+OpenZeppelin Contracts (MIT), Solady (MIT).

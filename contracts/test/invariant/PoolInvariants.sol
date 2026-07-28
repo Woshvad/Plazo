@@ -22,7 +22,7 @@ abstract contract PoolInvariants is Test {
     ICreditPool internal pool;
 
     /// @dev Floors. Phase 5 reads these from `ParameterRegistry`.
-    uint256 internal minSubordinationBps = 1_000; // 10%
+    uint256 internal minSubordinationBps = 1000; // 10%
     uint256 internal minReserveBps = 200; // 2% of total assets
 
     // ─── Solvency identity ───────────────────────────────────────────────────
@@ -115,9 +115,7 @@ abstract contract PoolInvariants is Test {
         if (juniorBps >= minSubordinationBps) return;
 
         assertEq(
-            pool.reserveBalance(),
-            0,
-            "junior was impaired while the first-loss reserve still held assets"
+            pool.reserveBalance(), 0, "junior was impaired while the first-loss reserve still held assets"
         );
     }
 
@@ -150,9 +148,7 @@ abstract contract PoolInvariants is Test {
         if (!pool.originationOpen()) return;
 
         assertGe(
-            pool.subordinationBps(),
-            minSubordinationBps,
-            "origination is open below the subordination floor"
+            pool.subordinationBps(), minSubordinationBps, "origination is open below the subordination floor"
         );
 
         uint256 assets = pool.totalAssets();
@@ -179,8 +175,7 @@ abstract contract PoolInvariants is Test {
     function check_epochBlocksOnUnmarkedDelinquency() public view {
         if (pool.allDelinquenciesMarked()) return;
         assertFalse(
-            pool.originationOpen(),
-            "the book is originating with unrecognised delinquencies outstanding"
+            pool.originationOpen(), "the book is originating with unrecognised delinquencies outstanding"
         );
     }
 }

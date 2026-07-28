@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The Arc gate runs daily. Arc is someone else's network: an upgrade, a pause or
+  # a changed limit should surface on a schedule, not on whenever someone next
+  # opens a pull request.
+  schedule:
+    - cron: "0 6 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FOUNDRY_PROFILE: default
+
+jobs:
+  boundaries:
+    name: Licence and design boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The licence posture — protocol contracts and strip tooling open, operator
+      # services proprietary — is only real if the code respects it. A policy
+      # document would not survive the first deadline.
+      - run: node tools/check-boundaries.mjs
+      - run: node tools/check-design-tokens.mjs
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinned, never nightly. A compiler or behaviour change mid-audit is a
+          # self-inflicted wound.
+          version: v1.7.1
+
+      - name: Vendor Solidity dependencies at pinned commits
+        run: bash tools/install-libs.sh
+
+      - run: forge --version
+      - run: forge fmt --check --root contracts
+      - run: forge build --root contracts --sizes
+
+      # Excludes the fork suite, which needs a live RPC. It runs in `arc-gate`.
+      - name: Test
+        run: forge test --root contracts --no-match-path 'test/fork/*' -vv
+
+      - name: Gas snapshot
+        run: forge snapshot --root contracts --no-match-path 'test/fork/*'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan-id-corpus
+          path: contracts/corpus/plan-id.json
+
+  parity:
+    name: Solidity to TypeScript derivation parity
+    runs-on: ubuntu-latest
+    needs: contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - run: bash tools/install-libs.sh
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Regenerated here rather than downloaded, so the corpus and the TypeScript
+      # under test come from the same commit. A stale artefact would let a
+      # divergence pass.
+      - name: Generate the corpus from Solidity
+        run: forge test --root contracts --match-test test_writeCorpus
+
+      - name: Assert TypeScript reproduces it bit for bit
+        run: pnpm --filter @plazo/plan-core test
+
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @plazo/plan-core build
+      - run: pnpm --filter @plazo/events build
+      - run: pnpm --filter @plazo/events test
+      - run: pnpm --filter @plazo/indexer test
+      - run: pnpm --filter @plazo/shell build
+
+  arc-gate:
+    name: Arc mainnet-readiness gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @plazo/plan-core build
+
+      # Twenty-five assertions against the live network: EIP-3009 typehashes,
+      # payee enforcement, validity windows, the derived domain separator, the
+      # pinned USDC implementation, EURC's corridor capability, USYC's deliberate
+      # lack of one, and the eth_getLogs range the indexer chunks against.
+      #
+      # When Arc mainnet exists this same job runs with --network mainnet. That is
+      # the whole mainnet plan: a config entry and a re-run. There is no mainnet
+      # phase, because Arc mainnet is not live and has no announced date.
+      - name: Verify Arc primitives
+        run: pnpm arc:verify
+        env:
+          ARC_TESTNET_RPC_URL: ${{ secrets.ARC_TESTNET_RPC_URL }}
+
+  fork-spike:
+    name: Arc fork behaviour
+    runs-on: ubuntu-latest
+    # Depends on a third-party RPC. It must not be able to redden the build on a
+    # network hiccup, but it must be visible when Arc's behaviour actually changes.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - run: bash tools/install-libs.sh
+      - name: Fork tests
+        run: forge test --root contracts --match-path 'test/fork/*' -vv
+        env:
+          ARC_TESTNET_RPC_URL: ${{ secrets.ARC_TESTNET_RPC_URL }}
+
+  slither:
+    name: Slither
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - run: bash tools/install-libs.sh
+      - uses: crytic/slither-action@v0.4.1
+        continue-on-error: true
+        with:
+          target: contracts/
+          slither-args: --exclude-dependencies --filter-paths "lib/|test/"

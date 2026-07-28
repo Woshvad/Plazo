@@ -25,15 +25,13 @@ contract ConfigurablePool is ICreditPool {
     function initHealthy(uint256 assets) external {
         totalAssets = assets;
         reserveBalance = (assets * 300) / 10_000;
-        _trancheAssets[Tranche.Junior] = (assets * 1_200) / 10_000;
+        _trancheAssets[Tranche.Junior] = (assets * 1200) / 10_000;
         _trancheAssets[Tranche.Senior] = assets - reserveBalance - _trancheAssets[Tranche.Junior];
         _trancheShares[Tranche.Junior] = _trancheAssets[Tranche.Junior];
         _trancheShares[Tranche.Senior] = _trancheAssets[Tranche.Senior];
     }
 
-    function setBalanceSheet(uint256 assets, uint256 reserve, uint256 junior, uint256 senior)
-        external
-    {
+    function setBalanceSheet(uint256 assets, uint256 reserve, uint256 junior, uint256 senior) external {
         totalAssets = assets;
         reserveBalance = reserve;
         _trancheAssets[Tranche.Junior] = junior;

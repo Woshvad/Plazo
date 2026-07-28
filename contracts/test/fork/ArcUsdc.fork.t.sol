@@ -82,8 +82,7 @@ contract ArcUsdcForkTest is Test {
     IERC3009 internal constant USDC = IERC3009(0x3600000000000000000000000000000000000000);
 
     /// @dev Arc's native-balance transfer precompile. Code is the single byte 0x01.
-    address internal constant NATIVE_TRANSFER_PRECOMPILE =
-        0x1800000000000000000000000000000000000000;
+    address internal constant NATIVE_TRANSFER_PRECOMPILE = 0x1800000000000000000000000000000000000000;
 
     bytes32 internal constant RECEIVE_TYPEHASH =
         0xd099cc98ef71107a616c4f0f941f04c322d8e254fe26b3c6668db87aae413de8;
@@ -223,14 +222,11 @@ contract ArcUsdcForkTest is Test {
         _fund(borrower, 100_000_000);
 
         bytes32 nonce = keccak256("griefed");
-        bytes memory signature =
-            _signReceive(key, borrower, payee, 1_000_000, 0, type(uint256).max, nonce);
+        bytes memory signature = _signReceive(key, borrower, payee, 1_000_000, 0, type(uint256).max, nonce);
 
         vm.prank(makeAddr("griefer"));
         vm.expectRevert();
-        USDC.receiveWithAuthorization(
-            borrower, payee, 1_000_000, 0, type(uint256).max, nonce, signature
-        );
+        USDC.receiveWithAuthorization(borrower, payee, 1_000_000, 0, type(uint256).max, nonce, signature);
 
         assertFalse(USDC.authorizationState(borrower, nonce), "griefer burned the nonce");
     }
@@ -314,14 +310,11 @@ contract ArcUsdcForkTest is Test {
         _fund(borrower, 1_000_000);
 
         bytes32 nonce = keccak256("insufficient");
-        bytes memory signature =
-            _signReceive(key, borrower, payee, 50_000_000, 0, type(uint256).max, nonce);
+        bytes memory signature = _signReceive(key, borrower, payee, 50_000_000, 0, type(uint256).max, nonce);
 
         vm.prank(payee);
         vm.expectRevert();
-        USDC.receiveWithAuthorization(
-            borrower, payee, 50_000_000, 0, type(uint256).max, nonce, signature
-        );
+        USDC.receiveWithAuthorization(borrower, payee, 50_000_000, 0, type(uint256).max, nonce, signature);
 
         // The nonce survives, so a cure can still clear this installment later.
         assertFalse(USDC.authorizationState(borrower, nonce), "a failed pull burned the nonce");
@@ -363,20 +356,17 @@ contract ArcUsdcForkTest is Test {
         _fund(borrower, 100_000_000);
 
         bytes32 nonce = keccak256("gas-measure");
-        bytes memory signature =
-            _signReceive(key, borrower, payee, 18_750_000, 0, type(uint256).max, nonce);
+        bytes memory signature = _signReceive(key, borrower, payee, 18_750_000, 0, type(uint256).max, nonce);
 
         vm.prank(payee);
         uint256 before = gasleft();
-        USDC.receiveWithAuthorization(
-            borrower, payee, 18_750_000, 0, type(uint256).max, nonce, signature
-        );
+        USDC.receiveWithAuthorization(borrower, payee, 18_750_000, 0, type(uint256).max, nonce, signature);
         uint256 used = before - gasleft();
 
         // 1 gas = 21 gwei = 2.1e-8 USDC. Expressed in micro-USDC (1e-6) for
         // readability: gas * 21 / 1000.
         console.log("EOA pull gas (mocked precompile):", used);
-        console.log("cost, micro-USDC:", (used * GAS_PRICE_GWEI) / 1_000);
+        console.log("cost, micro-USDC:", (used * GAS_PRICE_GWEI) / 1000);
         console.log("note: excludes the native-transfer precompile's own cost");
 
         assertLt(used, 200_000, "bare pull cost far more than the ops budget models");
@@ -384,7 +374,9 @@ contract ArcUsdcForkTest is Test {
 
     function test_recordEnvironment() public view onlyForked {
         console.log("block:", block.number);
-        console.log("USDC implementation:", address(uint160(uint256(vm.load(address(USDC), ZEPPELINOS_IMPL_SLOT)))));
+        console.log(
+            "USDC implementation:", address(uint160(uint256(vm.load(address(USDC), ZEPPELINOS_IMPL_SLOT))))
+        );
         console.log("native transfer precompile code size:", NATIVE_TRANSFER_PRECOMPILE.code.length);
         console.logBytes32(domainSeparator);
     }
@@ -416,20 +408,20 @@ contract ArcUsdcForkTest is Test {
         uint256 validBefore,
         bytes32 nonce
     ) internal view returns (bytes memory) {
-        bytes32 structHash =
-            keccak256(abi.encode(RECEIVE_TYPEHASH, from, to, value, validAfter, validBefore, nonce));
+        bytes32 structHash = keccak256(
+            abi.encode(RECEIVE_TYPEHASH, from, to, value, validAfter, validBefore, nonce)
+        );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
         return abi.encodePacked(r, s, v);
     }
 
-    function _signCancel(uint256 key, address authorizer, bytes32 nonce)
-        internal
-        view
-        returns (bytes memory)
-    {
-        bytes32 structHash =
-            keccak256(abi.encode(USDC.CANCEL_AUTHORIZATION_TYPEHASH(), authorizer, nonce));
+    function _signCancel(
+        uint256 key,
+        address authorizer,
+        bytes32 nonce
+    ) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(abi.encode(USDC.CANCEL_AUTHORIZATION_TYPEHASH(), authorizer, nonce));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
         return abi.encodePacked(r, s, v);

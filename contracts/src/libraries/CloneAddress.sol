@@ -40,17 +40,11 @@ library CloneAddress {
     ///        `0x4e59b448…` — that one is callable by anyone, so a strip signed
     ///        against an address derived from it could be front-run and squatted
     ///        by a third party deploying arbitrary code there first.
-    function predict(address deployer, address implementation, bytes32 salt)
-        internal
-        pure
-        returns (address)
-    {
+    function predict(address deployer, address implementation, bytes32 salt) internal pure returns (address) {
         return address(
             uint160(
                 uint256(
-                    keccak256(
-                        abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash(implementation))
-                    )
+                    keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash(implementation)))
                 )
             )
         );

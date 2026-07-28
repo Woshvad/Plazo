@@ -100,11 +100,10 @@ library PlanId {
     }
 
     /// @notice Every nonce in the strip, in installment order.
-    function checkNonces(bytes32 planId, uint256 installmentCount)
-        internal
-        pure
-        returns (bytes32[] memory nonces)
-    {
+    function checkNonces(
+        bytes32 planId,
+        uint256 installmentCount
+    ) internal pure returns (bytes32[] memory nonces) {
         nonces = new bytes32[](installmentCount);
         for (uint256 i = 0; i < installmentCount; ++i) {
             nonces[i] = checkNonce(planId, i);

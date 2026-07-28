@@ -199,7 +199,7 @@ contract PoolInvariantsBiteTest is PoolInvariants {
     ///      previous one. Half of the first-depositor inflation attack.
     function test_catchesSharesWithoutAssets() public {
         sut.setBalanceSheet(ASSETS, ASSETS, 0, 0);
-        sut.setShares(ICreditPool.Tranche.Junior, 1_000);
+        sut.setShares(ICreditPool.Tranche.Junior, 1000);
 
         vm.expectRevert();
         this.check_sharesImplyAssets();
@@ -247,7 +247,7 @@ contract PoolInvariantsBiteTest is PoolInvariants {
 
     /// @dev Origination open with the first-loss reserve drained.
     function test_catchesOriginationBelowReserveFloor() public {
-        uint256 junior = (ASSETS * 1_500) / 10_000;
+        uint256 junior = (ASSETS * 1500) / 10_000;
         sut.setBalanceSheet(ASSETS, 0, junior, ASSETS - junior);
         sut.setOriginationOpen(true);
 
