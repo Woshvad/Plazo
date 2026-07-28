@@ -1,0 +1,22 @@
+{
+  "name": "@plazo/ui",
+  "version": "0.1.0",
+  "description": "Shared design system, ported from the binding design comp. Consumed by every surface.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "main": "./src/tokens.ts",
+  "types": "./src/tokens.ts",
+  "exports": {
+    ".": "./src/tokens.ts",
+    "./theme.css": "./src/theme.css"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3"
+  }
+}

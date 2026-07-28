@@ -1,0 +1,179 @@
+/*
+ * The Plazo design system.
+ *
+ * Ported once from `Plazo app review screens/Plazo.dc.html`, which is binding. Four
+ * surfaces consume this — checkout, borrower, merchant, yield — and the known
+ * failure mode is building it late and retrofitting three apps.
+ *
+ * Every value below was extracted from the comp rather than invented. Where the comp
+ * uses a value once, it is still a token: a one-off in a mockup becomes a hardcoded
+ * hex in an app, and then a second slightly-different hex in the next app.
+ *
+ * Tailwind 4 is CSS-first. There is no `tailwind.config.js`; this file is the config.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* ── Surface ────────────────────────────────────────────────────────────── */
+
+  /* Warm paper, not white. Sets the whole Swiss-print register. */
+  --color-paper: #f6f2ea;
+  --color-paper-raised: #efeae0;
+  --color-white: #ffffff;
+
+  /* ── Ink ────────────────────────────────────────────────────────────────── */
+
+  /* Near-black, never #000. The comp's most-used colour by a wide margin. */
+  --color-ink: #141412;
+  --color-ink-soft: #565248;
+  --color-muted: #6f6a5e;
+  --color-faint: #8a8474;
+
+  /* ── Rules and edges ────────────────────────────────────────────────────── */
+
+  --color-rule: #d9d2c3;
+  --color-rule-strong: #b9b09c;
+
+  /* ── Semantic ───────────────────────────────────────────────────────────── */
+
+  /* Cleared, settled, on-time. Also the full stop in the wordmark. */
+  --color-green: #0e7c4a;
+  /* Bounced, delinquent, destructive. */
+  --color-danger: #d64528;
+  /* Attention and focus. Never a background for body text. */
+  --color-accent: #ffd23f;
+  --color-accent-ink: #946300;
+  --color-accent-wash: #fbf0d2;
+
+  /* ── Type ───────────────────────────────────────────────────────────────── */
+
+  /* Display: headings, nav, buttons, the wordmark. */
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  /* Mono: every number. Amounts, dates, addresses, hashes, plan ids. Tabular
+     figures are not decorative here — a schedule whose columns do not align is
+     a schedule that is harder to check. */
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  /* Body: prose. */
+  --font-body: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --text-micro: 0.5625rem; /* 9px  — legal, footnotes */
+  --text-2xs: 0.625rem; /* 10px — table meta */
+  --text-xs: 0.6875rem; /* 11px — the comp's workhorse label size */
+  --text-sm: 0.75rem; /* 12px */
+  --text-base: 0.8125rem; /* 13px — body default */
+  --text-md: 0.875rem; /* 14px — nav, buttons */
+  --text-lg: 1rem; /* 16px */
+  --text-xl: 1.0625rem; /* 17px */
+  --text-2xl: 1.1875rem; /* 19px */
+  --text-3xl: 1.375rem; /* 22px */
+  --text-4xl: 1.5rem; /* 24px */
+  --text-5xl: 2.125rem; /* 34px — page titles */
+  --text-hero: 4rem; /* 64px — the single hero figure */
+
+  --tracking-tight: -0.02em; /* display headings only */
+  --tracking-label: 0.04em;
+  --tracking-caps: 0.08em; /* uppercase mono labels */
+  --tracking-wide: 0.1em;
+
+  /* ── Geometry ───────────────────────────────────────────────────────────── */
+
+  /* Two radii, and only two. 2px reads as a printed edge; 999px is for pills.
+     Anything between makes the system look like a different product. */
+  --radius-edge: 2px;
+  --radius-pill: 999px;
+
+  --border-hairline: 1px;
+  --border-rule: 2px; /* the default. Every card, input and button. */
+
+  /* ── Elevation ──────────────────────────────────────────────────────────── */
+
+  /* Hard offset shadows, no blur, no alpha. Depth comes from displacement, the
+     way a print block sits on paper. A blurred shadow anywhere breaks it. */
+  --shadow-flat: 0 0 0 var(--color-ink);
+  --shadow-raised: 3px 3px 0 var(--color-ink);
+  --shadow-card: 4px 4px 0 var(--color-ink);
+  --shadow-lifted: 5px 5px 0 var(--color-ink);
+  --shadow-float: 6px 6px 0 var(--color-ink);
+  --shadow-hero: 8px 8px 0 var(--color-ink);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+
+@layer base {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a {
+    color: var(--color-ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1.5px;
+  }
+
+  a:hover {
+    background: var(--color-accent);
+  }
+
+  /* Focus is a solid ring in the accent, matching the comp. Never removed —
+     checkout is a keyboard-completable flow or it is not accessible. */
+  *:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* Every number is tabular. Amounts in a schedule that do not align are
+     amounts a borrower cannot scan. */
+  .font-mono,
+  [class*="font-mono"] {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────────── */
+
+@keyframes plazo-thunk {
+  0% {
+    transform: scale(1.15) rotate(-6deg);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(0.97) rotate(-3deg);
+    opacity: 1;
+  }
+  85% {
+    transform: scale(1.01) translateX(1px) rotate(-3deg);
+  }
+  100% {
+    transform: scale(1) rotate(-3deg);
+    opacity: 1;
+  }
+}
+
+@keyframes plazo-toast-in {
+  from {
+    transform: translate(-50%, 8px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

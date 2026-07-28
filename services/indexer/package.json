@@ -1,0 +1,26 @@
+{
+  "name": "@plazo/indexer",
+  "version": "0.1.0",
+  "description": "Ponder indexer over the frozen Plazo event schema. Proprietary operator service.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "ponder dev",
+    "start": "ponder start",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@plazo/events": "workspace:*",
+    "@plazo/plan-core": "workspace:*",
+    "hono": "4.12.32",
+    "ponder": "0.17.1",
+    "viem": "2.55.10"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

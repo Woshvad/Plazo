@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shell",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@plazo/shell", "dev"],
+      "port": 3000
+    }
+  ]
+}

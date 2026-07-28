@@ -1,0 +1,29 @@
+{
+  "name": "@plazo/shell",
+  "version": "0.1.0",
+  "description": "App shell proving the design system renders. Every surface is built from this chassis.",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "node ../../tools/check-design-tokens.mjs"
+  },
+  "dependencies": {
+    "@plazo/plan-core": "workspace:*",
+    "@plazo/ui": "workspace:*",
+    "next": "16.2.12",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3"
+  }
+}
