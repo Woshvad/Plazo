@@ -9,6 +9,9 @@ on:
   # opens a pull request.
   schedule:
     - cron: "0 6 * * *"
+  # The vertical slice spends real testnet USDC, so it is triggered rather than
+  # scheduled.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,13 +60,19 @@ jobs:
       - name: Test
         run: forge test --root contracts --no-match-path 'test/fork/*' -vv
 
+      # A deeper campaign than the default profile. The plan invariants are what the
+      # Phase 9 formal-verification specification is written against, and a shallow
+      # fuzz that never reaches a delinquency proves nothing about either.
+      - name: Invariant campaign
+        run: FOUNDRY_PROFILE=deep forge test --root contracts --match-path 'test/invariant/*' -vv
+
       - name: Gas snapshot
         run: forge snapshot --root contracts --no-match-path 'test/fork/*'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: plan-id-corpus
-          path: contracts/corpus/plan-id.json
+          name: corpora
+          path: contracts/corpus/*.json
 
   parity:
     name: Solidity to TypeScript derivation parity
@@ -90,10 +99,16 @@ jobs:
       # Regenerated here rather than downloaded, so the corpus and the TypeScript
       # under test come from the same commit. A stale artefact would let a
       # divergence pass.
-      - name: Generate the corpus from Solidity
-        run: forge test --root contracts --match-test test_writeCorpus
+      # Regenerated here rather than downloaded, so the corpora and the TypeScript
+      # under test come from the same commit. Both are covered: identity and clone
+      # address from Phase 1, and the terms commitment, schedule, authorization
+      # windows and acceptance digest that a borrower's wallet builds from them.
+      - name: Generate the corpora from Solidity
+        run: |
+          forge test --root contracts --match-test test_writeCorpus
+          forge test --root contracts --match-test test_writeStripCorpus
 
-      - name: Assert TypeScript reproduces it bit for bit
+      - name: Assert TypeScript reproduces them bit for bit
         run: pnpm --filter @plazo/plan-core test
 
   typescript:
@@ -109,11 +124,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @plazo/plan-core build
-      - run: pnpm --filter @plazo/events build
-      - run: pnpm --filter @plazo/events test
-      - run: pnpm --filter @plazo/indexer test
-      - run: pnpm --filter @plazo/shell build
+
+      # Every package, not a hand-maintained list. Phase 1 wired `test` but not
+      # `typecheck`, and three packages had been failing it unnoticed ever since —
+      # a list is something to forget to add to.
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
 
   arc-gate:
     name: Arc mainnet-readiness gate
@@ -159,6 +176,49 @@ jobs:
         run: forge test --root contracts --match-path 'test/fork/*' -vv
         env:
           ARC_TESTNET_RPC_URL: ${{ secrets.ARC_TESTNET_RPC_URL }}
+
+  slice:
+    name: Vertical slice against live Arc
+    runs-on: ubuntu-latest
+    # Manual, because it spends real testnet USDC from a funded key and originates
+    # real plans. The Foundry integration test proves the logic on every push; this
+    # proves the token, which is the half no local test can reach — Arc USDC moves
+    # through a native precompile Foundry cannot execute.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - run: bash tools/install-libs.sh
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.8
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @plazo/plan-core build
+
+      - name: Deploy
+        run: |
+          forge script script/Deploy.s.sol --root contracts --rpc-url arc_testnet --broadcast
+          node tools/record-deployment.mjs 5042002
+        env:
+          ARC_TESTNET_RPC_URL: ${{ secrets.ARC_TESTNET_RPC_URL }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.PLAZO_TESTNET_DEPLOYER_KEY }}
+
+      - name: Run the slice
+        run: pnpm --filter @plazo/arc-verify slice
+        env:
+          ARC_TESTNET_RPC_URL: ${{ secrets.ARC_TESTNET_RPC_URL }}
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.PLAZO_TESTNET_DEPLOYER_KEY }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment
+          path: contracts/deployments/*.json
 
   slither:
     name: Slither

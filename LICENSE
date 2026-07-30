@@ -11,9 +11,10 @@ Apache License 2.0 — see `LICENSE-APACHE`
 ----------------------------------------
 
   contracts/            The protocol itself.
-  packages/plan-core/   Plan identity, nonce and clone-address derivation.
+  packages/plan-core/   Plan identity, nonce, schedule and strip derivation.
   packages/events/      The frozen event schema.
   packages/arc-verify/  The Arc primitive verification gate.
+  packages/keeper/      The reference keeper.
 
 These are open for a reason that is load-bearing rather than promotional. A
 borrower holding a signed authorization strip must be able to recompute the
@@ -21,6 +22,11 @@ plan id, the payee address and every nonce from the disclosed terms alone,
 without Plazo's cooperation. If verifying the deal required running Plazo's
 server, "the signed bytes commit to the disclosed deal" would be a claim
 rather than a property.
+
+The keeper is open for the same kind of reason. The protocol's central claim
+is that collections do not depend on the operator — and a keeper that only
+Plazo can run is an operator dependency wearing a different name. It reads
+the chain and nothing else: no Plazo API, no index, no allowlist.
 
 Proprietary — see `LICENSE-PROPRIETARY`
 ---------------------------------------

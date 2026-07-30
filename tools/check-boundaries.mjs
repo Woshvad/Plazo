@@ -16,7 +16,7 @@ import {fileURLToPath} from "node:url";
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 
 /** Trees that ship under an open licence and may not depend on anything closed. */
-const OPEN = ["contracts", "packages/plan-core", "packages/events", "packages/arc-verify"];
+const OPEN = ["contracts", "packages/plan-core", "packages/events", "packages/arc-verify", "packages/keeper"];
 
 /** Trees that are proprietary. Nothing open may import from these. */
 const CLOSED = ["apps", "services"];

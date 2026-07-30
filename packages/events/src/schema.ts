@@ -288,6 +288,49 @@ export function humanReadableAbi(definition: EventDefinition): string {
 export const ABI: readonly string[] = Object.freeze(EVENT_SCHEMA.map(humanReadableAbi));
 
 /**
+ * The human-readable ABI for one contract's events.
+ *
+ * The indexer configures contracts individually, and it reads them from here rather
+ * than from a generated artefact so that the schema stays the single definition of
+ * what a surface is allowed to see. A contract that emits an event this file does
+ * not list is a contract the indexer will not index — which is the intended
+ * behaviour, not an oversight: adding an event is a version bump and a migration.
+ */
+export function abiForContract(contract: string): string[] {
+  return EVENT_SCHEMA.filter((d) => d.contract === contract).map(humanReadableAbi);
+}
+
+/**
+ * Const-typed views of the same definitions.
+ *
+ * `abiForContract` returns `string[]`, and a `string[]` carries no compile-time
+ * information — viem's `parseAbi` degrades to a bare `Abi`, and every consumer that
+ * relies on inference (Ponder's event names, wagmi's hooks, abitype's argument
+ * tuples) loses it. These literals restore it.
+ *
+ * They are duplication, and the duplication is checked: `test/schema.test.ts` asserts
+ * each one equals `abiForContract` for its contract, so the definitions above stay
+ * the single source of truth and a drift is a failing build rather than a UI that
+ * reads a field the chain stopped emitting.
+ */
+export const PLAN_FACTORY_ABI = [
+  "event PlanDeployed(bytes32 indexed planId, address indexed plan, address indexed implementation)",
+] as const;
+
+export const INSTALLMENT_PLAN_ABI = [
+  "event CheckCleared(bytes32 indexed planId, uint256 indexed index, uint256 amount, address keeper)",
+  "event CheckBounced(bytes32 indexed planId, uint256 indexed index, uint8 reason)",
+  "event CheckMissed(bytes32 indexed planId, uint256 indexed index, address marker)",
+  "event CheckExpired(bytes32 indexed planId, uint256 indexed index, address marker)",
+  "event PlanStateChanged(bytes32 indexed planId, uint8 from, uint8 to)",
+  "event PlanCured(bytes32 indexed planId, uint256 indexed index)",
+  "event PlanDelinquent(bytes32 indexed planId, uint256 lateFee)",
+  "event PlanRepaid(bytes32 indexed planId, uint256 total)",
+  "event PlanChargedOff(bytes32 indexed planId, uint256 outstanding)",
+  "event RefundCredited(bytes32 indexed planId, uint256 amount)",
+] as const;
+
+/**
  * Canonical hash over the whole schema.
  *
  * Covers every name, type, indexed flag and field order — everything an indexer or

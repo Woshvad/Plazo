@@ -61,6 +61,9 @@ importers:
         specifier: 2.55.10
         version: 2.55.10(typescript@5.9.3)
     devDependencies:
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
       tsx:
         specifier: 4.20.6
         version: 4.20.6
@@ -74,6 +77,25 @@ importers:
         specifier: 2.55.10
         version: 2.55.10(typescript@5.9.3)
     devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@26.1.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6)
+
+  packages/keeper:
+    dependencies:
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../plan-core
+      viem:
+        specifier: 2.55.10
+        version: 2.55.10(typescript@5.9.3)
+    devDependencies:
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -121,6 +143,9 @@ importers:
         specifier: 2.55.10
         version: 2.55.10(typescript@5.9.3)
     devDependencies:
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
       typescript:
         specifier: 5.9.3
         version: 5.9.3

@@ -1,0 +1,38 @@
+{
+  "name": "@plazo/keeper",
+  "version": "0.1.0",
+  "description": "Zero-configuration Plazo keeper. Collects due installments and records delinquencies for the bounty. Needs the chain and a key, nothing else.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "plazo-keeper": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@plazo/plan-core": "workspace:*",
+    "viem": "2.55.10"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

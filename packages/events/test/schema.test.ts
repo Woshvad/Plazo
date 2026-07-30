@@ -3,11 +3,14 @@ import {parseAbi} from "viem";
 
 import {
   ABI,
+  abiForContract,
   computeSchemaHash,
   EVENT_SCHEMA,
   eventSignature,
   eventTopic,
   humanReadableAbi,
+  INSTALLMENT_PLAN_ABI,
+  PLAN_FACTORY_ABI,
   SCHEMA_HASH,
   SCHEMA_VERSION,
 } from "../src/schema.js";
@@ -219,5 +222,24 @@ describe("cohort snapshots", () => {
     // otherwise poison the switch's only input.
     const s = snapshot();
     expect(s.newWalletDefaults + s.seasonedWalletDefaults).toBeLessThanOrEqual(s.plansOriginated);
+  });
+});
+
+describe("const-typed ABI views", () => {
+  /**
+   * The literals exist so consumers keep compile-time inference — Ponder's event
+   * names, wagmi's hooks, abitype's argument tuples all collapse to `Abi` without
+   * them. This is what keeps that convenience from quietly becoming a second,
+   * divergent definition of what the chain emits.
+   */
+  it("match the schema they duplicate", () => {
+    expect([...PLAN_FACTORY_ABI]).toEqual(abiForContract("PlanFactory"));
+    expect([...INSTALLMENT_PLAN_ABI]).toEqual(abiForContract("InstallmentPlan"));
+  });
+
+  it("cover every contract the indexer subscribes to", () => {
+    expect(abiForContract("PlanFactory").length).toBeGreaterThan(0);
+    expect(abiForContract("InstallmentPlan").length).toBeGreaterThan(0);
+    expect(abiForContract("NoSuchContract")).toEqual([]);
   });
 });

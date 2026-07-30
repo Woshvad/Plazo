@@ -2,7 +2,17 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "declaration": false,
+    "declarationMap": false
   },
-  "include": ["src/**/*.ts", "ponder.config.ts", "ponder.schema.ts", "test/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "ponder.config.ts",
+    "ponder.schema.ts",
+    "ponder-env.d.ts",
+    "test/**/*.ts"
+  ]
 }

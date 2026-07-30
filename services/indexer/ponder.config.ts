@@ -12,29 +12,38 @@
  * blocks at roughly half a second each; a genesis backfill would sweep years of
  * unrelated history to find nothing.
  */
-import {createConfig} from "ponder";
+import {createConfig, factory} from "ponder";
+import {parseAbi, parseAbiItem} from "viem";
 
 import {ARC_TESTNET_CHAIN_ID} from "@plazo/plan-core";
-import {ABI} from "@plazo/events";
+import {INSTALLMENT_PLAN_ABI, PLAN_FACTORY_ABI} from "@plazo/events";
 
 import {arcTransport} from "./src/transport.js";
 
-/**
- * Phase 1 has no deployed contracts — `PlanFactory` deploys in Phase 2 with the
- * vertical slice. The address and start block arrive from the deployment script's
- * output. Until then the indexer typechecks, its schema is frozen, and it has
- * nothing to ingest, which is the correct state for a phase that owns the schema
- * rather than the contracts.
- */
 const PLAN_FACTORY = process.env["PLAZO_PLAN_FACTORY_ADDRESS"] as `0x${string}` | undefined;
 const START_BLOCK = process.env["PLAZO_START_BLOCK"];
 
 if (!PLAN_FACTORY) {
   console.warn(
     "PLAZO_PLAN_FACTORY_ADDRESS is unset — indexing no contracts.\n" +
-      "Expected until Phase 2 deploys the factory.",
+      "Set it to the address printed by `forge script Deploy`.",
   );
 }
+
+const ADDRESS = PLAN_FACTORY ?? "0x0000000000000000000000000000000000000000";
+const startBlock = START_BLOCK ? Number(START_BLOCK) : ("latest" as const);
+
+/**
+ * Plans are discovered from the factory's own event stream rather than configured.
+ *
+ * Every plan is a CREATE2 clone deployed by `PlanFactory`, and there will be one per
+ * origination — so an address list would need a deployment to update it, and the
+ * indexer would silently stop seeing new plans the moment someone forgot. The
+ * factory pattern makes discovery a property of the chain instead.
+ */
+const PLAN_DEPLOYED = parseAbiItem(
+  "event PlanDeployed(bytes32 indexed planId, address indexed plan, address indexed implementation)",
+);
 
 export default createConfig({
   chains: {
@@ -48,9 +57,15 @@ export default createConfig({
   contracts: {
     PlanFactory: {
       chain: "arcTestnet",
-      abi: ABI as readonly string[],
-      address: PLAN_FACTORY ?? "0x0000000000000000000000000000000000000000",
-      startBlock: START_BLOCK ? Number(START_BLOCK) : "latest",
+      abi: parseAbi(PLAN_FACTORY_ABI),
+      address: ADDRESS,
+      startBlock,
+    },
+    InstallmentPlan: {
+      chain: "arcTestnet",
+      abi: parseAbi(INSTALLMENT_PLAN_ABI),
+      address: factory({address: ADDRESS, event: PLAN_DEPLOYED, parameter: "plan"}),
+      startBlock,
     },
   },
 });
