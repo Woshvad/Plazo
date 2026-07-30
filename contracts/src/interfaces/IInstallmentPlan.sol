@@ -138,6 +138,20 @@ interface IInstallmentPlan {
     ///         revert on a failed pull.
     function collect(uint256 index) external returns (bool cleared, BounceReason reason);
 
+    /// @notice Clear a whole due-date wave in one transaction.
+    /// @dev Added in Phase 2, which was always chartered to. What is frozen here is
+    ///      the state enum and the event set — the things four surfaces, an indexer
+    ///      and every historical row are already interpreting. Adding an entry point
+    ///      breaks nothing that reads them.
+    ///
+    ///      Each index pays its own bounty at its own point on the ramp, so a batch
+    ///      costs exactly what the same cranks would cost sent singly. A batch
+    ///      discount would quietly make single collection unprofitable and hand the
+    ///      keeper market to whoever can afford to aggregate.
+    function collectBatch(uint256[] calldata indices)
+        external
+        returns (bool[] memory cleared, BounceReason[] memory reasons);
+
     /// @notice Record a missed installment. Bountied, because nobody profits from
     ///         cranking a collection that cannot succeed, and without a paid
     ///         negative signal the delinquency is never written.

@@ -37,7 +37,7 @@ contract PlanInvariantsBiteTest is PlanInvariants {
         sut = new ConfigurablePlan();
         // Schedule starts a year out, so nothing is overdue in the baseline.
         sut.initHealthy(COUNT, PRINCIPAL, block.timestamp + 365 days, 14 days);
-        plan = IInstallmentPlan(address(sut));
+        subject = IInstallmentPlan(address(sut));
     }
 
     function test_baselineSatisfiesEveryInvariant() public view {
@@ -101,7 +101,7 @@ contract PlanInvariantsBiteTest is PlanInvariants {
     ///      recorded outcome. This is the delinquency signal that, left to the
     ///      token, nobody creates.
     function test_catchesUnrecordedDelinquency() public {
-        vm.warp(plan.graceEndsAt(0) + 1);
+        vm.warp(subject.graceEndsAt(0) + 1);
         // Status is still Pending — the pull reverted, so nothing was emitted.
         vm.expectRevert();
         this.check_everyOverdueInstallmentIsAccountedFor();
@@ -112,7 +112,7 @@ contract PlanInvariantsBiteTest is PlanInvariants {
     ///      that must block epoch settlement.
     function test_catchesBouncedButUnmarked() public {
         sut.setStatus(0, IInstallmentPlan.InstallmentStatus.Bounced);
-        vm.warp(plan.graceEndsAt(0) + 1);
+        vm.warp(subject.graceEndsAt(0) + 1);
 
         vm.expectRevert();
         this.check_everyOverdueInstallmentIsAccountedFor();
@@ -121,18 +121,18 @@ contract PlanInvariantsBiteTest is PlanInvariants {
     /// @dev A marked delinquency is accounted for, even though nothing was collected.
     function test_markedDelinquencySatisfiesTheGuarantee() public {
         sut.setStatus(0, IInstallmentPlan.InstallmentStatus.Missed);
-        vm.warp(plan.graceEndsAt(0) + 1);
+        vm.warp(subject.graceEndsAt(0) + 1);
         check_everyOverdueInstallmentIsAccountedFor();
     }
 
     function test_catchesNonMonotoneSchedule() public {
-        sut.setDueDate(2, plan.dueDate(1) - 1);
+        sut.setDueDate(2, subject.dueDate(1) - 1);
         vm.expectRevert();
         this.check_scheduleIsMonotone();
     }
 
     function test_catchesGraceBeforeDueDate() public {
-        sut.setGraceEndsAt(1, plan.dueDate(1) - 1);
+        sut.setGraceEndsAt(1, subject.dueDate(1) - 1);
         vm.expectRevert();
         this.check_graceFollowsDueDate();
     }

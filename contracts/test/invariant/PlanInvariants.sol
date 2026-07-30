@@ -16,17 +16,18 @@ import {IInstallmentPlan} from "../../src/interfaces/IInstallmentPlan.sol";
 ///      This is also the formal-verification specification. Each property below
 ///      carries the Certora rule name it becomes; see `SPEC.md`.
 ///
-///      Bind it by inheriting and setting `plan`. Phase 1 binds it to a
-///      deliberately breakable stub to prove the assertions fire.
+///      Bind it by inheriting and setting `subject`. Phase 1 bound it to a
+///      deliberately breakable stub to prove the assertions fire; Phase 2 binds it
+///      to the real `InstallmentPlan` under a fuzzing handler.
 ///
 ///      Named `check_*` rather than `invariant_*` on purpose. Foundry's invariant
 ///      fuzzer picks up `invariant_*` on any inheriting contract and drives it
 ///      against whatever is deployed — which, in the Phase 1 binding, is a stub with
 ///      public setters for every field. It would break trivially and prove nothing.
-///      The Phase 2 and Phase 5 bindings wrap these in thin `invariant_*` entry
-///      points once there is a real system worth fuzzing.
+///      `PlanFuzz.t.sol` wraps these in thin `invariant_*` entry points now that
+///      there is a real system worth fuzzing.
 abstract contract PlanInvariants is Test {
-    IInstallmentPlan internal plan;
+    IInstallmentPlan internal subject;
 
     /// @dev Grace window in seconds. Phase 2 reads this from `ParameterRegistry`.
     uint256 internal graceWindow = 3 days;
@@ -45,10 +46,10 @@ abstract contract PlanInvariants is Test {
     ///
     /// @custom:certora planValueConserved
     function check_valueIsConserved() public view {
-        uint256 retired = plan.principal() - plan.outstandingPrincipal();
+        uint256 retired = subject.principal() - subject.outstandingPrincipal();
         assertEq(
-            plan.totalCollected() + plan.refundCredit(),
-            retired + plan.feesPaid(),
+            subject.totalCollected() + subject.refundCredit(),
+            retired + subject.feesPaid(),
             "value conservation broken: collections do not equal principal retired plus fees paid"
         );
     }
@@ -56,7 +57,7 @@ abstract contract PlanInvariants is Test {
     /// @notice Outstanding principal never exceeds principal.
     /// @custom:certora outstandingBoundedByPrincipal
     function check_outstandingNeverExceedsPrincipal() public view {
-        assertLe(plan.outstandingPrincipal(), plan.principal(), "outstanding exceeds principal");
+        assertLe(subject.outstandingPrincipal(), subject.principal(), "outstanding exceeds principal");
     }
 
     /// @notice The payoff figure covers everything owed and nothing more.
@@ -67,8 +68,8 @@ abstract contract PlanInvariants is Test {
     /// @custom:certora payoffCoversOutstanding
     function check_payoffCoversOutstanding() public view {
         assertEq(
-            plan.payoffAmount(),
-            plan.outstandingPrincipal() + plan.feesOutstanding(),
+            subject.payoffAmount(),
+            subject.outstandingPrincipal() + subject.feesOutstanding(),
             "payoff does not equal outstanding principal plus outstanding fees"
         );
     }
@@ -84,16 +85,16 @@ abstract contract PlanInvariants is Test {
     ///
     /// @custom:certora noDoubleClear
     function check_noInstallmentClearsTwice() public view {
-        uint256 count = plan.installmentCount();
+        uint256 count = subject.installmentCount();
         uint256 clearedSum;
         for (uint256 i = 0; i < count; ++i) {
-            if (plan.installmentStatus(i) == IInstallmentPlan.InstallmentStatus.Cleared) {
-                clearedSum += plan.installmentAmount(i);
+            if (subject.installmentStatus(i) == IInstallmentPlan.InstallmentStatus.Cleared) {
+                clearedSum += subject.installmentAmount(i);
             }
         }
         assertLe(
             clearedSum,
-            plan.totalCollected() + plan.refundCredit(),
+            subject.totalCollected() + subject.refundCredit(),
             "more installments are marked cleared than value has been collected"
         );
     }
@@ -113,11 +114,11 @@ abstract contract PlanInvariants is Test {
     ///
     /// @custom:certora everyInstallmentAccountedFor
     function check_everyOverdueInstallmentIsAccountedFor() public view {
-        uint256 count = plan.installmentCount();
+        uint256 count = subject.installmentCount();
         for (uint256 i = 0; i < count; ++i) {
-            if (block.timestamp <= plan.graceEndsAt(i)) continue;
+            if (block.timestamp <= subject.graceEndsAt(i)) continue;
 
-            IInstallmentPlan.InstallmentStatus status = plan.installmentStatus(i);
+            IInstallmentPlan.InstallmentStatus status = subject.installmentStatus(i);
             bool accounted = status == IInstallmentPlan.InstallmentStatus.Cleared
                 || status == IInstallmentPlan.InstallmentStatus.Missed
                 || status == IInstallmentPlan.InstallmentStatus.Expired
@@ -135,18 +136,18 @@ abstract contract PlanInvariants is Test {
     ///      collection and provisioning decision keys off it.
     /// @custom:certora scheduleMonotone
     function check_scheduleIsMonotone() public view {
-        uint256 count = plan.installmentCount();
+        uint256 count = subject.installmentCount();
         for (uint256 i = 1; i < count; ++i) {
-            assertGt(plan.dueDate(i), plan.dueDate(i - 1), "due dates are not strictly increasing");
+            assertGt(subject.dueDate(i), subject.dueDate(i - 1), "due dates are not strictly increasing");
         }
     }
 
     /// @notice Grace always ends after the due date it belongs to.
     /// @custom:certora graceFollowsDueDate
     function check_graceFollowsDueDate() public view {
-        uint256 count = plan.installmentCount();
+        uint256 count = subject.installmentCount();
         for (uint256 i = 0; i < count; ++i) {
-            assertGe(plan.graceEndsAt(i), plan.dueDate(i), "grace ends before the installment is due");
+            assertGe(subject.graceEndsAt(i), subject.dueDate(i), "grace ends before the installment is due");
         }
     }
 
@@ -164,16 +165,16 @@ abstract contract PlanInvariants is Test {
     ///
     /// @custom:certora terminalStatesAbsorbing
     function check_terminalStatesAreClean() public view {
-        IInstallmentPlan.PlanState state = plan.state();
+        IInstallmentPlan.PlanState state = subject.state();
 
         if (state == IInstallmentPlan.PlanState.Repaid) {
-            assertEq(plan.outstandingPrincipal(), 0, "Repaid plan still carries principal");
-            assertEq(plan.feesOutstanding(), 0, "Repaid plan still carries fees");
+            assertEq(subject.outstandingPrincipal(), 0, "Repaid plan still carries principal");
+            assertEq(subject.feesOutstanding(), 0, "Repaid plan still carries fees");
         }
 
         if (state == IInstallmentPlan.PlanState.Refunded || state == IInstallmentPlan.PlanState.Cancelled) {
             assertEq(
-                plan.outstandingPrincipal(),
+                subject.outstandingPrincipal(),
                 0,
                 "a refunded or cancelled plan left outstanding principal unaccounted"
             );
@@ -185,8 +186,8 @@ abstract contract PlanInvariants is Test {
     ///      principal clear, fees outstanding, and no further pulls.
     /// @custom:certora settledWithFeeOutstandingIsCoherent
     function check_settledWithFeeOutstandingIsCoherent() public view {
-        if (plan.state() != IInstallmentPlan.PlanState.SettledWithFeeOutstanding) return;
-        assertEq(plan.outstandingPrincipal(), 0, "SettledWithFeeOutstanding still owes principal");
-        assertGt(plan.feesOutstanding(), 0, "SettledWithFeeOutstanding owes no fee");
+        if (subject.state() != IInstallmentPlan.PlanState.SettledWithFeeOutstanding) return;
+        assertEq(subject.outstandingPrincipal(), 0, "SettledWithFeeOutstanding still owes principal");
+        assertGt(subject.feesOutstanding(), 0, "SettledWithFeeOutstanding owes no fee");
     }
 }

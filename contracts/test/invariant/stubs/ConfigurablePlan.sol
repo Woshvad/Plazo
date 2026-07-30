@@ -117,8 +117,13 @@ contract ConfigurablePlan is IInstallmentPlan {
         return _status[index] == InstallmentStatus.Missed || _status[index] == InstallmentStatus.Expired;
     }
 
-    // Not exercised by the invariants. Phase 2 supplies the real behaviour.
+    // Not exercised by the invariants. `InstallmentPlan` supplies the real
+    // behaviour; this stub exists only to be broken on purpose.
     function collect(uint256) external pure returns (bool, BounceReason) {
+        revert("not implemented in Phase 1");
+    }
+
+    function collectBatch(uint256[] calldata) external pure returns (bool[] memory, BounceReason[] memory) {
         revert("not implemented in Phase 1");
     }
 

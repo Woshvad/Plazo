@@ -25,6 +25,15 @@ fs_permissions = [
 
 gas_reports = ["*"]
 
+[lint]
+# `block-timestamp` fires on every comparison in a contract whose entire subject is
+# dated obligations. Grace is three days and charge-off is sixty; a validator moving
+# the clock by the seconds Arc's BFT consensus permits cannot reach either, and the
+# alternative — block numbers — would make a borrower's due date depend on how fast
+# the chain happened to run. Silenced globally so a warning that appears means
+# something.
+exclude_lints = ["block-timestamp"]
+
 [profile.default.fuzz]
 runs = 512
 max_test_rejects = 100000

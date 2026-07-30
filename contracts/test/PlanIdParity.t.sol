@@ -7,6 +7,7 @@ import {PlanId} from "../src/libraries/PlanId.sol";
 import {CloneAddress} from "../src/libraries/CloneAddress.sol";
 import {PlanFactory} from "../src/PlanFactory.sol";
 import {PlanImplementationStub} from "./mocks/PlanImplementationStub.sol";
+import {JurisdictionRegistry} from "../src/JurisdictionRegistry.sol";
 
 /// @notice Emits the corpus that `packages/plan-core` must reproduce byte for byte.
 ///
@@ -32,7 +33,7 @@ contract PlanIdParityTest is Test {
 
     function setUp() public {
         implementation = address(new PlanImplementationStub());
-        factory = new PlanFactory(implementation);
+        factory = new PlanFactory(implementation, address(new JurisdictionRegistry(address(this))));
     }
 
     /// @notice Write the corpus for the TypeScript side.
@@ -141,7 +142,8 @@ contract PlanIdParityTest is Test {
     ///      true rather than aspirational.
     function test_implementationChangeChangesPlanId() public {
         address nextVintage = address(new PlanImplementationStub());
-        PlanFactory nextFactory = new PlanFactory(nextVintage);
+        PlanFactory nextFactory =
+            new PlanFactory(nextVintage, address(new JurisdictionRegistry(address(this))));
 
         PlanId.PlanTerms memory terms = _terms(3);
         bytes32 idOld = terms.derive();
