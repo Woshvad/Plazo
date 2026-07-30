@@ -45,7 +45,7 @@ Ordered by lead time. Start from the top.
 **How:** create an account at the Circle Console, then generate an API key and an entity secret.
 **Packages:** `@circle-fin/developer-controlled-wallets@10.8.0`, `@circle-fin/user-controlled-wallets@10.8.0`, `@circle-fin/modular-wallets-core@1.0.15`, `@circle-fin/w3s-pw-web-sdk@1.1.11`.
 
-**Do these three spikes the same afternoon** — each blocks decision D1, the signer-class to unsecured-cap policy:
+**These three spikes no longer block D1.** Phase 2 resolved the signer-class cap policy as a protocol mechanism instead: a bountied onchain `revalidate()` makes signer mutation something anyone can observe and anyone is paid to observe, so the cap does not depend on a vendor exposing a webhook. What the spikes still determine is the checkout ceremony — how many prompts a four-check strip costs a borrower — which Phase 4 owns.
 
 1. **Does the Circle Wallets SDK sign N typed-data payloads under one user-verification gesture?** There is no batch typed-data RPC anywhere, so a four-check strip is four prompts unless the wallet collapses them. Count the prompts against a real wallet, not `vm.sign`.
 2. **Does Circle's MSCA validator accept a merkle-wrapped ERC-1271 signature, or must Plazo ship its own ERC-6900 validation module?** The fork spike proved Arc USDC honours ERC-1271 end to end, so the mechanism exists — this asks whether Circle's default validator will use it.
@@ -59,7 +59,23 @@ If any answer is no, file it as a Circle feature request immediately rather than
 **RPC:** `https://rpc.testnet.arc.io` — already in use, and asserted on every CI run by `pnpm arc:verify`.
 **Faucet:** `https://faucet.circle.com`.
 
-**Why the faucet matters more than it looks.** Arc USDC's token movement runs through a native precompile at `0x1800…` that Foundry cannot execute, so **no fork test can complete a transfer**. Local tests use a mock token; anything asserting real value movement — the Phase 2 vertical slice's balance checks — needs funded testnet accounts. See `contracts/test/fork/FINDINGS.md`.
+**Why the faucet matters more than it looks.** Arc USDC's token movement runs through a native precompile at `0x1800…` that Foundry cannot execute, so **no fork test can complete a transfer** — and neither can a `forge script`, which executes its body locally before broadcasting. Every balance assertion in the 97-test local suite is therefore against a mock. See `contracts/test/fork/FINDINGS.md`.
+
+**This is the one outstanding item on the Phase 2 gate.** Everything for the live run is written and one command away:
+
+| | |
+|---|---|
+| Fund | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` at `https://faucet.circle.com` |
+| Deploy | ~0.35 USDC of gas |
+| Slice | ~400 USDC, which funds two plans, a borrower, a keeper and a merchant |
+
+```bash
+forge script script/Deploy.s.sol --root contracts --rpc-url arc_testnet --broadcast
+node tools/record-deployment.mjs 5042002
+pnpm --filter @plazo/arc-verify slice
+```
+
+Or trigger the `slice` job from the CI workflow, which does all three, with `PLAZO_TESTNET_DEPLOYER_KEY` set as a repository secret.
 
 ## 7. CCTP v2 and Gateway
 
@@ -95,9 +111,9 @@ Update as items land. Every unchecked box below has a working stub behind it.
 - [ ] Reg D counsel engaged
 - [ ] FCRA counsel engaged
 - [ ] Partner lender identified
-- [ ] Circle developer account created
-- [ ] Spike: N payloads, one gesture
-- [ ] Spike: MSCA validator vs ERC-6900 module
-- [ ] Spike: key-rotation webhook
-- [ ] Arc faucet funded (unblocks Phase 2 value-movement assertions)
+- [x] Circle developer account created
+- [ ] Spike: N payloads, one gesture — now a Phase 4 checkout-UX question, not a D1 blocker
+- [ ] Spike: MSCA validator vs ERC-6900 module — same
+- [ ] Spike: key-rotation webhook — superseded by the bountied `revalidate()`
+- [ ] **Arc faucet funded** — the one outstanding item on the Phase 2 gate
 - [ ] CCTP and Gateway addresses confirmed with Circle

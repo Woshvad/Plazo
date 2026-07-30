@@ -10,25 +10,31 @@ Every incumbent staples together four separate systems — a settlement rail, a 
 
 ## Status
 
-**Phase 1 of 9 complete.** The substrate every later phase compiles against exists and is verified. Phase 2 builds the mechanism.
+**Phase 2 of 9 complete.** The mechanism works: a borrower signs once, a third-party keeper collects and is paid, a drained borrower produces a delinquency signal with no operator involved, and the borrower cures and pays off through a rail that is never pausable.
 
 | | |
 |---|---|
 | Network | Arc testnet, chain `5042002` |
 | Arc mainnet | **Not live, no announced date.** There is no mainnet phase; readiness is a CI gate and a config flip. |
-| Contracts | `PlanFactory` and the derivation libraries. No collection logic yet — that is Phase 2. |
+| Contracts | `InstallmentPlan`, `PlanFactory`, `JurisdictionRegistry`, `IdentityFXRouter`. Not yet deployed — see below. |
 
-## What Phase 1 shipped
+## The mechanism
 
-**Plan identity, derived identically in two languages.** `planId` commits to the chain, the factory, the plan implementation and an origination nonce. A 128-row corpus is generated from Solidity and recomputed in TypeScript; reordering a single field in the type string fails 257 assertions.
+**A dated strip, signed once, collected by anyone.** Four EIP-3009 authorizations payable to a CREATE2 address that holds no code yet, each dated to its installment and single-use by nonce. The borrower's funds never leave their wallet until each due date, there is no allowance a spender could drain, and the plan has no owner, no pauser and no upgrade path.
 
-**An Arc verification gate.** Twenty-five assertions against the live network on every CI run and daily on a schedule — EIP-3009 typehashes, payee enforcement, validity windows, the domain separator derived rather than hardcoded, the pinned USDC implementation, EURC's corridor capability, and the `eth_getLogs` range the indexer chunks against.
+**A failed pull is recorded, not reverted.** A revert emits nothing, changes nothing and pays nobody — and grace transitions, Passport marks, NAV provisioning, the subordination gate and the kill switch all read that signal. So `collect()` discriminates every failure *before* it pulls and emits a typed bounce: a blocklisted borrower is a compliance event, a paused token is an infrastructure event, and only insufficient funds is a credit event.
 
-**An invariant suite written before the contracts it constrains.** Seventeen properties across the plan waterfall, the collection guarantee and share accounting, each carrying the Certora rule name it becomes. Each one is driven into failure deliberately, because a suite that has never failed is a suite that might not work.
+**Nobody profits from cranking a collection that cannot succeed**, so `markMissed()` is paid out of an escrow the plan is funded with at origination. It is reserved against every other crank, because a plan that arrives at delinquency unable to afford its own mark fails exactly where it matters.
 
-**A frozen event schema.** Committed by hash. No plan event carries a borrower address in an indexed position — wallet-keyed plan events would let anyone index the log stream into a permanent, public, uncorrectable purchase history.
+**The strip lives onchain.** Storing four signatures costs a few thousandths of a dollar on Arc, and it is what makes [`@plazo/keeper`](packages/keeper) need nothing but a key: no Plazo API, no index, no allowlist. If signatures lived on a server, "permissionless collection" would mean "permissioned on our API".
 
-**The design system**, ported once from the binding comp into a single Tailwind `@theme`, with a build failure on any local colour, font or blurred shadow in `apps/`.
+## Verification
+
+**Seventeen properties, written before the contracts, now bound to them.** Phase 1 proved the suite bites by driving each assertion into failure against a breakable stub. Phase 2 points the same properties at the real plan under a fuzzer, which found two defects nobody would have written a test for: `revalidate()` could starve the delinquency budget, and a pause nobody observed kept the grace clock running against a borrower who could not have paid.
+
+**Derivation parity, extended.** Two corpora generated from Solidity and recomputed in TypeScript — identity and clone address, then the terms commitment, the schedule, the authorization windows and the acceptance digest. Moving the jitter half-width by one hour fails 64 of 64 rows.
+
+**The Arc gate**, twenty-five assertions against the live network on every push and daily on a schedule, with the domain separator derived rather than hardcoded.
 
 ## What the fork spike settled
 
@@ -36,16 +42,17 @@ Full detail in [`contracts/test/fork/FINDINGS.md`](contracts/test/fork/FINDINGS.
 
 - **ERC-1271 works end to end on Arc USDC.** One-ceremony signing is mechanically available, so Flex's twelve-check strip needs no re-scoping.
 - **Arc USDC has no balance storage** — `balanceOf` reads the account's native balance over 10¹². Gas and the loan are literally one balance, which makes paymaster sponsorship a functional requirement rather than a UX nicety.
-- **Token movement is a native precompile Foundry cannot execute.** No fork test can complete a transfer; local tests need a mock token and real value movement needs funded testnet accounts.
-- **Measured pull gas is 140,885** — $0.00296, about 4× cheaper than the specification assumed. Recomputing the ops budget confirms a **$75** minimum ticket at a 21% stress margin, and shows keeper bounties dominate gas by an order of magnitude.
+- **Token movement is a native precompile Foundry cannot execute.** No fork test can complete a transfer, and neither can a `forge script`, which executes its body locally before broadcasting. Local tests run against a faithful mock; anything asserting real value movement runs from TypeScript against the live network.
+- **Measured pull gas is 140,885** — $0.00296, about 4× cheaper than the specification assumed. Recomputing the ops budget confirms a **$75** minimum ticket at a 21% stress margin, and shows keeper bounties dominate gas by an order of magnitude. The ticket floor is set by the keeper market, not by Arc's fees.
 
 ## Layout
 
 ```
 contracts/           Foundry. Apache-2.0.
-packages/plan-core/  Identity, nonce and clone-address derivation. Apache-2.0.
+packages/plan-core/  Identity, schedule and strip derivation. Apache-2.0.
 packages/events/     The frozen event schema. Apache-2.0.
-packages/arc-verify/ The Arc primitive gate. Apache-2.0.
+packages/arc-verify/ The Arc primitive gate and the live slice. Apache-2.0.
+packages/keeper/     The reference keeper. Apache-2.0.
 packages/ui/         Design system. Proprietary.
 apps/shell/          App chassis. Proprietary.
 services/indexer/    Ponder over the frozen schema. Proprietary.
@@ -88,11 +95,31 @@ pnpm --filter @plazo/shell dev
 
 The design system at `localhost:3000`.
 
+## Deploying and running the slice
+
+The local suite proves the logic. It cannot prove the token: Arc USDC moves through a native precompile Foundry cannot execute, so every balance assertion in the suite is against a mock. The slice runner is the other half — two plans originated with real signatures against real USDC.
+
+```bash
+forge script script/Deploy.s.sol --root contracts --rpc-url arc_testnet --broadcast
+```
+
+```bash
+node tools/record-deployment.mjs 5042002
+```
+
+The record comes from Foundry's broadcast receipts rather than from the script, because a script writes its file during local execution and would happily record a deployment that failed to send.
+
+```bash
+pnpm --filter @plazo/arc-verify slice
+```
+
+Needs `DEPLOYER_PRIVATE_KEY` on a funded account — about 0.35 USDC to deploy and about 400 USDC to run, from [`faucet.circle.com`](https://faucet.circle.com).
+
 ## Next
 
-Phase 2 is the vertical slice and the gate for everything downstream: one plan, four checks, a third-party keeper collecting and being paid, a deliberate bounce producing an unambiguous single-block delinquency signal with zero operator transactions, a cure, a payoff — against real Arc testnet USDC.
+Phase 3 is origination and underwriting: the checkout router, signed limit attestations, Tier 0, the merchant registry, the receivable with transfer hooks, and the parameter registry that turns every Appendix A launch hypothesis into something recalibrated from measured cohorts rather than redeployed.
 
-Third-party access acquisition runs alongside from here. See [`ACCESS.md`](ACCESS.md); nothing on that list blocks the build, and everything on it is stubbed behind an interface.
+Third-party access acquisition runs alongside. See [`ACCESS.md`](ACCESS.md); nothing on that list blocks the build, and everything on it is stubbed behind an interface.
 
 ## Licence
 

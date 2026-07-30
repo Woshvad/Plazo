@@ -124,15 +124,7 @@ contract StripParityTest is Test {
 
     function _rowJson(Row memory row) internal view returns (string memory) {
         return string.concat(
-            "{",
-            _termsJson(row),
-            ",",
-            _detailJson(row),
-            ",",
-            _derivedJson(row),
-            ",",
-            _scheduleJson(row),
-            "}"
+            "{", _termsJson(row), ",", _detailJson(row), ",", _derivedJson(row), ",", _scheduleJson(row), "}"
         );
     }
 
@@ -220,7 +212,9 @@ contract StripParityTest is Test {
                 sep,
                 '"',
                 vm.toString(
-                    PlanParams.collectBounty(_amount(row, i), PlanParams.GRACE_WINDOW, PlanParams.GRACE_WINDOW)
+                    PlanParams.collectBounty(
+                        _amount(row, i), PlanParams.GRACE_WINDOW, PlanParams.GRACE_WINDOW
+                    )
                 ),
                 '"'
             );
