@@ -12,11 +12,16 @@ Every incumbent staples together four separate systems — a settlement rail, a 
 
 **Phase 2 of 9 complete.** The mechanism works: a borrower signs once, a third-party keeper collects and is paid, a drained borrower produces a delinquency signal with no operator involved, and the borrower cures and pays off through a rail that is never pausable.
 
+Deployed and exercised on Arc testnet. Two plans originated against real USDC, sixteen assertions passed, and the published keeper — given only a factory address — found the outstanding crank, sent it, and was paid.
+
 | | |
 |---|---|
-| Network | Arc testnet, chain `5042002` |
+| Network | Arc testnet, chain `5042002`, from block `54513131` |
+| `PlanFactory` | [`0xb864308d…19150`](https://testnet.arcscan.app/address/0xb864308d7214f98d60c5811f451fa96a49619150) |
+| `InstallmentPlan` | [`0xe82308b3…Efd14`](https://testnet.arcscan.app/address/0xe82308b350013fa0dcc11fef10b3f0bf684efd14) — the implementation clones point at |
+| `JurisdictionRegistry` | [`0x4dcde524…2322`](https://testnet.arcscan.app/address/0x4dcde524f0566f583fab237d7ceed2fe8fb02322) |
+| `IdentityFXRouter` | [`0xc61dec55…8867c`](https://testnet.arcscan.app/address/0xc61dec55ed916f97006fc1b01695ee9297a8867c) |
 | Arc mainnet | **Not live, no announced date.** There is no mainnet phase; readiness is a CI gate and a config flip. |
-| Contracts | `InstallmentPlan`, `PlanFactory`, `JurisdictionRegistry`, `IdentityFXRouter`. Not yet deployed — see below. |
 
 ## The mechanism
 
@@ -95,9 +100,39 @@ pnpm --filter @plazo/shell dev
 
 The design system at `localhost:3000`.
 
-## Deploying and running the slice
+## The live slice
 
-The local suite proves the logic. It cannot prove the token: Arc USDC moves through a native precompile Foundry cannot execute, so every balance assertion in the suite is against a mock. The slice runner is the other half — two plans originated with real signatures against real USDC.
+The local suite proves the logic. It cannot prove the token: Arc USDC moves through a native precompile Foundry cannot execute, so every balance assertion in the suite is against a mock. The slice runner is the other half.
+
+```
+Plan A — origination, third-party collection, bounce, cure, payoff
+  ok  TypeScript and Solidity agree on the payee address (0x50D71E535D7c86aD90B392594Aa657Cb7bc6bf27)
+  ok  the clone landed on the address the borrower signed against
+  ok  the down payment cleared and debited exactly one installment (18.75 USDC)
+  ok  a quarter of the principal retired
+  ok  a third-party keeper collected and was paid the quoted bounty
+      (0.41625 USDC bounty, 0.00573145 USDC gas out of the same balance)
+  ok  a pull against an empty wallet bounced instead of reverting
+  ok  the plan moved to Grace
+  ok  the same check cleared once funds arrived
+  ok  the plan cured
+  ok  the plan is Repaid
+
+Plan B — the delinquency signal, with no operator involved
+  ok  an address with no relationship to the plan recorded the delinquency
+  ok  the marker was paid out of the plan's own escrow
+  ok  the plan is Delinquent and carries a late fee
+```
+
+Then, separately, `@plazo/keeper` with a factory address and a key and nothing else:
+
+```
+found 3 plan(s) between block 54513131 and 54514737
+send  markMissed(0) on 0xbCdCaf6d8d2AeF511B4Bef03ab7456c30b925663 — grace expired uncured
+1 action(s) worth 0.1 USDC, 1 transaction(s) sent
+```
+
+To reproduce:
 
 ```bash
 forge script script/Deploy.s.sol --root contracts --rpc-url arc_testnet --broadcast
@@ -113,7 +148,9 @@ The record comes from Foundry's broadcast receipts rather than from the script, 
 pnpm --filter @plazo/arc-verify slice
 ```
 
-Needs `DEPLOYER_PRIVATE_KEY` on a funded account — about 0.35 USDC to deploy and about 400 USDC to run, from [`faucet.circle.com`](https://faucet.circle.com).
+Needs `DEPLOYER_PRIVATE_KEY` on an account holding about 20 USDC from [`faucet.circle.com`](https://faucet.circle.com) — 0.35 to deploy and roughly one installment of working float, because the settlement recipient is the funding account and the same dollars go round the loop.
+
+**Set an explicit gas limit on anything that moves close to a whole balance.** `eth_estimateGas` prepays its upper bound out of the sender's balance, and on Arc that balance *is* the token balance — so a transfer of 18.75 from an account holding 18.88 reverts with `ERC20: transfer amount exceeds balance` while being perfectly solvent. See [finding 8](contracts/test/fork/FINDINGS.md).
 
 ## Next
 

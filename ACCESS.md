@@ -61,13 +61,16 @@ If any answer is no, file it as a Circle feature request immediately rather than
 
 **Why the faucet matters more than it looks.** Arc USDC's token movement runs through a native precompile at `0x1800…` that Foundry cannot execute, so **no fork test can complete a transfer** — and neither can a `forge script`, which executes its body locally before broadcasting. Every balance assertion in the 97-test local suite is therefore against a mock. See `contracts/test/fork/FINDINGS.md`.
 
-**This is the one outstanding item on the Phase 2 gate.** Everything for the live run is written and one command away:
+**Done — the Phase 2 gate is closed.** The stack is deployed on chain 5042002 and the slice has run against real USDC.
 
 | | |
 |---|---|
-| Fund | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` at `https://faucet.circle.com` |
-| Deploy | ~0.35 USDC of gas |
-| Slice | ~400 USDC, which funds two plans, a borrower, a keeper and a merchant |
+| Funded | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2`, 20 USDC |
+| Deployed | `PlanFactory 0xb864308d7214f98d60c5811f451fa96a49619150`, block 54513131 |
+| Slice | 16 assertions across two plans |
+
+About 20 USDC is enough for a full run: the settlement recipient is the funding
+account, so the working float recycles rather than accumulating. To re-run:
 
 ```bash
 forge script script/Deploy.s.sol --root contracts --rpc-url arc_testnet --broadcast
@@ -115,5 +118,5 @@ Update as items land. Every unchecked box below has a working stub behind it.
 - [ ] Spike: N payloads, one gesture — now a Phase 4 checkout-UX question, not a D1 blocker
 - [ ] Spike: MSCA validator vs ERC-6900 module — same
 - [ ] Spike: key-rotation webhook — superseded by the bountied `revalidate()`
-- [ ] **Arc faucet funded** — the one outstanding item on the Phase 2 gate
+- [x] **Arc faucet funded, stack deployed, slice run** — the Phase 2 gate is closed
 - [ ] CCTP and Gateway addresses confirmed with Circle

@@ -120,10 +120,64 @@ Against a 0.5% ops slice:
 
 | Question | Why not | Where it goes |
 |---|---|---|
-| Circle Wallets: N payloads under one gesture | Needs a Circle developer account | `ACCESS.md`; blocks D1 |
-| Circle MSCA validator vs a Plazo ERC-6900 module | Same | `ACCESS.md`; blocks D1 |
-| Circle key-rotation / recovery webhook | Same | `ACCESS.md`; blocks D1 and §3.4 revalidation |
+| Circle Wallets: N payloads under one gesture | Needs a Circle developer account | `ACCESS.md`; Phase 4 checkout UX. **No longer blocks D1** — see the addendum. |
+| Circle MSCA validator vs a Plazo ERC-6900 module | Same | `ACCESS.md`; Phase 4 |
+| Circle key-rotation / recovery webhook | Same | Superseded: Phase 2 made signer mutation an onchain observation anyone is paid to make |
 | Arc testnet reset policy | No published statement exists | Mitigated by continuous off-chain snapshotting, not resolved |
-| Real value movement under the accounted `collect()` | Requires the precompile, so requires funded testnet accounts | Phase 2 gate |
+| Real value movement under the accounted `collect()` | Requires the precompile, so requires funded testnet accounts | **Closed 2026-07-31** — see the addendum |
 
 D1 — the signer-class to unsecured-cap policy — still cannot be closed, but the shape of the answer changed: ERC-1271 working means smart accounts are viable, so the question is now about *which* smart account and how signer mutation is observed, not whether the path exists at all.
+
+---
+
+# Addendum — what the live run added (Phase 2, 2026-07-31)
+
+The spike above ran on a fork. This section is from the real network: the Phase 2 stack deployed to chain 5042002, two plans originated against real Arc USDC, sixteen assertions passed. Everything here is a consequence of gas and the loan being the same balance, and none of it is visible locally.
+
+## 8. `eth_estimateGas` cannot be used near an account's full balance
+
+A `transferFrom` of 18.75 USDC from an account holding 18.88 reverted with `ERC20: transfer amount exceeds balance`. The account was solvent. The estimator was not.
+
+`eth_estimateGas` binary-searches upward and prepays its **upper bound** out of the sender's balance before execution — and on Arc that balance *is* the token balance. A 30M-gas ceiling at 90 gwei removes 2.7 USDC before the transfer runs, so the token sees an account 2.7 short and reverts.
+
+The failure is indistinguishable from insolvency in the error string, which is the dangerous part: it looks like a balance bug in the contract.
+
+**Anything that moves close to a whole balance on Arc must set an explicit gas limit.** The slice runner pins one on every write; `cast` needs `--gas-limit`. This will bite any sweep, any payoff-in-full, and any borrower curing with exactly the installment they owe.
+
+Reproduce: `packages/arc-verify/src/slice.ts`, the comment on `send`.
+
+## 9. A keeper's bounty cannot be checked with `balanceOf`
+
+The crank's gas comes out of the same balance the bounty is paid into, so the ERC-20 delta is `bounty − gas`, and the 6-decimal view truncates whatever is left. The live assertion reads `eth_getBalance` — the 18-decimal native figure — and checks it exactly:
+
+```
+after == before + bounty × 10¹² − gasUsed × effectiveGasPrice
+```
+
+Measured: a 0.41625 USDC bounty against 0.00573145 USDC of gas, on the same account, in the same transaction.
+
+Any accounting that reports keeper earnings from an ERC-20 balance on Arc is reporting earnings net of an unrelated cost.
+
+## 10. A `forge script` cannot originate a plan
+
+Not only fork *tests*. `forge script` executes its body locally to collect the transactions it will broadcast, so anything touching USDC hits the precompile and reverts before it can be sent — including `originate`, which pulls the mark escrow. `--skip-simulation` does not help; it skips the onchain simulation, not the local execution.
+
+Contract creation moves no tokens, so deployment works. Everything else runs from TypeScript through viem, which never executes locally at all.
+
+A related trap: a script that writes its own deployment record writes it during that local execution, so **a run that fails at the send step still produces a file naming addresses that hold no code**. The record now comes from Foundry's broadcast receipts via `tools/record-deployment.mjs`.
+
+## 11. Shedding is not optional to handle, at any request rate
+
+The slice lost a run to a shed `balanceOf` on the third account it read — five requests in. `arc-verify` and the keeper already carried the retry; the slice did not, and the failure surfaced as an unhandled RPC error mid-run with two plans half-originated.
+
+## What the live run proved that no local test can
+
+| Claim | Evidence |
+|---|---|
+| A real EIP-3009 signature over a real digest clears against the real token | 18.75 USDC debited from the borrower, exactly |
+| The CREATE2 payee is where the clone lands | `0x50D71E53…` and `0xbCdCaf6d…`, predicted in TypeScript before either existed |
+| A third-party keeper is paid | 0.41625 USDC to an address holding no role |
+| A drained borrower bounces rather than reverting | `Grace`, with the installment recorded `Bounced` |
+| The plan cures and reaches `Repaid` | Both, with no fee outstanding |
+| The delinquency signal is written by a stranger and paid for | `markMissed` from an unrelated address, out of the plan's own escrow |
+| **The published keeper needs nothing but the chain** | `@plazo/keeper` given only a factory address found all three plans, identified the one crank worth doing, sent it, and was paid — then reported nothing left to do |

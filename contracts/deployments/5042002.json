@@ -1,0 +1,9 @@
+{
+  "chainId": 5042002,
+  "block": 54513131,
+  "token": "0x3600000000000000000000000000000000000000",
+  "jurisdictionRegistry": "0x4dcde524f0566f583fab237d7ceed2fe8fb02322",
+  "fxRouter": "0xc61dec55ed916f97006fc1b01695ee9297a8867c",
+  "installmentPlan": "0xe82308b350013fa0dcc11fef10b3f0bf684efd14",
+  "planFactory": "0xb864308d7214f98d60c5811f451fa96a49619150"
+}
