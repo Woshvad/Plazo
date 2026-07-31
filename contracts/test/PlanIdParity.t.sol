@@ -33,7 +33,8 @@ contract PlanIdParityTest is Test {
 
     function setUp() public {
         implementation = address(new PlanImplementationStub());
-        factory = new PlanFactory(implementation, address(new JurisdictionRegistry(address(this))));
+        factory = new PlanFactory(implementation, address(new JurisdictionRegistry(address(this))), address(this));
+        factory.setOriginator(address(this));
     }
 
     /// @notice Write the corpus for the TypeScript side.
@@ -143,7 +144,7 @@ contract PlanIdParityTest is Test {
     function test_implementationChangeChangesPlanId() public {
         address nextVintage = address(new PlanImplementationStub());
         PlanFactory nextFactory =
-            new PlanFactory(nextVintage, address(new JurisdictionRegistry(address(this))));
+            new PlanFactory(nextVintage, address(new JurisdictionRegistry(address(this))), address(this));
 
         PlanId.PlanTerms memory terms = _terms(3);
         bytes32 idOld = terms.derive();

@@ -22,6 +22,7 @@ contract ConfigurablePlan is IInstallmentPlan {
     uint256 public feesOutstanding;
     uint256 public feesPaid;
     uint256 public totalCollected;
+    uint256 public forwarded;
     uint256 public refundCredit;
 
     mapping(uint256 => uint256) internal _dueDate;
@@ -57,6 +58,7 @@ contract ConfigurablePlan is IInstallmentPlan {
     ) external {
         outstandingPrincipal = outstanding;
         totalCollected = collected;
+        forwarded = collected;
         feesPaid = paid;
         feesOutstanding = owed;
         refundCredit = credit;

@@ -50,17 +50,18 @@ abstract contract PlanFixture is Test {
     ///      anywhere in the collection path.
     TermsDetail.SignerClass internal signerClass = TermsDetail.SignerClass.EOA;
 
-    function _deployStack() internal {
+    function _deployStack() internal virtual {
         borrower = vm.addr(BORROWER_KEY);
 
         usdc = new MockArcUsdc();
         jurisdictions = new JurisdictionRegistry(address(this));
         router = new IdentityFXRouter(address(usdc));
         implementation = address(new InstallmentPlan());
-        factory = new PlanFactory(implementation, address(jurisdictions));
+        factory = new PlanFactory(implementation, address(jurisdictions), address(this));
+        factory.setOriginator(address(this));
     }
 
-    function _detail() internal view returns (TermsDetail.Detail memory) {
+    function _detail() internal view virtual returns (TermsDetail.Detail memory) {
         return TermsDetail.Detail({
             jurisdiction: jurisdictions.DEFAULT_JURISDICTION(),
             lineItemsHash: keccak256("one pair of boots"),

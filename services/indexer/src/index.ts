@@ -301,3 +301,12 @@ ponder.on("InstallmentPlan:RefundCredited", async ({event, context}) => {
         : 0n,
   }));
 });
+
+/**
+ * The origination plane's handlers.
+ *
+ * Imported for side effects — `ponder.on` registers on call — and kept in a separate
+ * module because the two planes answer different questions. This file is "what
+ * happened to a plan"; `origination.ts` is "what the book did about it".
+ */
+import "./origination.js";

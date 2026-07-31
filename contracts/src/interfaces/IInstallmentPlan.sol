@@ -121,6 +121,15 @@ interface IInstallmentPlan {
     function feesOutstanding() external view returns (uint256);
     function feesPaid() external view returns (uint256);
     function totalCollected() external view returns (uint256);
+
+    /// @notice Cumulative value sent to the plan's settlement recipient.
+    /// @dev DEC-08. The funding book books its inflows from this rather than from its
+    ///      own token balance: a plan settles with a bare `transfer` and notifies
+    ///      nobody, and reconciling by balance delta would put a donation into NAV.
+    ///      Distinct from `totalCollected`, which is what the borrower's debt fell by
+    ///      — the difference is the keeper's bounty, a servicing cost the book
+    ///      carries.
+    function forwarded() external view returns (uint256);
     /// @notice Merchant refund applied to the plan, suppressing tail-check collection.
     /// @dev Fixed-value checks cannot be reduced — you cannot turn check #3 from $50
     ///      into $20 — and mandatory re-signing fails whenever the borrower is

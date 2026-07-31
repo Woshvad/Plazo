@@ -153,6 +153,31 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@26.1.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6)
 
+  services/origination:
+    dependencies:
+      '@plazo/events':
+        specifier: workspace:*
+        version: link:../../packages/events
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../../packages/plan-core
+      hono:
+        specifier: 4.12.32
+        version: 4.12.32
+      viem:
+        specifier: 2.55.10
+        version: 2.55.10(typescript@5.9.3)
+    devDependencies:
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@26.1.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6)
+
 packages:
 
   '@adraffy/ens-normalize@1.11.1':

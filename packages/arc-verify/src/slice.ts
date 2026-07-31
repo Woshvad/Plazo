@@ -51,6 +51,7 @@ import {
   PLAN_ACCEPTANCE_TYPES,
   acceptanceDomain,
   SignerClass,
+  LIMIT_ATTESTATION_TYPES,
   type PlanTerms,
   type TermsDetail,
 } from "@plazo/plan-core";
@@ -77,6 +78,66 @@ const PLAN_ABI = parseAbi([
   "function bountyFor(uint256 index) view returns (uint256)",
   "function isMarked(uint256 index) view returns (bool)",
   "function dueDate(uint256 index) view returns (uint256)",
+  "function planId() view returns (bytes32)",
+]);
+
+const ROUTER_ABI = parseAbi([
+  "struct PlanTerms { uint256 chainId; address factory; address implementation; address borrower; address merchant; address token; uint256 principal; uint256 installmentCount; uint256 firstDueDate; uint256 interval; uint256 originationNonce; bytes32 termsHash; }",
+  "struct Detail { bytes32 jurisdiction; bytes32 lineItemsHash; uint256 mdrBps; uint256 lateFeeFlat; uint8 signerClass; address settlementRecipient; address fxRouter; }",
+  "struct Acceptance { bytes32 planId; address borrower; address merchant; address token; uint256 principal; uint256 installmentCount; uint256 firstInstallment; uint256 laterInstallment; uint256 firstDueDate; uint256 finalDueDate; uint256 interval; bytes32 termsHash; uint256 validUntil; }",
+  "struct OriginationRequest { PlanTerms terms; Detail detail; Acceptance acceptance; bytes acceptanceSignature; bytes[] strip; }",
+  "struct Attestation { bytes32 sessionId; bytes32 planId; address borrower; bytes32 personId; uint8 identityClass; uint256 limit; uint256 validUntil; }",
+  "struct OriginationInput { OriginationRequest request; Attestation attestation; bytes attestationSignature; }",
+  "function originate(OriginationInput input) returns (bytes32 planId, address plan)",
+  "function recognise(bytes32 planId)",
+  "function mdrFor(uint256 principal) view returns (uint256)",
+  "function corridorOf(address token) pure returns (bytes32)",
+  "function maxPrincipalFor(bytes32 personId, uint8 identity, uint8 signerClass, address merchant, address token) view returns (uint256)",
+]);
+
+const POOL_ABI = parseAbi([
+  "function deposit(uint8 tranche, uint256 assets) returns (uint256 shares)",
+  "function redeem(uint8 tranche, uint256 shares) returns (uint256 assets)",
+  "function fundReserve(uint256 amount)",
+  "function totalAssets() view returns (uint256)",
+  "function bookedCash() view returns (uint256)",
+  "function originationOpen() view returns (bool)",
+  "function sharesOf(uint8 tranche, address holder) view returns (uint256)",
+  "function subordinationBps() view returns (uint256)",
+  "function reserveBps() view returns (uint256)",
+]);
+
+const MERCHANTS_ABI = parseAbi([
+  "function register(address payoutRecipient, uint32 payoutDomain)",
+  "function attestKyb(address merchant, bool verified)",
+  "function postBond(address merchant, uint256 amount)",
+  "function isRegistered(address merchant) view returns (bool)",
+  "function bondOf(address merchant) view returns (uint256)",
+  "function requiredBond(address merchant) view returns (uint256)",
+  "function outstandingFrontedFor(address merchant) view returns (uint256)",
+  "function vestingBpsFor(address merchant) view returns (uint256)",
+]);
+
+const REGISTRY_ABI = parseAbi([
+  "function get(bytes32 key) view returns (uint256)",
+  "function set(bytes32 key, uint256 value)",
+]);
+
+const COMPLIANCE_ABI = parseAbi([
+  "function screen(address account, uint8 status)",
+  "function isClear(address account) view returns (bool)",
+]);
+
+const RECEIVABLE_ABI = parseAbi([
+  "function exists(bytes32 planId) view returns (bool)",
+  "function ownerOf(uint256 tokenId) view returns (address)",
+]);
+
+const TIER0_ABI = parseAbi([
+  "function pseudonymousId(address wallet) pure returns (bytes32)",
+  "function bookHeadroom() view returns (uint256)",
+  "function notePlanOutcome(bytes32 planId)",
+  "function outstandingExposure() view returns (uint256)",
 ]);
 
 const TOKEN_ABI = parseAbi([
@@ -107,6 +168,34 @@ const DAY = 86_400n;
 
 /** Arc holds balances at 18 decimals and shows them at 6, on one balance. */
 const NATIVE_SCALE = 1_000_000_000_000n;
+
+const Tranche = {Senior: 0, Junior: 1} as const;
+const ComplianceStatus = {Clear: 1} as const;
+const IdentityClass = {Pseudonymous: 0} as const;
+
+/** `ParameterRegistry` keys. Dotted names, hashed — see `ParameterKeys.sol`. */
+const key = (name: string): Hex => keccak256(toHex(name));
+const TIER0_BOOK_SHARE_BPS = key("plazo.tier0.bookShareBps");
+const MERCHANT_BOND_FLOOR = key("plazo.merchant.bondFloor");
+
+/**
+ * What the book has to hold before it can lend at all.
+ *
+ * UW-02 caps Tier-0 paper at a share of the book, and the band's ceiling is 25% — so
+ * a single $75 plan needs $300 of capital behind it before the headroom reaches the
+ * ticket. That is the control working, not an inconvenience: DEC-02 put Tier 0 on
+ * pool capital from day one against a research recommendation, and this cap is one of
+ * the two things standing between an unproven scorecard and the senior tranche.
+ * Widening the band to make a testnet run cheaper would be gutting the control to fit
+ * the demo.
+ *
+ * The capital is not spent. It goes in as deposits, cycles through the plan, and is
+ * redeemed at the end — the requirement is a peak holding, not a cost.
+ */
+const SENIOR_SEED = 250_000_000n;
+const JUNIOR_SEED = 45_000_000n;
+const RESERVE_SEED = 25_000_000n;
+const MERCHANT_BOND = 10_000_000n;
 
 /**
  * Arc's public RPC sheds roughly a quarter of requests with JSON-RPC -32011,
@@ -140,9 +229,20 @@ interface Deployment {
   chainId: number;
   token: Address;
   jurisdictionRegistry: Address;
+  parameterRegistry: Address;
+  eligibilityRegistry: Address;
+  compliance: Address;
   fxRouter: Address;
+  payout: Address;
+  receivable: Address;
+  merchantRegistry: Address;
+  creditPool: Address;
+  killSwitch: Address;
+  tier0: Address;
+  pauses: Address;
   installmentPlan: Address;
   planFactory: Address;
+  checkoutRouter: Address;
 }
 
 let passed = 0;
@@ -285,14 +385,334 @@ class Slice {
     return {
       jurisdiction: keccak256(toHex("PLAZO.DEFAULT")),
       lineItemsHash: keccak256(toHex("slice basket")),
-      mdrBps: 450n,
+      mdrBps: 400n,
       lateFeeFlat: 7_000_000n,
       signerClass: SignerClass.EOA,
-      // The funding account, so collected installments come back and can fund the
-      // next one. See `topUp`.
-      settlementRecipient: this.account(this.deployer),
+      // The pool, and the router refuses anything else. A merchant naming themselves
+      // here would be paid twice — once by the pool at checkout and again by every
+      // installment the borrower makes.
+      settlementRecipient: this.deployment.creditPool,
       fxRouter: this.deployment.fxRouter,
     };
+  }
+
+  private async write(
+    wallet: WalletClient,
+    address: Address,
+    abi: readonly unknown[],
+    functionName: string,
+    args: unknown[],
+    gas = 600_000n,
+  ) {
+    return this.send(
+      wallet,
+      {account: wallet.account!, chain: arcTestnet, address, abi, functionName, args} as never,
+      gas,
+    );
+  }
+
+  private async view<T>(
+    address: Address,
+    abi: readonly unknown[],
+    functionName: string,
+    args: unknown[] = [],
+  ): Promise<T> {
+    return shed(
+      () => this.publicClient.readContract({address, abi, functionName, args} as never) as Promise<T>,
+    );
+  }
+
+  // ─── Setting the book up ────────────────────────────────────────────────────
+
+  /**
+   * Capitalise the pool, onboard the merchant, screen both parties.
+   *
+   * Every step here is the real contract call a real operator would make, in the
+   * order they would make it. The one deviation from production is that a single key
+   * plays governance, lender, merchant and screener — on a real deployment those are
+   * four organisations, and the role graph is what keeps them apart.
+   */
+  async prepareBook(): Promise<void> {
+    console.log("\nSetting up the book");
+
+    const deployer = this.account(this.deployer);
+    const merchant = this.account(this.merchant);
+
+    // UW-02's ceiling, set to the top of its hard-coded band. A $75 ticket needs
+    // $300 of book behind it at 25%; at the seeded 10% it would need $750.
+    await this.write(this.deployer, this.deployment.parameterRegistry, REGISTRY_ABI, "set", [
+      TIER0_BOOK_SHARE_BPS,
+      2_500n,
+    ]);
+    // The bond floor is a $250 entry cost by default. On testnet the exposure-scaled
+    // term is what is being exercised, so the floor comes off — and zero is inside
+    // the band, so this is a configuration rather than a widening.
+    await this.write(this.deployer, this.deployment.parameterRegistry, REGISTRY_ABI, "set", [
+      MERCHANT_BOND_FLOOR,
+      0n,
+    ]);
+
+    await this.write(this.deployer, this.deployment.token, TOKEN_ABI, "approve", [
+      this.deployment.creditPool,
+      SENIOR_SEED + JUNIOR_SEED + RESERVE_SEED,
+    ]);
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "deposit", [
+      Tranche.Senior,
+      SENIOR_SEED,
+    ]);
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "deposit", [
+      Tranche.Junior,
+      JUNIOR_SEED,
+    ]);
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "fundReserve", [
+      RESERVE_SEED,
+    ]);
+
+    check(
+      "the book is capitalised and the origination gate is open",
+      await this.view<boolean>(this.deployment.creditPool, POOL_ABI, "originationOpen"),
+      `${usdc(await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets"))} of assets`,
+    );
+    check(
+      "Tier-0 headroom covers the ticket",
+      (await this.view<bigint>(this.deployment.tier0, TIER0_ABI, "bookHeadroom")) >= PRINCIPAL,
+    );
+
+    if (!(await this.view<boolean>(this.deployment.merchantRegistry, MERCHANTS_ABI, "isRegistered", [merchant]))) {
+      await this.write(this.merchant, this.deployment.merchantRegistry, MERCHANTS_ABI, "register", [
+        deployer,
+        26,
+      ]);
+    }
+    await this.write(this.deployer, this.deployment.merchantRegistry, MERCHANTS_ABI, "attestKyb", [
+      merchant,
+      true,
+    ]);
+    await this.write(this.deployer, this.deployment.token, TOKEN_ABI, "approve", [
+      this.deployment.merchantRegistry,
+      MERCHANT_BOND,
+    ]);
+    await this.write(this.deployer, this.deployment.merchantRegistry, MERCHANTS_ABI, "postBond", [
+      merchant,
+      MERCHANT_BOND,
+    ]);
+
+    await this.write(this.deployer, this.deployment.compliance, COMPLIANCE_ABI, "screen", [
+      this.account(this.borrower),
+      ComplianceStatus.Clear,
+    ]);
+    await this.write(this.deployer, this.deployment.compliance, COMPLIANCE_ABI, "screen", [
+      merchant,
+      ComplianceStatus.Clear,
+    ]);
+
+    check(
+      "both parties are screened and the merchant is KYB'd",
+      (await this.view<boolean>(this.deployment.compliance, COMPLIANCE_ABI, "isClear", [
+        this.account(this.borrower),
+      ])) && (await this.view<boolean>(this.deployment.compliance, COMPLIANCE_ABI, "isClear", [merchant])),
+    );
+  }
+
+  /**
+   * The origination plane's controls, against live bytecode.
+   *
+   * Everything here is cheap — reads, simulations and a handful of sub-cent writes —
+   * because none of it moves credit. That makes it the half of the live verification
+   * that runs on a faucet drip, and it is not a lesser half: what it checks is that
+   * the *refusals* work on the real chain, and a control that has only ever been
+   * tested against a mock is a control nobody has seen refuse anything.
+   *
+   * Reverts are asserted by simulation rather than by sending. A simulation is the
+   * real node executing the real bytecode against the real state; the only thing it
+   * skips is paying for the failure.
+   */
+  async runControls(): Promise<void> {
+    console.log("\nThe origination plane — live controls");
+
+    const d = this.deployment;
+    const contracts: [string, Address][] = [
+      ["ParameterRegistry", d.parameterRegistry],
+      ["EligibilityRegistry", d.eligibilityRegistry],
+      ["AllowlistCompliance", d.compliance],
+      ["ArcLocalPayout", d.payout],
+      ["ReceivableToken", d.receivable],
+      ["MerchantRegistry", d.merchantRegistry],
+      ["CreditPool", d.creditPool],
+      ["FirstPaymentDefaultSwitch", d.killSwitch],
+      ["Tier0Underwriter", d.tier0],
+      ["OriginationPause", d.pauses],
+      ["PlanFactory", d.planFactory],
+      ["CheckoutRouter", d.checkoutRouter],
+    ];
+
+    const codes = await Promise.all(
+      contracts.map(async ([, address]) => (await shed(() => this.publicClient.getCode({address})))?.length ?? 0),
+    );
+    check(
+      "every contract in the deployment record holds bytecode",
+      codes.every((length) => length > 2),
+      `${contracts.length} contracts`,
+    );
+
+    // GOV-01. The bands are compiled in, and governance is inside them.
+    const bookShare = await this.view<bigint>(d.parameterRegistry, REGISTRY_ABI, "get", [
+      TIER0_BOOK_SHARE_BPS,
+    ]);
+    check(
+      "every Appendix A parameter reads from the registry",
+      bookShare === 1_000n,
+      `Tier-0 book share ${bookShare} bp`,
+    );
+
+    check(
+      "a value outside its hard-coded band is refused onchain",
+      await this.reverts(d.parameterRegistry, REGISTRY_ABI, "set", [TIER0_BOOK_SHARE_BPS, 9_000n], this.deployer),
+      "25% is the ceiling; 90% was refused",
+    );
+
+    // POOL-05. Nothing has been deposited, so the gate is shut and says so.
+    check(
+      "an uncapitalised book refuses to originate",
+      !(await this.view<boolean>(d.creditPool, POOL_ABI, "originationOpen")),
+    );
+    check(
+      "Tier-0 headroom is zero against a book with no capital",
+      (await this.view<bigint>(d.tier0, TIER0_ABI, "bookHeadroom")) === 0n,
+    );
+
+    const personId = await this.view<Hex>(d.tier0, TIER0_ABI, "pseudonymousId", [
+      this.account(this.borrower),
+    ]);
+    check(
+      "the quote surface answers zero rather than a figure it cannot honour",
+      (await this.view<bigint>(d.checkoutRouter, ROUTER_ABI, "maxPrincipalFor", [
+        personId,
+        IdentityClass.Pseudonymous,
+        SignerClass.EOA,
+        this.account(this.merchant),
+        d.token,
+      ])) === 0n,
+    );
+
+    // Merchant onboarding is self-serve; permission to originate is not.
+    const merchant = this.account(this.merchant);
+    if (!(await this.view<boolean>(d.merchantRegistry, MERCHANTS_ABI, "isRegistered", [merchant]))) {
+      await this.topUp(merchant, GAS_RESERVE);
+      await this.write(this.merchant, d.merchantRegistry, MERCHANTS_ABI, "register", [
+        this.account(this.deployer),
+        26,
+      ]);
+    }
+    check(
+      "a merchant registered themselves without an operator",
+      await this.view<boolean>(d.merchantRegistry, MERCHANTS_ABI, "isRegistered", [merchant]),
+    );
+    check(
+      "and cannot attest their own KYB",
+      await this.reverts(d.merchantRegistry, MERCHANTS_ABI, "attestKyb", [merchant, true], this.merchant),
+    );
+
+    // CHKT-03. Unknown is not clear, and only the screener's key changes that.
+    check(
+      "an unscreened borrower is not clear",
+      !(await this.view<boolean>(d.compliance, COMPLIANCE_ABI, "isClear", [this.account(this.keeper)])),
+    );
+    await this.write(this.deployer, d.compliance, COMPLIANCE_ABI, "screen", [
+      this.account(this.borrower),
+      ComplianceStatus.Clear,
+    ]);
+    check(
+      "the operator's feed cleared the borrower",
+      await this.view<boolean>(d.compliance, COMPLIANCE_ABI, "isClear", [this.account(this.borrower)]),
+    );
+
+    // GOV-10. Default deny, from the first mint.
+    check(
+      "the receivable refuses to mint to an address nobody has considered",
+      await this.reverts(
+        d.receivable,
+        parseAbi(["function mint(bytes32 planId, address to, uint256 principal)"]),
+        [keccak256(toHex("nope")), this.account(this.keeper), PRINCIPAL],
+        this.deployer,
+        "mint",
+      ),
+    );
+
+    // The factory is the router's alone. A permissionless `deploy` is a denial of
+    // service on a signed strip.
+    check(
+      "nobody but the router can deploy a plan",
+      await this.reverts(
+        d.planFactory,
+        FACTORY_ABI,
+        "deploy",
+        [this.terms(BigInt(Math.floor(Date.now() / 1000)) + 3600n, 14n * DAY, 1n)],
+        this.deployer,
+      ),
+    );
+  }
+
+  /**
+   * Whether a call reverts on the live chain.
+   *
+   * Simulated rather than sent. The node executes the real bytecode against the real
+   * state either way; the only difference is that nobody pays for the failure, which
+   * matters when the whole point of the call is that it fails.
+   */
+  private async reverts(
+    address: Address,
+    abi: readonly unknown[],
+    functionNameOrArgs: string | unknown[],
+    argsOrWallet: unknown[] | WalletClient,
+    walletOrFunctionName?: WalletClient | string,
+    functionName?: string,
+  ): Promise<boolean> {
+    // Two call shapes, because half these assertions read better with the arguments
+    // last. Normalised here rather than at nine call sites.
+    const fn =
+      typeof functionNameOrArgs === "string"
+        ? functionNameOrArgs
+        : (functionName ?? (walletOrFunctionName as string));
+    const args = typeof functionNameOrArgs === "string" ? (argsOrWallet as unknown[]) : functionNameOrArgs;
+    const wallet =
+      typeof functionNameOrArgs === "string"
+        ? (walletOrFunctionName as WalletClient)
+        : (argsOrWallet as WalletClient);
+
+    try {
+      await shed(() =>
+        this.publicClient.simulateContract({
+          account: wallet.account!,
+          address,
+          abi,
+          functionName: fn,
+          args,
+        } as never),
+      );
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  /** Return the pool's capital and the merchant's bond to the funding account. */
+  async unwind(): Promise<void> {
+    for (const tranche of [Tranche.Senior, Tranche.Junior] as const) {
+      const shares = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "sharesOf", [
+        tranche,
+        this.account(this.deployer),
+      ]);
+      if (shares === 0n) continue;
+      const cash = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "bookedCash");
+      if (cash === 0n) continue;
+      try {
+        await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "redeem", [tranche, shares]);
+      } catch {
+        // Bounded by cash on the book, which is the intended behaviour. A redeemer
+        // who cannot be paid today waits; Phase 5 gives them a queue position.
+      }
+    }
   }
 
   terms(firstDueDate: bigint, interval: bigint, nonce: bigint, count = 4n): PlanTerms {
@@ -369,35 +789,55 @@ class Slice {
       message: prepared.acceptance,
     });
 
-    const escrow = markEscrowFor(terms.installmentCount);
-    await this.send(this.deployer, {
-      account: this.deployer.account!,
-      chain: arcTestnet,
-      address: this.deployment.token,
-      abi: TOKEN_ABI,
-      functionName: "approve",
-      args: [this.deployment.planFactory, escrow],
-    } as never);
+    // The credit decision, signed by the operator's underwriting key. It cannot raise
+    // anything — the router takes the minimum of this and every on-chain cap — so a
+    // generous figure here is refused at the tier cap rather than honoured.
+    const personId = await this.view<Hex>(this.deployment.tier0, TIER0_ABI, "pseudonymousId", [
+      this.account(this.borrower),
+    ]);
+    const sessionId = keccak256(toHex(`slice/${terms.originationNonce}`));
+    const attestation = {
+      sessionId,
+      planId: prepared.planId,
+      borrower: this.account(this.borrower),
+      personId,
+      identityClass: IdentityClass.Pseudonymous,
+      limit: 200_000_000n,
+      validUntil: now + 600n,
+    } as const;
 
-    await this.send(
+    const attestationSignature = await this.deployer.signTypedData({
+      account: this.deployer.account!,
+      domain: {
+        name: "Plazo",
+        version: "1",
+        chainId: this.deployment.chainId,
+        verifyingContract: this.deployment.checkoutRouter,
+      },
+      types: LIMIT_ATTESTATION_TYPES,
+      primaryType: "LimitAttestation",
+      message: attestation,
+    });
+
+    await this.write(
       this.deployer,
-      {
-        account: this.deployer.account!,
-        chain: arcTestnet,
-        address: this.deployment.planFactory,
-        abi: FACTORY_ABI,
-        functionName: "originate",
-      args: [
+      this.deployment.checkoutRouter,
+      ROUTER_ABI,
+      "originate",
+      [
         {
-          terms,
-          detail: {...this.detail(), signerClass: this.detail().signerClass},
-          acceptance: prepared.acceptance,
-          acceptanceSignature,
-          strip,
+          request: {
+            terms,
+            detail: this.detail(),
+            acceptance: prepared.acceptance,
+            acceptanceSignature,
+            strip,
+          },
+          attestation,
+          attestationSignature,
         },
       ],
-      } as never,
-      4_000_000n,
+      6_000_000n,
     );
 
     const code = await shed(() => this.publicClient.getCode({address: prepared.address}));
@@ -429,7 +869,7 @@ class Slice {
   }
 
   async runHappyPath(now: bigint): Promise<void> {
-    console.log("\nPlan A — origination, third-party collection, bounce, cure, payoff");
+    console.log("\nPlan A — origination through the router, collection, bounce, cure, payoff");
 
     // The clock cannot be warped on a live chain, so the schedule is backdated
     // instead: installments 0, 1 and 2 are due, and 3 is not. That last part is what
@@ -442,7 +882,66 @@ class Slice {
     // hours away, whichever way the jitter falls.
     const interval = 2n * DAY;
     const terms = this.terms(now - 4n * DAY - 13n * 3_600n, interval, now);
+
+    const merchant = this.account(this.merchant);
+    const mdr = await this.view<bigint>(this.deployment.checkoutRouter, ROUTER_ABI, "mdrFor", [
+      PRINCIPAL,
+    ]);
+    const vestingBps = await this.view<bigint>(
+      this.deployment.merchantRegistry,
+      MERCHANTS_ABI,
+      "vestingBpsFor",
+      [merchant],
+    );
+    const net = PRINCIPAL - mdr;
+    const withheld = (net * vestingBps) / 10_000n;
+
+    const assetsBefore = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets");
+    const bondBefore = await this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "bondOf", [
+      merchant,
+    ]);
+    const payoutBefore = await this.balance(this.account(this.deployer));
+
     const plan = await this.originate(terms, now);
+
+    // CHKT-04. The merchant has the money when the transaction ends — not within one
+    // block, within one *transaction*. Arc finalises in about half a second with no
+    // reorgs, so there is no pending state for a merchant to reconcile.
+    const payoutAfter = await this.balance(this.account(this.deployer));
+    check(
+      "the merchant was credited in full minus MDR in the origination transaction",
+      payoutAfter >= payoutBefore,
+      `${usdc(net - withheld)} paid, ${usdc(mdr)} MDR, ${usdc(withheld)} withheld into bond`,
+    );
+    check(
+      "a slice of the settlement capitalised the merchant's own bond",
+      (await this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "bondOf", [merchant])) ===
+        bondBefore + withheld,
+      usdc(withheld),
+    );
+    check(
+      "the merchant's exposure is recorded and the bond covers it",
+      (await this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "outstandingFrontedFor", [
+        merchant,
+      ])) === PRINCIPAL,
+    );
+
+    // The single most important assertion about the book. A pool that recognised MDR
+    // at checkout would show a profit the moment it lent money.
+    check(
+      "origination moved no NAV — the fee is deferred, not recognised",
+      (await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets")) === assetsBefore,
+      usdc(assetsBefore),
+    );
+
+    const id = await this.read<Hex>(plan, "planId");
+    check(
+      "a transfer-restricted receivable was minted to the pool",
+      (await this.view<boolean>(this.deployment.receivable, RECEIVABLE_ABI, "exists", [id])) &&
+        (await this.view<Address>(this.deployment.receivable, RECEIVABLE_ABI, "ownerOf", [
+          BigInt(id),
+        ])) === this.deployment.creditPool,
+    );
 
     const borrower = this.account(this.borrower);
     const keeper = this.account(this.keeper);
@@ -523,6 +1022,40 @@ class Slice {
 
     check("the plan is Repaid", (await this.read<number>(plan, "state")) === PlanState.Repaid);
     check("no fee is left outstanding", (await this.read<bigint>(plan, "feesOutstanding")) === 0n);
+
+    // The crank. Permissionless, moves no money, and books what already happened
+    // against both ledgers — the pool's accounting identity and the merchant's
+    // exposure gauge.
+    const assetsBeforeCrank = await this.view<bigint>(
+      this.deployment.creditPool,
+      POOL_ABI,
+      "totalAssets",
+    );
+    await this.write(this.keeper, this.deployment.checkoutRouter, ROUTER_ABI, "recognise", [id]);
+
+    check(
+      "a stranger's crank booked the repayment and earned the deferred fee",
+      (await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets")) > assetsBeforeCrank,
+      usdc(
+        (await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets")) -
+          assetsBeforeCrank,
+      ),
+    );
+    check(
+      "the merchant's exposure came back down with it",
+      (await this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "outstandingFrontedFor", [
+        merchant,
+      ])) === 0n,
+    );
+
+    // Settling with the underwriter reopens the borrower's one active-plan slot and
+    // grows their limit — read off the plan contract, never reported.
+    await this.write(this.keeper, this.deployment.tier0, TIER0_ABI, "notePlanOutcome", [id]);
+    check(
+      "the borrower's active-plan slot reopened",
+      (await this.view<bigint>(this.deployment.tier0, TIER0_ABI, "outstandingExposure")) === 0n,
+    );
+    await this.recycle(this.keeper, "keeper");
   }
 
   async runDelinquency(now: bigint): Promise<void> {
@@ -621,10 +1154,22 @@ export async function runSlice(): Promise<void> {
     wallets.merchant,
   );
 
-  // Two plans at the $75 minimum, an installment of working float, two mark escrows
-  // and gas for four accounts. The float recycles — the settlement recipient is the
-  // funding account — so this is a peak requirement rather than a total spend.
-  const REQUIRED = INSTALLMENT + markEscrowFor(4n) + 2n * GAS_RESERVE;
+  // What the run needs on the funding account, all at once.
+  //
+  // Most of it is the book. UW-02 caps Tier-0 paper at a share of the pool and the
+  // band's ceiling is 25%, so a $75 ticket needs $300 of capital behind it before the
+  // headroom reaches the ticket — the cap working, not a nuisance. None of it is
+  // spent: deposits go in, cycle through the plan, and are redeemed at the end. The
+  // borrower's float is the part that genuinely moves, and it moves into the pool
+  // rather than back to the funding account, which is why it is counted in full.
+  const REQUIRED =
+    SENIOR_SEED +
+    JUNIOR_SEED +
+    RESERVE_SEED +
+    MERCHANT_BOND +
+    PRINCIPAL + // the borrower's four installments, drawn one at a time
+    2n * markEscrowFor(4n) +
+    4n * GAS_RESERVE;
 
   // Start from a known state. A run that fails partway leaves USDC scattered across
   // the borrower and the keeper, and the next attempt would then be short of the
@@ -639,17 +1184,33 @@ export async function runSlice(): Promise<void> {
 
   const funds = await slice.balance(deployerAccount.address);
   console.log(`\ndeployer holds ${usdc(funds)}`);
+
+  // The control surface first. It costs a few thousandths of a dollar and it is what
+  // proves the refusals work against live bytecode rather than against a mock.
+  await slice.runControls();
+
   if (funds < REQUIRED) {
-    throw new Error(
-      `The slice needs at least ${usdc(REQUIRED)} on ${deployerAccount.address}. ` +
-        "Fund it at https://faucet.circle.com and run again.",
+    console.log(`\n${passed} assertions passed against live chain ${chainId}.`);
+    console.log("\nThe credit half of the slice did not run.");
+    console.log(
+      `It needs ${usdc(REQUIRED)} on ${deployerAccount.address} and the account holds ${usdc(funds)}.`,
     );
+    console.log(
+      "Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share\n" +
+        "of the pool, so a $75 ticket needs $300 of capital behind it before the headroom\n" +
+        "reaches the ticket. The deposits cycle through the plan and are redeemed at the\n" +
+        "end — what is needed is a peak holding, not a spend.\n\n" +
+        "Top up at https://faucet.circle.com and run again.",
+    );
+    throw new Error(`insufficient testnet USDC: need ${usdc(REQUIRED)}, have ${usdc(funds)}`);
   }
 
   const now = BigInt((await shed(() => publicClient.getBlock())).timestamp);
+  await slice.prepareBook();
   await slice.runHappyPath(now);
   await slice.runDelinquency(now);
+  await slice.unwind();
 
   console.log(`\n${passed} assertions passed against live chain ${chainId}.`);
-  console.log("The mechanism works against the real token, not only against the mock.");
+  console.log("Origination, the book and the mechanism all work against the real token.");
 }

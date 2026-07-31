@@ -1,9 +1,20 @@
 {
   "chainId": 5042002,
-  "block": 54513131,
+  "block": 54561488,
   "token": "0x3600000000000000000000000000000000000000",
-  "jurisdictionRegistry": "0x4dcde524f0566f583fab237d7ceed2fe8fb02322",
-  "fxRouter": "0xc61dec55ed916f97006fc1b01695ee9297a8867c",
-  "installmentPlan": "0xe82308b350013fa0dcc11fef10b3f0bf684efd14",
-  "planFactory": "0xb864308d7214f98d60c5811f451fa96a49619150"
+  "jurisdictionRegistry": "0x5e3420e6121a48b295c612b798c961905de39f88",
+  "parameterRegistry": "0xeee0320d40fbbdaedd034ea90d1399f4f830b9bd",
+  "eligibilityRegistry": "0xca12a3b9562ab9437d56708a889acfe787e3f44f",
+  "compliance": "0x2c2f454d8d0bc58ca31cecc1cf4202e4e02f06f8",
+  "fxRouter": "0xab4c53d3ff9cd88f7f6366393460354789172685",
+  "payout": "0x9e4c5cc43ad2bb5dcb6f15700e5732fa26391d2c",
+  "receivable": "0xdb36f59b0d7ef8045bad0116c0e47fee64fa61c5",
+  "merchantRegistry": "0xf8a21ccde37a18c798c5de520e847b0892efff16",
+  "creditPool": "0x1da66d97de638bf2863aaf1b8fa6cf902b38bd90",
+  "killSwitch": "0x0c709acd513339f2893508678ae6494d02ad5f37",
+  "tier0": "0xc82ff622ed0224df5b84aad60a39726194e1f894",
+  "pauses": "0xfd01fac4109d0c7c841f476f4d4b1fbd32c85c14",
+  "installmentPlan": "0x3d928f31297fb75e94aa6d624757a5dae9893547",
+  "planFactory": "0x3debc13fde095788d9488d034d5f8cf69cb3347e",
+  "checkoutRouter": "0xd18d9bc9f9bfca07b73746be82e3b27b55245fec"
 }

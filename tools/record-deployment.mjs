@@ -52,11 +52,48 @@ for (const tx of run.transactions ?? []) {
     console.error(`${tx.contractName} reverted (${tx.hash}).`);
     process.exit(1);
   }
-  deployed[tx.contractName] = receipt.contractAddress ?? tx.contractAddress;
+  // The address comes from the transaction, never from the receipt.
+  //
+  // In Foundry's artefact the receipts array is written with `transactionHash` in
+  // mining order and `contractAddress` in submission order, so a receipt row can
+  // carry one transaction's hash beside another's deployed address. With four
+  // contracts the two orders happened to coincide and Phase 2's record was right by
+  // luck; with fifteen they did not, and preferring `receipt.contractAddress`
+  // produced a record in which the receivable token and the FX router shared an
+  // address. Every consumer of that file — the indexer, the keeper, the slice runner
+  // — would have believed it.
+  //
+  // The receipt is still what proves the deployment happened; it is just not what
+  // says where.
+  deployed[tx.contractName] = tx.contractAddress;
 }
 
-const required = ["JurisdictionRegistry", "IdentityFXRouter", "InstallmentPlan", "PlanFactory"];
-const missing = required.filter((name) => !deployed[name]);
+/**
+ * Every contract the record must name.
+ *
+ * Listed rather than inferred, so a deployment that silently skipped one fails here
+ * instead of producing a record whose missing key surfaces as `undefined` in the
+ * indexer three days later.
+ */
+const CONTRACTS = {
+  jurisdictionRegistry: "JurisdictionRegistry",
+  parameterRegistry: "ParameterRegistry",
+  eligibilityRegistry: "EligibilityRegistry",
+  compliance: "AllowlistCompliance",
+  fxRouter: "IdentityFXRouter",
+  payout: "ArcLocalPayout",
+  receivable: "ReceivableToken",
+  merchantRegistry: "MerchantRegistry",
+  creditPool: "CreditPool",
+  killSwitch: "FirstPaymentDefaultSwitch",
+  tier0: "Tier0Underwriter",
+  pauses: "OriginationPause",
+  installmentPlan: "InstallmentPlan",
+  planFactory: "PlanFactory",
+  checkoutRouter: "CheckoutRouter",
+};
+
+const missing = Object.values(CONTRACTS).filter((name) => !deployed[name]);
 if (missing.length > 0) {
   console.error(`The broadcast is missing: ${missing.join(", ")}`);
   process.exit(1);
@@ -66,10 +103,7 @@ const record = {
   chainId: Number(chainId),
   block: Number(run.receipts?.[0]?.blockNumber ?? 0),
   token: process.env.PLAZO_TOKEN ?? "0x3600000000000000000000000000000000000000",
-  jurisdictionRegistry: deployed.JurisdictionRegistry,
-  fxRouter: deployed.IdentityFXRouter,
-  installmentPlan: deployed.InstallmentPlan,
-  planFactory: deployed.PlanFactory,
+  ...Object.fromEntries(Object.entries(CONTRACTS).map(([key, name]) => [key, deployed[name]])),
 };
 
 const dir = join(ROOT, "contracts", "deployments");

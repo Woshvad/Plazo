@@ -41,24 +41,69 @@ contract PlanFactory {
     ///      governance re-price a deal the borrower has already signed.
     JurisdictionRegistry public immutable jurisdictions;
 
+    /// @notice The only address permitted to deploy or originate.
+    ///
+    /// @dev `CheckoutRouter` in production. Gated from Phase 3 because a
+    ///      permissionless `deploy` is a denial-of-service on a signed strip: anyone
+    ///      who can read a pending origination can deploy an uninitialized clone to
+    ///      the address it names, after which `originate` reverts forever and the
+    ///      borrower's authorizations — whose nonces are bound to that `planId` —
+    ///      are unusable until they re-sign under a different origination nonce.
+    ///
+    ///      The verification stays inside the plan regardless. This gate stops the
+    ///      griefing; it is not what makes the terms trustworthy.
+    ///
+    ///      Set once, after deployment, because the router needs this factory's
+    ///      address in its own constructor and this factory's address is in the
+    ///      `planId` preimage — so neither can be a constructor argument to the
+    ///      other. The setter burns itself on use, which makes "set once" a property
+    ///      of the code rather than a promise about the deployment script.
+    address public originator;
+
+    /// @notice The only address that may ever name the originator. Cleared on use.
+    address private _originatorSetter;
+
     /// @notice `planId` → deployed clone, zero until originated.
     mapping(bytes32 planId => address plan) public planOf;
 
     event PlanDeployed(bytes32 indexed planId, address indexed plan, address indexed implementation);
+    event OriginatorSet(address indexed originator);
 
     error ImplementationZero();
     error JurisdictionsZero();
+    error OriginatorZero();
+    error OnlyOriginator(address caller);
     error PlanAlreadyDeployed(bytes32 planId, address existing);
     error FactoryMismatch(address expected, address provided);
     error ChainIdMismatch(uint256 expected, uint256 provided);
     error ImplementationMismatch(address expected, address provided);
     error AddressMismatch(address predicted, address deployed);
 
-    constructor(address implementation_, address jurisdictions_) {
+    /// @param originatorSetter The address permitted to name the originator, once.
+    constructor(address implementation_, address jurisdictions_, address originatorSetter) {
         if (implementation_ == address(0)) revert ImplementationZero();
         if (jurisdictions_ == address(0)) revert JurisdictionsZero();
+        if (originatorSetter == address(0)) revert OriginatorZero();
         implementation = implementation_;
         jurisdictions = JurisdictionRegistry(jurisdictions_);
+        _originatorSetter = originatorSetter;
+    }
+
+    /// @notice Name the sole originator. Callable once, then never again.
+    function setOriginator(address originator_) external {
+        if (msg.sender != _originatorSetter) revert OnlyOriginator(msg.sender);
+        if (originator_ == address(0)) revert OriginatorZero();
+        originator = originator_;
+        _originatorSetter = address(0);
+        emit OriginatorSet(originator_);
+    }
+
+    modifier onlyOriginator() {
+        // An unset originator means the factory is mid-deployment. Refusing here
+        // rather than defaulting to open is the difference between a half-wired
+        // deployment that cannot originate and one that anyone can.
+        if (originator == address(0) || msg.sender != originator) revert OnlyOriginator(msg.sender);
+        _;
     }
 
     /// @notice Derive `planId` for terms this factory would accept.
@@ -97,11 +142,13 @@ contract PlanFactory {
     }
 
     /// @notice Deploy the clone for these terms.
-    /// @dev Permissionless in Phase 1 so the parity test can exercise the real
-    ///      deployment path. `CheckoutRouter` becomes the sole authorized caller in
-    ///      Phase 3; deployment is idempotent-by-revert either way, so a duplicate
+    /// @dev Originator-only. Deployment is idempotent-by-revert, so a duplicate
     ///      origination cannot silently produce a second plan at the same address.
-    function deploy(PlanId.PlanTerms memory terms) external returns (bytes32 planId, address plan) {
+    function deploy(PlanId.PlanTerms memory terms)
+        external
+        onlyOriginator
+        returns (bytes32 planId, address plan)
+    {
         return _deploy(terms);
     }
 
@@ -123,15 +170,25 @@ contract PlanFactory {
     ///      between a plan that can pay for its own delinquency signal and a plan
     ///      that will discover it cannot at the moment the signal is needed.
     ///
-    ///      The jurisdiction parameter set is resolved here and copied in. Phase 3
-    ///      makes this the only authorized origination path; today it is
-    ///      permissionless so the vertical slice can exercise the real thing rather
-    ///      than a test double.
-    function originate(OriginationRequest calldata request) external returns (bytes32 planId, address plan) {
+    ///      The jurisdiction parameter set is resolved here and copied in.
+    ///
+    ///      Only the **shortfall** is pulled from the caller. The plan's address is
+    ///      known before it holds code, so the escrow can be — and in the router's
+    ///      path is — sent to the counterfactual address before deployment. Pulling
+    ///      unconditionally would double-fund it and strand the difference in a
+    ///      contract that only forwards along the disclosed waterfall.
+    function originate(OriginationRequest calldata request)
+        external
+        onlyOriginator
+        returns (bytes32 planId, address plan)
+    {
         (planId, plan) = _deploy(request.terms);
 
-        IERC20(request.terms.token)
-            .safeTransferFrom(msg.sender, plan, PlanParams.markEscrowFor(request.terms.installmentCount));
+        uint256 escrow = PlanParams.markEscrowFor(request.terms.installmentCount);
+        uint256 held = IERC20(request.terms.token).balanceOf(plan);
+        if (held < escrow) {
+            IERC20(request.terms.token).safeTransferFrom(msg.sender, plan, escrow - held);
+        }
 
         JurisdictionRegistry.Params memory set = jurisdictions.paramsFor(request.detail.jurisdiction);
 

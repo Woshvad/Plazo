@@ -98,6 +98,13 @@ contract InstallmentPlan is IInstallmentPlan {
     uint256 private _feesOutstanding;
     uint256 private _feesPaid;
     uint256 private _refundCredit;
+    /// @notice Everything this plan has ever sent to `settlementRecipient`.
+    /// @dev DEC-08. The funding book cannot learn what it received from its own token
+    ///      balance — POOL-11 forbids it, because a donation would land in NAV — and
+    ///      the plan settles with a bare `transfer` that notifies nobody. So the book
+    ///      reads this instead: the plan is the source of truth for what the plan
+    ///      sent, and `recognise()` books exactly the delta while moving nothing.
+    uint256 private _forwarded;
 
     mapping(uint256 index => InstallmentStatus) private _status;
 
@@ -435,6 +442,11 @@ contract InstallmentPlan is IInstallmentPlan {
         return _totalCollected;
     }
 
+    function forwarded() external view returns (uint256) {
+        return _forwarded;
+    }
+
+    /// @inheritdoc IInstallmentPlan
     function refundCredit() external view returns (uint256) {
         return _refundCredit;
     }
@@ -1008,7 +1020,7 @@ contract InstallmentPlan is IInstallmentPlan {
     ///      nothing can reach is a state nothing was verified about.
     function chargeOff() external nonReentrant {
         _requireRailLive();
-        uint256 index = _firstUnresolved();
+        uint256 index = _oldestUnpaid();
         if (index == type(uint256).max) revert PlanNotCollectible(_state);
 
         uint256 eligibleAt = _dueDateAt(index) + PlanParams.CHARGE_OFF_AFTER + _suspendedFor();
@@ -1070,6 +1082,7 @@ contract InstallmentPlan is IInstallmentPlan {
 
     function _forward(uint256 amount) private {
         if (amount == 0) return;
+        _forwarded += amount;
         IERC20(token).safeTransfer(settlementRecipient, amount);
     }
 
@@ -1126,6 +1139,29 @@ contract InstallmentPlan is IInstallmentPlan {
         for (uint256 i = 0; i < _installmentCount; ++i) {
             InstallmentStatus status = _status[i];
             if (status == InstallmentStatus.Pending || status == InstallmentStatus.Bounced) return i;
+        }
+        return type(uint256).max;
+    }
+
+    /// @dev The oldest installment whose money never arrived — including ones already
+    ///      recorded as `Missed` or `Expired`.
+    ///
+    ///      Distinct from `_firstUnresolved`, and the distinction is the whole point.
+    ///      Collection is finished with a missed installment: it has an outcome, it
+    ///      has been marked, and no keeper should be pointed at it again. Charge-off
+    ///      is not finished with it, because the money is still owed.
+    ///
+    ///      Measuring the sixty-day clock from `_firstUnresolved` instead had two
+    ///      consequences, both wrong. It started the clock at the installment *after*
+    ///      the one that was missed, delaying every charge-off by one interval. And a
+    ///      plan whose first installment was missed and whose remaining checks all
+    ///      cleared had no unresolved index at all, so it could never be charged off —
+    ///      it would sit delinquent with real outstanding principal and no terminal
+    ///      state, which the funding book would carry indefinitely.
+    function _oldestUnpaid() private view returns (uint256) {
+        for (uint256 i = 0; i < _installmentCount; ++i) {
+            InstallmentStatus status = _status[i];
+            if (status != InstallmentStatus.Cleared && status != InstallmentStatus.Refunded) return i;
         }
         return type(uint256).max;
     }

@@ -181,3 +181,46 @@ The slice lost a run to a shed `balanceOf` on the third account it read — five
 | The plan cures and reaches `Repaid` | Both, with no fee outstanding |
 | The delinquency signal is written by a stranger and paid for | `markMissed` from an unrelated address, out of the plan's own escrow |
 | **The published keeper needs nothing but the chain** | `@plazo/keeper` given only a factory address found all three plans, identified the one crank worth doing, sent it, and was paid — then reported nothing left to do |
+
+---
+
+# Phase 3 addendum — origination against the live deployment
+
+## 12. Foundry's broadcast receipts mix two orderings, and a deployment record built from them is wrong
+
+`tools/record-deployment.mjs` reads Foundry's broadcast artefact and maps each `CREATE` transaction to its deployed address. It preferred `receipt.contractAddress`, falling back to `transaction.contractAddress`.
+
+In the artefact, the receipts array is written with **`transactionHash` in mining order and `contractAddress` in submission order**. A receipt row can therefore carry one transaction's hash beside a different transaction's deployed address:
+
+```
+tx MerchantRegistry   hash 0x7db52a67…   receipt.contractAddress 0xeee0320d…  ← ParameterRegistry's
+tx ParameterRegistry  hash 0x73f010b9…   receipt.contractAddress 0xca12a3b9…  ← EligibilityRegistry's
+```
+
+With Phase 2's four contracts the two orders coincided and the record was right by luck. With Phase 3's fifteen they did not, and the first record produced named the same address for the receivable token and the FX router, and again for the eligibility registry and the compliance oracle. Every consumer of that file — the indexer, the keeper, the slice runner — would have believed it.
+
+**Take the address from the transaction, never from the receipt.** The receipt is still what proves the deployment happened; it is just not what says where. Cross-check the written record against the deploy log before trusting it.
+
+## 13. A $75 ticket needs $300 of book behind it, and that is the cap working
+
+UW-02 caps Tier-0 paper at a share of the pool's book, enforced onchain. The band's ceiling is 25%, so the smallest ticket the protocol will originate needs four times its own value in pool capital before the headroom reaches it — $300 against a $75 plan, plus the merchant bond and the borrower's float.
+
+The full live slice therefore needs **406.84 USDC** on the funding account. That is a peak holding rather than a spend: deposits go in, cycle through the plan, and are redeemed at the end.
+
+It is worth stating plainly because the temptation is to widen the band to make a testnet run cheaper, and the band is one of the two things standing between an unproven scorecard and the senior tranche — DEC-02 put Tier 0 on pool capital from day one against a research recommendation for a shadow book, with the risk accepted knowingly.
+
+## What the Phase 3 live run proved
+
+Twelve assertions against the deployed bytecode at chain 5042002. The credit half needs the funding above; the control half does not, and the refusals are the half that has never been observed anywhere but a mock.
+
+| Claim | Evidence |
+|---|---|
+| Every contract in the deployment record exists | 12 addresses, all holding bytecode |
+| Appendix A is read from a registry, not compiled in | Tier-0 book share reads 1000 bp onchain |
+| A parameter outside its hard-coded band is refused | 90% rejected against a 25% ceiling |
+| An uncapitalised book will not originate (POOL-05) | `originationOpen()` false, headroom zero |
+| The quote surface answers zero rather than a figure it cannot honour | `maxPrincipalFor` returns 0 with the gate shut |
+| A merchant onboards without an operator, and cannot clear themselves | self-registration succeeded; `attestKyb` refused |
+| Unknown is not clear (CHKT-03) | an unscreened address is not clear; the operator's key made it so |
+| The receivable is default-deny from the first mint (GOV-10) | a mint to an unlisted address refused |
+| The factory is the router's alone | `deploy` from the deployer refused |

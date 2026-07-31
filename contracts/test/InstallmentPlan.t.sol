@@ -638,6 +638,52 @@ contract InstallmentPlanTest is PlanFixture {
             "the sweep ate the plan's mark escrow"
         );
     }
+
+    /// @notice The charge-off clock runs from the oldest *unpaid* installment.
+    ///
+    /// @dev Found while wiring the funding book in Phase 3, and it was two bugs in one
+    ///      line. `chargeOff` measured its sixty days from the first installment still
+    ///      awaiting an outcome, which skips the ones already marked `Missed` — so the
+    ///      clock started at the installment *after* the one that was missed, and every
+    ///      charge-off was one interval late.
+    ///
+    ///      Worse, a plan whose first installment was missed and whose remaining checks
+    ///      all cleared had no such installment at all. It could never be charged off:
+    ///      real outstanding principal, no terminal state, and a funding book carrying
+    ///      it forever with no way to recognise the loss.
+    function test_chargeOffMeasuresFromTheOldestUnpaidInstallment() public {
+        _originateDefault();
+
+        // Miss the first, clear the rest.
+        vm.warp(plan.graceEndsAt(0) + 1);
+        vm.prank(keeper);
+        plan.markMissed(0);
+
+        for (uint256 i = 1; i < COUNT; ++i) {
+            _fundBorrower(plan.installmentAmount(i));
+            vm.warp(plan.dueDate(i) + 1);
+            vm.prank(keeper);
+            plan.collect(i);
+        }
+
+        assertGt(plan.outstandingPrincipal(), 0, "the missed installment was somehow paid");
+        assertEq(
+            uint8(plan.installmentStatus(0)),
+            uint8(IInstallmentPlan.InstallmentStatus.Missed),
+            "installment zero did not stay missed"
+        );
+
+        // Sixty days past installment zero — the only one still unpaid.
+        vm.warp(plan.dueDate(0) + PlanParams.CHARGE_OFF_AFTER + 1);
+        vm.prank(keeper);
+        plan.chargeOff();
+
+        assertEq(
+            uint8(plan.state()),
+            uint8(IInstallmentPlan.PlanState.Defaulted),
+            "a plan with outstanding principal could not reach a terminal state"
+        );
+    }
 }
 
 /// @notice A router that prices a currency this plan does not use.

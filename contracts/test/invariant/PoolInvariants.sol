@@ -25,6 +25,10 @@ abstract contract PoolInvariants is Test {
     uint256 internal minSubordinationBps = 1000; // 10%
     uint256 internal minReserveBps = 200; // 2% of total assets
 
+    /// @dev Whether a tranche has taken a loss. Set by the binding, indexed by the
+    ///      `Tranche` enum. See `check_sharesImplyAssets`.
+    mapping(uint256 tranche => bool) internal impairedTranche;
+
     // ─── Solvency identity ───────────────────────────────────────────────────
 
     /// @notice Assets equal claims, always.
@@ -48,13 +52,32 @@ abstract contract PoolInvariants is Test {
         );
     }
 
-    /// @notice A tranche with shares outstanding has assets behind them.
+    /// @notice A tranche with shares outstanding has assets behind them, unless a
+    ///         loss took every one of them.
+    ///
     /// @dev Guards the inflation attack from the other side: shares issued against
     ///      zero assets means the next depositor funds the previous one.
+    ///
+    ///      **Amended in Phase 3, and the amendment matters.** As first written this
+    ///      said "shares outstanding implies assets outstanding", full stop. That is
+    ///      false for a tranche that has been completely wiped out — and junior being
+    ///      completely wiped out is not a bug, it is the product. Junior is sold as
+    ///      first-loss; a book that loses more than junior's stake leaves junior
+    ///      holding shares worth nothing, and refusing to represent that state would
+    ///      mean the accounting could not describe the outcome the tranche exists to
+    ///      absorb.
+    ///
+    ///      So the carve-out is explicit: an *impaired* tranche may hold shares
+    ///      against nothing. What is still forbidden is the case the property was
+    ///      written for — shares against nothing in a tranche that was never impaired,
+    ///      which is minting claims out of thin air. `impairedTranche` is set by the
+    ///      binding when it drives a loss through the waterfall.
+    ///
     /// @custom:certora sharesImplyAssets
     function check_sharesImplyAssets() public view {
         for (uint256 t = 0; t < 2; ++t) {
             ICreditPool.Tranche tranche = ICreditPool.Tranche(t);
+            if (impairedTranche[t]) continue;
             if (pool.trancheShares(tranche) > 0) {
                 assertGt(
                     pool.trancheAssets(tranche),
@@ -105,6 +128,15 @@ abstract contract PoolInvariants is Test {
     ///
     ///      Stated here as the observable consequence: while junior is below its
     ///      floor, the reserve must already be empty.
+    ///
+    ///      **This form is a state proxy, and Phase 3 found its limit.** A pool that
+    ///      takes a loss down to junior and is *then* replenished — by a fee, by a
+    ///      fresh reserve contribution — sits in a state indistinguishable from one
+    ///      whose waterfall ran out of order, because the balance sheet does not
+    ///      record when the reserve was emptied. The property being described is a
+    ///      transition, so the Phase 3 fuzz binding checks the transition directly
+    ///      and this form stays as the specification-level statement and the Certora
+    ///      rule it becomes. See `PoolFuzz.t.sol`.
     ///
     /// @custom:certora lossWaterfallOrdered
     function check_reserveAbsorbsBeforeJunior() public view {

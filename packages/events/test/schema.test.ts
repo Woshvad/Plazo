@@ -11,6 +11,14 @@ import {
   humanReadableAbi,
   INSTALLMENT_PLAN_ABI,
   PLAN_FACTORY_ABI,
+  CHECKOUT_ROUTER_ABI,
+  RECEIVABLE_TOKEN_ABI,
+  CREDIT_POOL_ABI,
+  MERCHANT_REGISTRY_ABI,
+  TIER0_UNDERWRITER_ABI,
+  KILL_SWITCH_ABI,
+  PARAMETER_REGISTRY_ABI,
+  ORIGINATION_PAUSE_ABI,
   SCHEMA_HASH,
   SCHEMA_VERSION,
 } from "../src/schema.js";
@@ -235,6 +243,14 @@ describe("const-typed ABI views", () => {
   it("match the schema they duplicate", () => {
     expect([...PLAN_FACTORY_ABI]).toEqual(abiForContract("PlanFactory"));
     expect([...INSTALLMENT_PLAN_ABI]).toEqual(abiForContract("InstallmentPlan"));
+    expect([...CHECKOUT_ROUTER_ABI]).toEqual(abiForContract("CheckoutRouter"));
+    expect([...RECEIVABLE_TOKEN_ABI]).toEqual(abiForContract("ReceivableToken"));
+    expect([...CREDIT_POOL_ABI]).toEqual(abiForContract("CreditPool"));
+    expect([...MERCHANT_REGISTRY_ABI]).toEqual(abiForContract("MerchantRegistry"));
+    expect([...TIER0_UNDERWRITER_ABI]).toEqual(abiForContract("Tier0Underwriter"));
+    expect([...KILL_SWITCH_ABI]).toEqual(abiForContract("FirstPaymentDefaultSwitch"));
+    expect([...PARAMETER_REGISTRY_ABI]).toEqual(abiForContract("ParameterRegistry"));
+    expect([...ORIGINATION_PAUSE_ABI]).toEqual(abiForContract("OriginationPause"));
   });
 
   it("cover every contract the indexer subscribes to", () => {

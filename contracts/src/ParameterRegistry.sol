@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.30;
+
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+
+import {ParameterKeys} from "./libraries/ParameterKeys.sol";
+import {PlanParams} from "./libraries/PlanParams.sol";
+
+/// @title ParameterRegistry
+/// @notice Every Appendix A launch hypothesis, behind a hard-coded band.
+///
+/// @dev GOV-01 and D10. Appendix A's loss-side numbers are hypotheses, not settled
+///      truth — the whole point of the cohort recalibration track is that measured
+///      testnet performance moves them. The question this contract answers is *how*
+///      they move.
+///
+///      **The registry governs origination, never a live plan.** Every parameter a
+///      plan reads is copied into the plan at initialisation and never read again;
+///      that is what `termsHash` exists to make true. So nothing here can re-price a
+///      deal a borrower has already signed, and nothing here is allowed to try. The
+///      recalibration story is "the next cohort originates under different
+///      parameters", never "outstanding plans re-price". Anyone reaching for the
+///      second has misunderstood what a signed strip is.
+///
+///      **Bands are hard-coded and the ratchet is one-way.** Rows are seeded in the
+///      constructor from the literal constants below. Governance may set a value
+///      inside its band, and may permanently *narrow* a band. It can never widen
+///      one, and there is no function that would let it. A governance key that can
+///      set any value is a governance key that can set a usurious one, and "we would
+///      never" is not a control.
+///
+///      **An undefined key reverts.** A registry that returned zero for a key nobody
+///      configured would make a typo in a deployment script into a plan originated
+///      at a zero minimum ticket with a zero MDR. Reading is total or it fails.
+///
+///      Timelocking the owner is GOV-02 and Phase 9. Nothing here needs to change
+///      for a timelock to become the owner.
+contract ParameterRegistry is Ownable {
+    struct Parameter {
+        uint256 value;
+        uint256 min;
+        uint256 max;
+        bool defined;
+    }
+
+    mapping(bytes32 key => Parameter) private _parameters;
+
+    /// @notice Every key seeded at construction, in seed order.
+    /// @dev Enumerable so an operator console, an auditor or a deployment check can
+    ///      read the whole configuration without knowing the key list in advance.
+    bytes32[] private _keys;
+
+    event ParameterSet(bytes32 indexed key, uint256 previous, uint256 value);
+    event ParameterDefined(bytes32 indexed key, uint256 value, uint256 min, uint256 max);
+    event BandNarrowed(bytes32 indexed key, uint256 min, uint256 max);
+
+    error ParameterUndefined(bytes32 key);
+    error ParameterAlreadyDefined(bytes32 key);
+    error OutOfBand(bytes32 key, uint256 value, uint256 min, uint256 max);
+    error BandNotNarrower(bytes32 key, uint256 min, uint256 max);
+    error BandInverted(uint256 min, uint256 max);
+
+    constructor(address governance) Ownable(governance) {
+        uint256 usdc = PlanParams.ONE_USDC;
+
+        // ─── Ticket and pricing ──────────────────────────────────────────────
+
+        // The Phase 1 measurement, and the floor the keeper market sets.
+        _define(ParameterKeys.MIN_TICKET, PlanParams.MIN_TICKET, 25 * usdc, 1_000 * usdc);
+        // Tier 0 never approaches this; it exists so a mis-signed attestation cannot
+        // originate an arbitrarily large plan against the book.
+        _define(ParameterKeys.MAX_TICKET, 2_000 * usdc, 100 * usdc, 50_000 * usdc);
+        // 4%. The band's ceiling is 10% because above that the product is not
+        // competitive with the incumbents it is meant to displace, and a parameter
+        // that can be set to a number the business would never choose is a parameter
+        // whose band is doing no work.
+        _define(ParameterKeys.MDR_BPS, 400, 0, 1_000);
+
+        // ─── Tier 0 ──────────────────────────────────────────────────────────
+
+        _define(ParameterKeys.TIER0_INITIAL_LIMIT, 100 * usdc, 50 * usdc, 500 * usdc);
+        // ×1.25 per cleanly completed plan. The floor of the band is 1.0 — growth can
+        // be switched off, never reversed into a shrink, because a limit that falls
+        // on good behaviour is a bug in every reading.
+        _define(ParameterKeys.TIER0_GROWTH_BPS, 12_500, 10_000, 15_000);
+        // The pseudonymous cap is what an attacker gets per wallet they are willing to
+        // create. It is set to what the book can afford to lose that many times, not
+        // to what a well-behaved pseudonymous borrower deserves. Raising it is the
+        // single most tempting recalibration and the single most dangerous one.
+        _define(ParameterKeys.TIER0_PSEUDONYMOUS_CAP, 200 * usdc, 50 * usdc, 500 * usdc);
+        _define(ParameterKeys.TIER0_IDENTIFIED_CAP, 1_000 * usdc, 100 * usdc, 5_000 * usdc);
+        // DEC-02. Tier 0 draws pool capital from day one, so this cap and the FPD
+        // switch are the two things standing between an unproven scorecard and the
+        // senior tranche. The band's ceiling is 25%.
+        _define(ParameterKeys.TIER0_BOOK_SHARE_BPS, 1_000, 100, 2_500);
+        // UW-10. An account whose signature validation can change is an account whose
+        // strip is only as good as the last `revalidate()`.
+        _define(ParameterKeys.CONTRACT_SIGNER_CAP_BPS, 5_000, 1_000, 10_000);
+        // CHKT-05's hard onchain ceiling. An attestation can only ever lower what the
+        // chain would have allowed; this is the number a stolen signing key runs into.
+        _define(ParameterKeys.LIMIT_HARD_CEILING, 5_000 * usdc, 100 * usdc, 100_000 * usdc);
+        // Minutes, not hours. An attestation that outlives its checkout is a bearer
+        // credential.
+        _define(ParameterKeys.ATTESTATION_MAX_TTL, 15 minutes, 1 minutes, 24 hours);
+
+        // ─── First-payment-default kill switch ───────────────────────────────
+
+        // Below this many observations the switch cannot fire at all. Three defaults
+        // out of five plans is noise, and a switch that fires on noise is a switch an
+        // attacker can trip for the price of five plans.
+        _define(ParameterKeys.FPD_MIN_COHORT, 50, 10, 10_000);
+        _define(ParameterKeys.FPD_TRIGGER_BPS, 500, 100, 5_000);
+        _define(ParameterKeys.FPD_FULL_STOP_BPS, 2_000, 200, 10_000);
+        // A new wallet's default counts a quarter. New wallets are the cheap thing to
+        // manufacture, so an attacker buying the throttle down has to pay for
+        // *seasoned* ones — and a seasoned wallet costs real completed plans to make.
+        _define(ParameterKeys.FPD_NEW_WALLET_WEIGHT_BPS, 2_500, 0, 10_000);
+        // Graduated, not binary: the switch outputs a throttle, and this is how far
+        // down it can push. Zero means a full stop is reachable.
+        _define(ParameterKeys.FPD_THROTTLE_FLOOR_BPS, 0, 0, 5_000);
+        _define(ParameterKeys.FPD_SEASONING_PLANS, 1, 1, 10);
+        // Observations decay over this window, so a book that has run for a year is
+        // not anchored by the cohort it originated in its first month. An all-time
+        // rate is a rate that stops responding exactly when it needs to.
+        _define(ParameterKeys.FPD_OBSERVATION_WINDOW, 30 days, 1 days, 365 days);
+
+        // ─── Pool ────────────────────────────────────────────────────────────
+
+        _define(ParameterKeys.MIN_SUBORDINATION_BPS, 1_000, 500, 5_000);
+        _define(ParameterKeys.MIN_RESERVE_BPS, 200, 50, 2_000);
+        _define(ParameterKeys.RESERVE_TARGET_BPS, 500, 100, 5_000);
+
+        // ─── Merchant ────────────────────────────────────────────────────────
+
+        // The bond scales with outstanding fronted exposure rather than being a flat
+        // entry cost, because refund arbitrage is the highest-yield attack on this
+        // book and a flat cost is one a well-capitalised attacker pays once.
+        _define(ParameterKeys.MERCHANT_BOND_BPS, 1_000, 0, 5_000);
+        _define(ParameterKeys.MERCHANT_BOND_FLOOR, 250 * usdc, 0, 10_000 * usdc);
+        _define(ParameterKeys.MERCHANT_VESTING_WINDOW, 90 days, 0, 365 days);
+        _define(ParameterKeys.MERCHANT_VESTING_BPS, 1_000, 0, 3_000);
+        _define(ParameterKeys.MERCHANT_VELOCITY_WINDOW, 1 days, 1 hours, 30 days);
+        _define(ParameterKeys.MERCHANT_VELOCITY_CAP, 5_000 * usdc, 100 * usdc, 1_000_000 * usdc);
+
+        // ─── Concentration (UW-09) ───────────────────────────────────────────
+
+        _define(ParameterKeys.MERCHANT_CONCENTRATION_BPS, 2_000, 100, 10_000);
+        _define(ParameterKeys.CORRIDOR_CONCENTRATION_BPS, 5_000, 100, 10_000);
+    }
+
+    /// @notice The current value for `key`.
+    /// @dev Reverts on an undefined key. See the contract note.
+    function get(bytes32 key) public view returns (uint256) {
+        Parameter storage p = _parameters[key];
+        if (!p.defined) revert ParameterUndefined(key);
+        return p.value;
+    }
+
+    /// @notice Several rows in one read.
+    /// @dev Origination reads a dozen parameters in a single transaction; this keeps
+    ///      that one call rather than a dozen, and keeps the call sites readable.
+    function getMany(bytes32[] calldata wanted) external view returns (uint256[] memory values) {
+        values = new uint256[](wanted.length);
+        for (uint256 i = 0; i < wanted.length; ++i) {
+            values[i] = get(wanted[i]);
+        }
+    }
+
+    function parameter(bytes32 key) external view returns (Parameter memory) {
+        Parameter memory p = _parameters[key];
+        if (!p.defined) revert ParameterUndefined(key);
+        return p;
+    }
+
+    function isDefined(bytes32 key) external view returns (bool) {
+        return _parameters[key].defined;
+    }
+
+    /// @notice Every seeded key, in seed order.
+    function keys() external view returns (bytes32[] memory) {
+        return _keys;
+    }
+
+    function keyCount() external view returns (uint256) {
+        return _keys.length;
+    }
+
+    /// @notice Move a parameter inside its band.
+    function set(bytes32 key, uint256 value) external onlyOwner {
+        Parameter storage p = _parameters[key];
+        if (!p.defined) revert ParameterUndefined(key);
+        if (value < p.min || value > p.max) revert OutOfBand(key, value, p.min, p.max);
+
+        uint256 previous = p.value;
+        p.value = value;
+        emit ParameterSet(key, previous, value);
+    }
+
+    /// @notice Permanently tighten a band.
+    ///
+    /// @dev One-way. The new band must sit inside the old one and must still contain
+    ///      the current value, so narrowing can never strand a live configuration
+    ///      outside its own limits.
+    ///
+    ///      There is no widening function, and that is the feature. A protocol that
+    ///      has learned its true risk appetite should be able to write it down
+    ///      irreversibly; a protocol that can un-learn it has not written anything
+    ///      down at all.
+    function narrowBand(bytes32 key, uint256 min, uint256 max) external onlyOwner {
+        Parameter storage p = _parameters[key];
+        if (!p.defined) revert ParameterUndefined(key);
+        if (min > max) revert BandInverted(min, max);
+        if (min < p.min || max > p.max) revert BandNotNarrower(key, min, max);
+        if (p.value < min || p.value > max) revert OutOfBand(key, p.value, min, max);
+
+        p.min = min;
+        p.max = max;
+        emit BandNarrowed(key, min, max);
+    }
+
+    function _define(bytes32 key, uint256 value, uint256 min, uint256 max) private {
+        if (_parameters[key].defined) revert ParameterAlreadyDefined(key);
+        if (min > max) revert BandInverted(min, max);
+        if (value < min || value > max) revert OutOfBand(key, value, min, max);
+
+        _parameters[key] = Parameter({value: value, min: min, max: max, defined: true});
+        _keys.push(key);
+        emit ParameterDefined(key, value, min, max);
+    }
+}
