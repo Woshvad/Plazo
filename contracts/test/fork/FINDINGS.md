@@ -521,3 +521,41 @@ before any RPC. And the redemption index was read with `readContract` — an `et
 with no `from` — so `msg.sender` was the zero address and `requestRedeem` reverted on
 `transferFrom`. A `peek()` helper now simulates against a named account, because for a
 state-changing call the sender is the whole point.
+
+## The second run, which is the one that proves the fixes
+
+The first funded run proved the mechanism. The second proves the thing this session was
+actually about: **it ran again, unchanged, against the deployment the first run left
+behind.** 51 assertions, same as before, with no manual chain surgery in between.
+
+That is the whole of findings 17, 19 and 25 demonstrated rather than argued. Six controls
+correctly reported as spent rather than failing:
+
+```
+--  an uncapitalised book refuses to originate — the book carries capital from an earlier run
+--  a tranche refuses deposits until the protocol has seeded it — already seeded
+--  senior capacity is zero against a book with no junior — junior is seeded
+--  an epoch cannot be closed before its time — epoch 3's window closed 612 minutes ago
+```
+
+That last line is finding 24 earning itself. Without it the run would have failed on
+assertion four, on a property the contract never violated, because a one-hour epoch had
+simply gone stale overnight. `prepareBook` skipped capitalisation and the bond, so
+nothing was double-paid.
+
+### What a run actually costs
+
+| | |
+|---|---|
+| Deployer before / after | 109.11 → 82.77 USDC |
+| Book before / after | 336.81 → 348.58 USDC |
+| **Net cost of one run** | **26.34 USDC** |
+
+The money is not lost, it is *moved*: MDR, the late fee and retained income are earned by
+the book, which is what a lender's return looks like from the funding account's side. But
+it does not come back — `unwind` is opt-in, junior is locked 56 days, and POOL-09 takes
+its cut of whatever does leave. Budget a run as a spend, not a loan.
+
+Both runs together also settle the re-measurement finding 5 asked for: a third-party
+keeper `collect()` cost **0.00580395 USDC** of gas, identical across both runs, against a
+0.46875 USDC bounty. The keeper market clears with roughly an 80× margin.

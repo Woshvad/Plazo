@@ -211,7 +211,7 @@ The origination plane — live controls
 27 assertions passed against live chain 5042002.
 ```
 
-**The credit half has now run.** 51 assertions against the live chain, funded to 408.84 USDC by aggregating twenty faucet drips:
+**The credit half has now run — twice.** 51 assertions against the live chain, and the second run went through unchanged against the deployment the first one left behind, which is the part that matters: no teardown, no manual cleanup, six virgin-book controls correctly reported as spent rather than failing.
 
 ```
 Plan A — origination through the router, collection, bounce, cure, payoff
@@ -227,7 +227,9 @@ Plan B — the delinquency signal, with no operator involved
   ok  the marker was paid out of the plan's own escrow
 ```
 
-Most of the 408.84 is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it. But it is a standing commitment, not a round trip — POOL-10 locks the junior leg for a full 56-day tenor, POOL-09 skims about 1% on the way out of the senior leg, and a run moves roughly 26 USDC of fees permanently into the book. `unwind` is opt-in for that reason.
+Most of the 408.84 is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it. But it is a standing commitment, not a round trip. POOL-10 locks the junior leg for a full 56-day tenor, POOL-09 takes about 1% of whatever leaves the senior leg, and a run moves **26.34 USDC** of MDR, late fees and recognised income permanently into the book — measured, both runs. `unwind` is opt-in for that reason, because a drained book still reports its gate open and then cannot fund a ticket.
+
+Once capitalised the book stays that way, so a re-run needs only the working float rather than the full figure.
 
 To reproduce:
 
