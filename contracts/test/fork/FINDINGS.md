@@ -308,3 +308,56 @@ Twenty-seven assertions against the deployed bytecode at chain 5042002, up from 
 | A schema needs a content hash, not a link (PASS-05) | `publish` with a zero hash refused |
 
 **Not re-measured:** finding 5's collection gas (140,885 → ~$0.00296) was taken from a live Phase 2 run under the legacy pipeline. `via_ir` shrank `InstallmentPlan` by about 11% and the figure is almost certainly lower now, but it has not been measured on chain again — the next funded slice run should re-take it rather than assume the improvement.
+
+## 16. The deployment issues a security nobody may hold, and the fixture hides it
+
+`Deploy.s.sol` grants eligibility to two addresses: the pool and the router. Both are
+plumbing. It grants it to no lender, because who may hold a restricted security is a
+determination about a person and not a property of the infrastructure that issues it —
+so the deployment is right to grant nobody.
+
+The consequence is that the book **as deployed cannot take a deposit from any account
+on earth**. DEC-01 keeps Reg D transfer restrictions on the tranche claims, so
+`TrancheToken._update` refuses a mint to an address the registry has not admitted, and
+`requestDeposit` reverts `NotEligible` before it touches a dollar.
+
+Two hundred and eighty-six Foundry tests pass against this. `OriginationFixture.setUp`
+grants eligibility to the lender and to the test contract, which is correct for a
+fixture and is exactly why the gap is invisible: every local test onboards its lender
+as a side effect of existing, and no local test can observe a deployment that did not.
+
+The live trace, which is the only thing that could have found it:
+
+```
+requestDeposit(1, 45000000)
+  ├─ EligibilityRegistry::isEligible(juniorShares, deployer) [staticcall]
+  │   └─ ← false
+  └─ ← [Revert] NotEligible(0xF4ee…D0F2)
+```
+
+The slice now accredits its own lender before depositing, as an operator would, and
+asks the refusal first — of the borrower, who is never a lender, so unlike the controls
+in finding 17 that one stays observable for the life of the book.
+
+## 17. Four of the live controls could only ever be asked once
+
+The slice asserts things about a book with nothing in it: that an unseeded tranche
+refuses deposits, that senior capacity is zero with no junior beneath it, that Tier-0
+headroom and the quote it feeds are zero against no capital. Every one of those is true
+exactly until the run itself capitalises the book — after which the same assertions are
+false, and a second run fails on properties that were never violated.
+
+This is worse than an inconvenience. A partially-completed run leaves a deployment the
+suite can no longer be pointed at, so the failure mode is "the gate now refuses the
+chain it was written for" and the tempting fix is to delete the assertions.
+
+They are now reported as `--` rather than `ok`: witnessed once, not observable again,
+and **not counted in the pass total**. Counting them would have been the real damage —
+the number would keep climbing while the suite quietly stopped asking.
+
+One related assertion was simply wrong rather than one-shot. `every Appendix A
+parameter reads from the registry` compared the Tier-0 book share to the deployed
+default of 1000 bp, which asserted that nobody had exercised governance — something the
+run itself does three lines into `prepareBook`, and the entire purpose of having a
+registry. It now asserts the value is inside its compiled band, which is the property
+GOV-01 actually claims; that the band is enforced is the assertion immediately after it.

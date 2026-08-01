@@ -142,6 +142,11 @@ const POOL_REGISTRY_ABI = parseAbi([
   "function register(bytes32 productLine, address pool)",
 ]);
 
+const ELIGIBILITY_ABI = parseAbi([
+  "function isEligible(address asset, address account) view returns (bool)",
+  "function setGlobal(address account, bool eligible)",
+]);
+
 const RELAYER_ABI = parseAbi([
   "function delayFloor() view returns (uint256)",
   "function collect(address plan, uint256 index)",
@@ -345,6 +350,19 @@ function check(label: string, condition: boolean, detail = ""): void {
   if (!condition) throw new Error(`FAILED: ${label}${detail ? ` — ${detail}` : ""}`);
   passed++;
   console.log(`  ok  ${label}${detail ? ` (${detail})` : ""}`);
+}
+
+/**
+ * A property that could only be witnessed once, on a book that no longer exists.
+ *
+ * Some of these controls are about a virgin deployment — a tranche refusing deposits
+ * before it is seeded cannot be re-observed after it is seeded, on any book, ever.
+ * Reporting that as a pass would be a lie the second time and every time after; the
+ * count would keep climbing while the suite quietly stopped asking. So it prints
+ * differently and does not count.
+ */
+function note(label: string, detail: string): void {
+  console.log(`  --  ${label} — ${detail}`);
 }
 
 function usdc(value: bigint): string {
@@ -576,6 +594,27 @@ class Slice {
       ]);
     }
 
+    // Accredit the lender. DEC-01 keeps Reg D transfer restrictions on the tranche
+    // claims, so a share cannot be minted to an address the operator has not admitted
+    // — and the deployment admits nobody, correctly: who may hold a security is an
+    // operational determination about a person, not a property of the infrastructure
+    // that issues it. `Deploy.s.sol` grants the pool and the router because they are
+    // plumbing. A lender is not plumbing, and the slice is acting as the operator here.
+    //
+    // Finding 16. The local fixture grants this in `setUp`, which is why 286 tests pass
+    // against a book that, as deployed, no account on earth could deposit into.
+    if (
+      !(await this.view<boolean>(this.deployment.eligibilityRegistry, ELIGIBILITY_ABI, "isEligible", [
+        this.deployment.juniorShares,
+        this.account(this.deployer),
+      ]))
+    ) {
+      await this.write(this.deployer, this.deployment.eligibilityRegistry, ELIGIBILITY_ABI, "setGlobal", [
+        this.account(this.deployer),
+        true,
+      ]);
+    }
+
     // POOL-03. Entry is a request, a close and a claim — three transactions, because
     // the price a deposit settles at does not exist when the deposit is made.
     //
@@ -695,10 +734,14 @@ class Slice {
     const bookShare = await this.view<bigint>(d.parameterRegistry, REGISTRY_ABI, "get", [
       TIER0_BOOK_SHARE_BPS,
     ]);
+    // Inside the band, not equal to the default. Pinning this to the deployed 1000 bp
+    // asserted that nobody had exercised governance — which the run itself does, three
+    // lines into `prepareBook`, and which is the whole point of a registry. The band is
+    // the property; that it is enforced is the assertion immediately below.
     check(
       "every Appendix A parameter reads from the registry",
-      bookShare === 1_000n,
-      `Tier-0 book share ${bookShare} bp`,
+      bookShare > 0n && bookShare <= 2_500n,
+      `Tier-0 book share ${bookShare} bp, inside its 25% ceiling`,
     );
 
     check(
@@ -707,30 +750,49 @@ class Slice {
       "25% is the ceiling; 90% was refused",
     );
 
-    // POOL-05. Nothing has been deposited, so the gate is shut and says so.
-    check(
-      "an uncapitalised book refuses to originate",
-      !(await this.view<boolean>(d.creditPool, POOL_ABI, "originationOpen")),
-    );
-    check(
-      "Tier-0 headroom is zero against a book with no capital",
-      (await this.view<bigint>(d.tier0, TIER0_ABI, "bookHeadroom")) === 0n,
-    );
+    // POOL-05. Nothing has been deposited, so the gate is shut and says so — and the
+    // quote surfaces downstream of it answer zero rather than a figure they cannot
+    // honour. All three are properties of an *empty* book. This run capitalises it, so
+    // they are witnessed on the way past and cannot be asked of the same book again.
+    // Two different conditions, not one. The origination gate stays shut until the
+    // book is properly capitalised — reserve funded and subordination met — but Tier-0
+    // headroom and the quote it feeds are a *share* of assets, so they leave zero the
+    // moment the book holds anything at all. POOL-12's permanent seed is the first
+    // thing that happens to any book and is enough to end them.
+    const capitalised = await this.view<boolean>(d.creditPool, POOL_ABI, "originationOpen");
+    const assets = await this.view<bigint>(d.creditPool, POOL_ABI, "totalAssets");
 
-    const personId = await this.view<Hex>(d.tier0, TIER0_ABI, "pseudonymousId", [
-      this.account(this.borrower),
-    ]);
-    check(
-      "the quote surface answers zero rather than a figure it cannot honour",
-      (await this.view<bigint>(d.checkoutRouter, ROUTER_ABI, "maxPrincipalFor", [
-        personId,
-        IdentityClass.Pseudonymous,
-        SignerClass.EOA,
-        this.account(this.merchant),
-        d.token,
-        d.creditPool,
-      ])) === 0n,
-    );
+    if (capitalised) {
+      note("an uncapitalised book refuses to originate", "the book carries capital from an earlier run");
+    } else {
+      check("an uncapitalised book refuses to originate", !capitalised);
+    }
+
+    if (assets > 0n) {
+      const spent = `the book holds ${usdc(assets)}; a share of it is not zero`;
+      note("Tier-0 headroom is zero against a book with no capital", spent);
+      note("the quote surface answers zero rather than a figure it cannot honour", spent);
+    } else {
+      check(
+        "Tier-0 headroom is zero against a book with no capital",
+        (await this.view<bigint>(d.tier0, TIER0_ABI, "bookHeadroom")) === 0n,
+      );
+
+      const personId = await this.view<Hex>(d.tier0, TIER0_ABI, "pseudonymousId", [
+        this.account(this.borrower),
+      ]);
+      check(
+        "the quote surface answers zero rather than a figure it cannot honour",
+        (await this.view<bigint>(d.checkoutRouter, ROUTER_ABI, "maxPrincipalFor", [
+          personId,
+          IdentityClass.Pseudonymous,
+          SignerClass.EOA,
+          this.account(this.merchant),
+          d.token,
+          d.creditPool,
+        ])) === 0n,
+      );
+    }
 
     // Merchant onboarding is self-serve; permission to originate is not.
     const merchant = this.account(this.merchant);
@@ -825,10 +887,30 @@ class Slice {
     );
 
     // POOL-12. The empty-vault case is unreachable, not merely expensive.
+    if (await this.view<boolean>(d.creditPool, POOL_ABI, "seeded", [Tranche.Junior])) {
+      note(
+        "a tranche refuses deposits until the protocol has seeded it",
+        "already seeded; witnessed at seeding and not observable again on this book",
+      );
+    } else {
+      check(
+        "a tranche refuses deposits until the protocol has seeded it",
+        await this.reverts(d.creditPool, POOL_ABI, "requestDeposit", [Tranche.Junior, 1_000_000n], this.deployer),
+      );
+    }
+
+    // DEC-01. The tranche claims carry Reg D transfer restrictions, so a share cannot
+    // be minted to somebody the operator has not admitted. Asked of the borrower, who
+    // is never a lender — so unlike the seeding control this one stays observable for
+    // the life of the book rather than being spent the first time it is asked.
     check(
-      "a tranche refuses deposits until the protocol has seeded it",
-      !(await this.view<boolean>(d.creditPool, POOL_ABI, "seeded", [Tranche.Junior])) &&
-        (await this.reverts(d.creditPool, POOL_ABI, "requestDeposit", [Tranche.Junior, 1_000_000n], this.deployer)),
+      "a lender's claim refuses a holder nobody has accredited",
+      !(await this.view<boolean>(d.eligibilityRegistry, ELIGIBILITY_ABI, "isEligible", [
+        d.juniorShares,
+        this.account(this.borrower),
+      ])) &&
+        (await this.reverts(d.creditPool, POOL_ABI, "requestDeposit", [Tranche.Junior, 1_000_000n], this.borrower)),
+      "the borrower cannot hold a lender's claim",
     );
 
     const seniorDecimals = await this.view<number>(d.seniorShares, TRANCHE_ABI, "decimals");
@@ -861,12 +943,20 @@ class Slice {
       `epoch ${epoch} is still open`,
     );
 
-    // POOL-06. Senior capacity is a function of the subordination beneath it, and
-    // there is none yet — you cannot be senior to nothing.
-    check(
-      "senior capacity is zero against a book with no junior",
-      (await this.view<bigint>(d.creditPool, POOL_ABI, "maxSeniorDeposit")) === 0n,
-    );
+    // POOL-06. Senior capacity is a function of the subordination beneath it, and on a
+    // virgin book there is none — you cannot be senior to nothing. Seeding junior is
+    // what ends that, so like the control above it is witnessed once and then gone.
+    if (await this.view<boolean>(d.creditPool, POOL_ABI, "seeded", [Tranche.Junior])) {
+      note(
+        "senior capacity is zero against a book with no junior",
+        "junior is seeded; capacity is bounded by it rather than absent",
+      );
+    } else {
+      check(
+        "senior capacity is zero against a book with no junior",
+        (await this.view<bigint>(d.creditPool, POOL_ABI, "maxSeniorDeposit")) === 0n,
+      );
+    }
   }
 
   /**
