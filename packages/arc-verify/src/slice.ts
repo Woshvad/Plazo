@@ -302,6 +302,16 @@ interface Deployment {
 const TRANCHE_SEED = 1_000_000n;
 
 /**
+ * The longest epoch window the run will sit through, in seconds.
+ *
+ * Ninety minutes is the parameter's one-hour floor plus slack for a window that began
+ * before the run did. Longer than that is a misconfiguration for a slice rather than
+ * something to wait out, and a run that silently blocks for most of a day is worse
+ * than one that says which parameter to move.
+ */
+const MAX_EPOCH_WAIT = 90n * 60n;
+
+/**
  * What a full run needs on the funding account, all at once.
  *
  * Most of it is the book. UW-02 caps Tier-0 paper at a share of the pool and the
@@ -965,6 +975,13 @@ class Slice {
    * remainder fills from natural runoff.
    */
   async unwind(): Promise<void> {
+    // Queue both tranches, then close once — the mirror of how they were funded, and
+    // of DEC-22: an epoch prices every request in it at the same NAV, so a close per
+    // tranche settles nothing a single close would not and costs an entire epoch
+    // window to do it. That is an hour at the floor and a day at the default, spent
+    // waiting for a second strike that is arithmetically identical to the first.
+    const queued: {tranche: (typeof Tranche)[keyof typeof Tranche]; index: bigint}[] = [];
+
     for (const tranche of [Tranche.Senior, Tranche.Junior] as const) {
       const share = tranche === Tranche.Senior ? this.deployment.seniorShares : this.deployment.juniorShares;
       const held = await this.view<bigint>(share, TRANCHE_ABI, "balanceOf", [
@@ -981,7 +998,14 @@ class Slice {
         tranche,
         held,
       ]);
-      await this.closeEpoch();
+      queued.push({tranche, index});
+    }
+
+    if (queued.length === 0) return;
+
+    await this.closeEpoch();
+
+    for (const {tranche, index} of queued) {
       await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimRedemption", [
         tranche,
         index,
@@ -1019,15 +1043,27 @@ class Slice {
    */
   private async closeEpoch(): Promise<void> {
     const endsAt = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "epochEndsAt");
-    const block = await shed(() => this.publicClient.getBlock());
+    let block = await shed(() => this.publicClient.getBlock());
 
     if (block.timestamp < endsAt) {
-      throw new Error(
-        `The epoch runs until ${endsAt} and it is ${block.timestamp}. ` +
-          `Lower plazo.pool.epochLength to its one-hour floor, or wait ${
-            (endsAt - block.timestamp) / 60n
-          } minutes.`,
-      );
+      const seconds = endsAt - block.timestamp;
+
+      // Waiting is only reasonable against the floor. Anything longer is a
+      // misconfiguration for a slice run rather than something to sit through, and
+      // sitting through it silently for most of a day is worse than saying so.
+      if (seconds > MAX_EPOCH_WAIT) {
+        throw new Error(
+          `The epoch runs until ${endsAt} and it is ${block.timestamp} — ${seconds / 60n} minutes. ` +
+            `Lower plazo.pool.epochLength to its one-hour floor and close the open epoch first; ` +
+            `the run will then wait out each window as it reaches it.`,
+        );
+      }
+
+      console.log(`  … epoch ${await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "currentEpoch")} closes in ${seconds / 60n}m, waiting`);
+      while (block.timestamp < endsAt) {
+        await new Promise((resolve) => setTimeout(resolve, 15_000));
+        block = await shed(() => this.publicClient.getBlock());
+      }
     }
 
     await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "markEpoch", [32n]);
