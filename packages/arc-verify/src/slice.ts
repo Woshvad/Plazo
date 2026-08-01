@@ -331,11 +331,14 @@ const MAX_EPOCH_WAIT = 90n * 60n;
  * added — a shortfall the operator only discovers with a funded account and a
  * half-finished run.
  */
-export const REQUIRED =
+export const CAPITALISATION =
   SENIOR_SEED +
   JUNIOR_SEED +
   RESERVE_SEED +
-  2n * TRANCHE_SEED + // POOL-12's permanent seeds, one per tranche, never redeemable
+  2n * TRANCHE_SEED; // POOL-12's permanent seeds, one per tranche, never redeemable
+
+export const REQUIRED =
+  CAPITALISATION +
   MERCHANT_BOND +
   PRINCIPAL + // the borrower's four installments, drawn one at a time
   2n * markEscrowFor(4n) +
@@ -399,6 +402,18 @@ class Slice {
    */
   async nativeBalance(who: Address): Promise<bigint> {
     return shed(() => this.publicClient.getBalance({address: who}));
+  }
+
+  /** Whether the book already carries the capital `prepareBook` would deposit. */
+  async bookIsCapitalised(): Promise<boolean> {
+    return this.view<boolean>(this.deployment.creditPool, POOL_ABI, "originationOpen");
+  }
+
+  /** The merchant's standing bond, which a re-run does not have to post again. */
+  async merchantBond(): Promise<bigint> {
+    return this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "bondOf", [
+      this.account(this.merchant),
+    ]);
   }
 
   async balance(who: Address): Promise<bigint> {
@@ -620,21 +635,30 @@ class Slice {
     //
     // Junior first. Senior capacity is a function of the subordination beneath it, so
     // a book is capitalised from the bottom up, which is how one actually is.
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
-      Tranche.Junior,
-      JUNIOR_SEED,
-    ]);
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
-      Tranche.Senior,
-      SENIOR_SEED,
-    ]);
-    await this.closeEpoch();
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimShares", [Tranche.Junior]);
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimShares", [Tranche.Senior]);
+    //
+    // Skipped outright if the book already carries capital. This is not a nicety: a
+    // run that failed after capitalising has already spent the deposits, so repeating
+    // them asks for 295 USDC the account no longer holds — the second run would fail
+    // on funds rather than on whatever it was re-run to test. Skipping also spares the
+    // epoch window, which is the difference between iterating in a minute and in an
+    // hour.
+    if (!(await this.view<boolean>(this.deployment.creditPool, POOL_ABI, "originationOpen"))) {
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
+        Tranche.Junior,
+        JUNIOR_SEED,
+      ]);
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
+        Tranche.Senior,
+        SENIOR_SEED,
+      ]);
+      await this.closeEpoch();
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimShares", [Tranche.Junior]);
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimShares", [Tranche.Senior]);
 
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "fundReserve", [
-      RESERVE_SEED,
-    ]);
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "fundReserve", [
+        RESERVE_SEED,
+      ]);
+    }
 
     check(
       "the book is capitalised and the origination gate is open",
@@ -656,14 +680,21 @@ class Slice {
       merchant,
       true,
     ]);
-    await this.write(this.deployer, this.deployment.token, TOKEN_ABI, "approve", [
-      this.deployment.merchantRegistry,
-      MERCHANT_BOND,
-    ]);
-    await this.write(this.deployer, this.deployment.merchantRegistry, MERCHANTS_ABI, "postBond", [
-      merchant,
-      MERCHANT_BOND,
-    ]);
+    // Posted once. A bond is a standing deposit, not a per-run fee — re-posting would
+    // quietly ask the account for another ten dollars every time the slice is re-run.
+    if (
+      (await this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "bondOf", [merchant])) <
+      MERCHANT_BOND
+    ) {
+      await this.write(this.deployer, this.deployment.token, TOKEN_ABI, "approve", [
+        this.deployment.merchantRegistry,
+        MERCHANT_BOND,
+      ]);
+      await this.write(this.deployer, this.deployment.merchantRegistry, MERCHANTS_ABI, "postBond", [
+        merchant,
+        MERCHANT_BOND,
+      ]);
+    }
 
     await this.write(this.deployer, this.deployment.compliance, COMPLIANCE_ABI, "screen", [
       this.account(this.borrower),
@@ -1301,12 +1332,17 @@ class Slice {
     // makes the cure observable — a plan cannot become current again while something
     // else is still overdue.
     //
-    // The jitter is ±12h and is not known until `planId` is derived, so the anchor
-    // has to work for either extreme. With a two-day interval, `now - 4d - 13h`
-    // leaves installment 2 due by at least an hour and installment 3 at least eleven
-    // hours away, whichever way the jitter falls.
-    const interval = 2n * DAY;
-    const terms = this.terms(now - 4n * DAY - 13n * 3_600n, interval, now);
+    // The interval is the book's own floor, not a demo convenience. `minInterval` is
+    // immutable on the pool — seven days — and DEC-26 makes the book refuse anything
+    // outside its band, so the two-day schedule this used to compress the run into was
+    // simply unfundable. Finding 18.
+    //
+    // The jitter is ±12h and is not known until `planId` is derived, so the anchor has
+    // to work for either extreme. At a seven-day interval `now - 14d - 13h` leaves
+    // installment 2 due by at least an hour and installment 3 at least five days away,
+    // whichever way the jitter falls — the same shape as before, scaled to the band.
+    const interval = 7n * DAY;
+    const terms = this.terms(now - 14n * DAY - 13n * 3_600n, interval, now);
 
     const merchant = this.account(this.merchant);
     const mdr = await this.view<bigint>(this.deployment.checkoutRouter, ROUTER_ABI, "mdrFor", [
@@ -1363,9 +1399,9 @@ class Slice {
     check(
       "a transfer-restricted receivable was minted to the pool",
       (await this.view<boolean>(this.deployment.receivable, RECEIVABLE_ABI, "exists", [id])) &&
-        (await this.view<Address>(this.deployment.receivable, RECEIVABLE_ABI, "ownerOf", [
-          BigInt(id),
-        ])) === this.deployment.creditPool,
+        (
+          await this.view<Address>(this.deployment.receivable, RECEIVABLE_ABI, "ownerOf", [BigInt(id)])
+        ).toLowerCase() === this.deployment.creditPool.toLowerCase(),
     );
 
     const borrower = this.account(this.borrower);
@@ -1489,8 +1525,13 @@ class Slice {
     // Backdated far enough that the last installment is past its three-day grace
     // window whichever way the jitter falls. Nothing is collected here; the point is
     // the crank nobody profits from.
-    const interval = 2n * DAY;
-    const terms = this.terms(now - 10n * DAY, interval, now + 1n, 2n);
+    //
+    // Seven days again, for the reason in `runHappyPath`. At that interval the anchor
+    // has to move with it: `now - 10d` would put the second installment as little as
+    // two and a half days back once the jitter lands, which is inside the grace window
+    // it is supposed to be past.
+    const interval = 7n * DAY;
+    const terms = this.terms(now - 14n * DAY, interval, now + 1n, 2n);
     const plan = await this.originate(terms, now);
 
     const stranger = this.keeper;
@@ -1597,20 +1638,36 @@ export async function runSlice(): Promise<void> {
   // proves the refusals work against live bytecode rather than against a mock.
   await slice.runControls();
 
-  if (funds < REQUIRED) {
+  // What is still needed, not what a virgin run would need. A book that is already
+  // capitalised holds that money — it is in the pool rather than the account, and
+  // asking for it twice would refuse a run that has everything it requires.
+  const capitalised = await slice.bookIsCapitalised();
+  const bonded = (await slice.merchantBond()) >= MERCHANT_BOND;
+  const already = (capitalised ? CAPITALISATION : 0n) + (bonded ? MERCHANT_BOND : 0n);
+  const needed = REQUIRED - already;
+
+  if (funds < needed) {
     console.log(`\n${passed} assertions passed against live chain ${chainId}.`);
     console.log("\nThe credit half of the slice did not run.");
     console.log(
-      `It needs ${usdc(REQUIRED)} on ${deployerAccount.address} and the account holds ${usdc(funds)}.`,
+      `It needs ${usdc(needed)} on ${deployerAccount.address} and the account holds ${usdc(funds)}.`,
     );
-    console.log(
-      "Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share\n" +
-        "of the pool, so a $75 ticket needs $300 of capital behind it before the headroom\n" +
-        "reaches the ticket. The deposits cycle through the plan and are redeemed at the\n" +
-        "end — what is needed is a peak holding, not a spend.\n\n" +
-        "Top up at https://faucet.circle.com and run again.",
-    );
-    throw new Error(`insufficient testnet USDC: need ${usdc(REQUIRED)}, have ${usdc(funds)}`);
+    if (already > 0n) {
+      console.log(
+        `${usdc(already)} of the ${usdc(REQUIRED)} is already committed from an earlier run — ` +
+          `${capitalised ? "the book carries its capital" : ""}${capitalised && bonded ? " and " : ""}` +
+          `${bonded ? "the merchant's bond is posted" : ""}. Only the working float is outstanding.`,
+      );
+    } else {
+      console.log(
+        "Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share\n" +
+          "of the pool, so a $75 ticket needs $300 of capital behind it before the headroom\n" +
+          "reaches the ticket. The deposits cycle through the plan and are redeemed at the\n" +
+          "end — what is needed is a peak holding, not a spend.",
+      );
+    }
+    console.log("\nTop up at https://faucet.circle.com and run again.");
+    throw new Error(`insufficient testnet USDC: need ${usdc(needed)}, have ${usdc(funds)}`);
   }
 
   const now = BigInt((await shed(() => publicClient.getBlock())).timestamp);

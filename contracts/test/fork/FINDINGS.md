@@ -361,3 +361,54 @@ default of 1000 bp, which asserted that nobody had exercised governance — some
 run itself does three lines into `prepareBook`, and the entire purpose of having a
 registry. It now asserts the value is inside its compiled band, which is the property
 GOV-01 actually claims; that the band is enforced is the assertion immediately after it.
+
+## 18. The slice's compressed schedule was paper the book could never fund
+
+Both plans were originated on a two-day interval, to compress a four-installment
+schedule into a run that cannot warp its clock. The pool refused them:
+
+```
+acceptsSchedule(4, 172800) → false
+  → ScheduleOutOfBand(pool, 4, 172800)
+```
+
+`minInterval` is **immutable** on `TranchedCreditPool` — seven days, with a
+thirty-one-day ceiling — and DEC-26 makes the book, not a signed field, decide what it
+will front. So the demo schedule was not merely unusual, it was unfundable by the only
+book on the network, and no amount of configuration could have made it work. The band
+is constructor state; changing it is a redeployment.
+
+The anchors move with the interval rather than the interval moving to the anchors. At
+seven days, `now - 14d - 13h` leaves installments 0–2 due and installment 3 at least
+five days out, whichever way the ±12h `planId` jitter falls — the same shape the
+two-day version had, scaled to the band the book actually declares. The delinquency
+plan needed the same treatment: at seven days its old `now - 10d` anchor could put the
+second installment as little as two and a half days back, which is *inside* the
+three-day grace window it exists to be past.
+
+## 19. A live slice is not a test fixture, and this one assumed it was
+
+The suite tears down and rebuilds its world every run. The live slice cannot: it points
+at one persistent deployment, and everything it does stays done. Every partial failure
+therefore left state that refused the next attempt, and the failures came one per run:
+
+| What the run had already done | What it refused next time |
+|---|---|
+| Seeded both tranches | four virgin-book controls, now false (finding 17) |
+| Raised the Tier-0 share to its ceiling | `every Appendix A parameter reads from the registry` |
+| Capitalised the book | a second 295 USDC deposit the account no longer held |
+| Posted the merchant's bond | another ten dollars, silently, every run |
+| Originated a plan | *itself* — 75 USDC of live exposure consumed the Tier-0 headroom, so the book had 5.50 USDC of room for a 75 USDC ticket |
+
+Each step is now guarded by reading the chain first: seeds skip if seeded, the bond
+skips if posted, capitalisation skips if the origination gate is already open — which
+also spares the epoch window, the difference between iterating in a minute and in an
+hour. The funding check subtracts what is already committed rather than demanding the
+virgin total, so a book holding its own capital is not told it is 332 USDC short of
+money it is currently holding.
+
+The orphaned plan is the one that does not have a guard, because it is not idempotence
+— it is cleanup. A run that dies mid-plan leaves a live receivable, and the only honest
+fixes are to drive it to a terminal state or to redeploy. It was cleared by hand here:
+`repay`, `recognise`, `notePlanOutcome`, all three permissionless, which is at least
+GOV-08 paying for itself in an unplanned way.
