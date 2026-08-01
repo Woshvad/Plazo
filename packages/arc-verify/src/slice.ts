@@ -125,7 +125,9 @@ const TRANCHE_ABI = parseAbi([
   "function totalSupply() view returns (uint256)",
   "function balanceOf(address holder) view returns (uint256)",
   "function transfer(address to, uint256 amount) returns (bool)",
+  "function approve(address spender, uint256 amount) returns (bool)",
   "function lockPeriod() view returns (uint256)",
+  "function unlockAt(address holder) view returns (uint256)",
   "function mint(address to, uint256 shares)",
 ]);
 
@@ -321,10 +323,26 @@ const MAX_EPOCH_WAIT = 90n * 60n;
  *
  * Most of it is the book. UW-02 caps Tier-0 paper at a share of the pool and the
  * band's ceiling is 25%, so a $75 ticket needs $300 of capital behind it before the
- * headroom reaches the ticket — the cap working, not a nuisance. None of it is spent:
- * deposits go in, cycle through the plan, and are redeemed at the end. The borrower's
- * float is the part that genuinely moves, and it moves into the pool rather than back
- * to the funding account, which is why it is counted in full.
+ * headroom reaches the ticket — the cap working, not a nuisance.
+ *
+ * How much of it comes back, precisely, because the loose version of this sentence was
+ * wrong twice over.
+ *
+ * The junior 45 is **not** redeemable at the end of a run. POOL-10 locks junior for a
+ * full tenor — 56 days, stamped on the receipt at `claimShares` — so `requestRedeem`
+ * reverts for eight weeks after the book is capitalised. The two 1-USDC tranche seeds
+ * are permanent by design.
+ *
+ * The senior 250 does not come back whole either. POOL-09's liquidity fee arms above
+ * 10% of assets and a whole-position redemption is far past that, so about 1% — 2.50
+ * USDC — is retained by the tranche on the way out, where the only holder left after
+ * the burn is the permanent seed. Nothing redeems that.
+ *
+ * And none of it comes back by default at all: `unwind` is opt-in, because a drained
+ * book still reports its gate open and then cannot fund the next run. So the honest
+ * summary is that this is capital committed to a standing testnet book, not a peak
+ * holding that unwinds itself — plus the borrower's float, which moves into the pool
+ * rather than back to the funding account, and is counted in full for that reason.
  *
  * Exported because `faucet.ts` reports progress against it. Two copies of this figure
  * is how it came to be quoted as 406.84 in five documents after the tranche seeds were
@@ -537,6 +555,34 @@ class Slice {
     );
   }
 
+  /**
+   * The return value of a *state-changing* call, without sending it.
+   *
+   * `view` cannot do this. It goes through `readContract`, which builds an `eth_call`
+   * with no `from`, so `msg.sender` is the zero address — and anything that spends an
+   * allowance, checks a role or transfers on the caller's behalf reverts before it can
+   * return anything. `requestRedeem` does all three. The sender is the whole point, so
+   * it has to be a simulation against a named account rather than a read.
+   */
+  private async peek<T>(
+    wallet: WalletClient,
+    address: Address,
+    abi: readonly unknown[],
+    functionName: string,
+    args: unknown[] = [],
+  ): Promise<T> {
+    const {result} = await shed(() =>
+      this.publicClient.simulateContract({
+        account: wallet.account!,
+        address,
+        abi,
+        functionName,
+        args,
+      } as never),
+    );
+    return result as T;
+  }
+
   // ─── Setting the book up ────────────────────────────────────────────────────
 
   /**
@@ -630,7 +676,7 @@ class Slice {
     // on funds rather than on whatever it was re-run to test. Skipping also spares the
     // epoch window, which is the difference between iterating in a minute and in an
     // hour.
-    if (!(await this.view<boolean>(this.deployment.creditPool, POOL_ABI, "originationOpen"))) {
+    if (!(await bookIsFunded(this.publicClient, this.deployment))) {
       await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
         Tranche.Junior,
         JUNIOR_SEED,
@@ -954,13 +1000,28 @@ class Slice {
       await this.reverts(d.seniorShares, TRANCHE_ABI, "mint", [this.account(this.deployer), 1n], this.deployer),
     );
 
-    // POOL-04. An epoch cannot be closed before its window has passed.
+    // POOL-04. An epoch cannot be closed before its window has passed — which is only
+    // askable while a window is open. At the one-hour floor the epoch lapses on its own
+    // between runs, and the refusal this asserts becomes a permission: `closeEpoch`
+    // simulates cleanly and `reverts` returns false, failing the run on a property the
+    // contract never violated. The wall clock is not a state the slice controls, so it
+    // reports rather than pretending. Finding 24.
     const epoch = await this.view<bigint>(d.creditPool, POOL_ABI, "currentEpoch");
-    check(
-      "an epoch cannot be closed before its time",
-      await this.reverts(d.creditPool, POOL_ABI, "closeEpoch", [], this.deployer),
-      `epoch ${epoch} is still open`,
-    );
+    const endsAt = await this.view<bigint>(d.creditPool, POOL_ABI, "epochEndsAt");
+    const clock = (await shed(() => this.publicClient.getBlock())).timestamp;
+
+    if (clock >= endsAt) {
+      note(
+        "an epoch cannot be closed before its time",
+        `epoch ${epoch}'s window closed ${(clock - endsAt) / 60n} minutes ago — the refusal cannot be asked of an epoch that is already due`,
+      );
+    } else {
+      check(
+        "an epoch cannot be closed before its time",
+        await this.reverts(d.creditPool, POOL_ABI, "closeEpoch", [], this.deployer),
+        `epoch ${epoch} runs for another ${(endsAt - clock) / 60n} minutes`,
+      );
+    }
 
     // POOL-06. Senior capacity is a function of the subordination beneath it, and on a
     // virgin book there is none — you cannot be senior to nothing. Seeding junior is
@@ -1075,15 +1136,41 @@ class Slice {
   }
 
   /**
-   * Return the pool's capital and the merchant's bond to the funding account.
+   * Return the pool's redeemable capital to the funding account. **Opt-in.**
    *
-   * Three steps per tranche now rather than one, because POOL-03 made exit
-   * asynchronous: queue the shares, close the epoch that prices them, collect. A
-   * redeemer who cannot be paid this epoch keeps their cumulative position, so a
-   * partial unwind is not a failure — it is the queue doing what it is for, and the
-   * remainder fills from natural runoff.
+   * Three steps per tranche, because POOL-03 made exit asynchronous: queue the shares,
+   * close the epoch that prices them, collect. A redeemer who cannot be paid this epoch
+   * keeps their cumulative position, so a partial unwind is not a failure — it is the
+   * queue doing what it is for, and the remainder fills from natural runoff.
+   *
+   * It does not run by default, and that is a correction rather than a preference.
+   * Redeeming the senior leg takes the book from ~337 USDC to ~90, and
+   * `originationOpen()` stays *true* at that size — subordination and reserve are both
+   * ratios, and they improve as the book shrinks. So the gate reads open, `prepareBook`
+   * skips re-capitalisation on the next run, and origination then fails on Tier-0
+   * headroom: 25% of 90 is 22.50 against a 75 minimum ticket. The run drains the book
+   * and reports success, and every subsequent run dies without saying why.
+   *
+   * It also is not free. POOL-09's liquidity fee arms at 10% of assets and a 250-of-337
+   * redemption is far past it, so ~1% — about 2.50 USDC — is retained by the tranche on
+   * the way out. After the deployer's shares burn, the only holder left in that tranche
+   * is POOL-12's permanent seed, which nothing can ever redeem. That fee is gone for
+   * good, every run, and it is charged for the privilege of undoing the run's own setup.
+   *
+   * So: `PLAZO_UNWIND=1` when the money is actually wanted back. Otherwise the book
+   * stays capitalised and the next run costs the working float instead of 322 USDC.
+   * Findings 25 and 26.
    */
   async unwind(): Promise<void> {
+    if (process.env["PLAZO_UNWIND"] !== "1") {
+      const assets = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets");
+      note(
+        "the book is unwound and the capital returned",
+        `left capitalised at ${usdc(assets)} so the next run needs only its float — set PLAZO_UNWIND=1 to redeem`,
+      );
+      return;
+    }
+
     // Queue both tranches, then close once — the mirror of how they were funded, and
     // of DEC-22: an epoch prices every request in it at the same NAV, so a close per
     // tranche settles nothing a single close would not and costs an entire epoch
@@ -1091,18 +1178,53 @@ class Slice {
     // waiting for a second strike that is arithmetically identical to the first.
     const queued: {tranche: (typeof Tranche)[keyof typeof Tranche]; index: bigint}[] = [];
 
+    const nowTs = (await shed(() => this.publicClient.getBlock())).timestamp;
+
     for (const tranche of [Tranche.Senior, Tranche.Junior] as const) {
+      const name = tranche === Tranche.Senior ? "senior" : "junior";
       const share = tranche === Tranche.Senior ? this.deployment.seniorShares : this.deployment.juniorShares;
       const held = await this.view<bigint>(share, TRANCHE_ABI, "balanceOf", [
         this.account(this.deployer),
       ]);
       if (held === 0n) continue;
 
-      await this.write(this.deployer, share, TRANCHE_ABI, "approve", [this.deployment.creditPool, held]);
-      const index = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "requestRedeem", [
-        tranche,
-        held,
+      // POOL-10's lockup is enforced by the share token on the way *out*, and DEC-29
+      // stamps it on the receipt — so `claimShares` in `prepareBook` started this
+      // clock, and `requestRedeem` is a transfer the token refuses until it lapses.
+      // Junior's is 56 days, which outlasts any run, so the junior deposit is a real
+      // capital commitment for a full product tenor rather than a peak holding. Read
+      // per tranche rather than special-casing junior: it is the token's rule, and it
+      // self-heals when the lock expires. Finding 20.
+      const until = await this.view<bigint>(share, TRANCHE_ABI, "unlockAt", [
+        this.account(this.deployer),
       ]);
+      if (until > nowTs) {
+        // Priced through the tranche's own NAV, not by shifting the decimals offset.
+        // `held` is in 9-decimal share units and the shares are not at par — junior
+        // takes the residual of every recognised fee — so `held / 1000` would report a
+        // 48 USDC claim as 45. And the label has to describe the skip: `note` prints
+        // label-then-detail, so "the junior position is redeemed — locked for another
+        // 55 days" asserts in its first clause what it denies in its second.
+        const nav = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "navPerShare", [
+          tranche,
+        ]);
+        note(
+          `the ${name} position stays in the book`,
+          `locked by POOL-10 for another ${(until - nowTs + DAY - 1n) / DAY} days; ${usdc((held * nav) / 10n ** 18n)} is not redeemable yet`,
+        );
+        continue;
+      }
+
+      await this.write(this.deployer, share, TRANCHE_ABI, "approve", [this.deployment.creditPool, held]);
+      // Simulated against the deployer, not read. `requestRedeem` escrows the shares
+      // with `transferFrom(msg.sender, …)`, and a plain `eth_call` carries no `from`.
+      const index = await this.peek<bigint>(
+        this.deployer,
+        this.deployment.creditPool,
+        POOL_ABI,
+        "requestRedeem",
+        [tranche, held],
+      );
       await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestRedeem", [
         tranche,
         held,
@@ -1114,6 +1236,13 @@ class Slice {
 
     await this.closeEpoch();
 
+    // `claimRedemption` returns zero and does not revert when the fill line has not
+    // reached the ticket, so an unwind that paid out nothing is indistinguishable from
+    // one that paid out everything — and this phase had no assertion of any kind. The
+    // money arriving is the property; assert on the balance rather than on the absence
+    // of a revert. Finding 27.
+    const before = await this.balance(this.account(this.deployer));
+
     for (const {tranche, index} of queued) {
       await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimRedemption", [
         tranche,
@@ -1121,6 +1250,13 @@ class Slice {
         8n,
       ]);
     }
+
+    const returned = (await this.balance(this.account(this.deployer))) - before;
+    check(
+      "the redeemed capital arrived in the funding account",
+      returned > 0n,
+      `${usdc(returned)} across ${queued.length} tranche${queued.length === 1 ? "" : "s"}, net of POOL-09's liquidity fee`,
+    );
   }
 
 
@@ -1185,8 +1321,16 @@ class Slice {
    * token's own domain, the acceptance is signed against the plan's counterfactual
    * address, and the factory verifies all of it onchain before the plan exists.
    */
-  async originate(terms: PlanTerms, now: bigint): Promise<Address> {
-    const prepared = preparePlan(terms, now + 3600n);
+  async originate(terms: PlanTerms): Promise<Address> {
+    // The two deadlines are struck from the chain's clock *now*, not from the run's
+    // opening timestamp. The schedule anchors can be run-level — they are backdated by
+    // days and a few minutes either way is nothing — but the acceptance lives an hour
+    // and the attestation ten minutes, and `prepareBook` alone can sit through a
+    // ninety-minute epoch window before this is ever reached. Deriving a ten-minute
+    // TTL from a timestamp taken before an unbounded wait means the attestation is
+    // already expired when it is signed. Finding 23.
+    const issuedAt = (await shed(() => this.publicClient.getBlock())).timestamp;
+    const prepared = preparePlan(terms, issuedAt + 3600n);
 
     const onchain = await shed(() =>
       this.publicClient.readContract({
@@ -1247,7 +1391,7 @@ class Slice {
       personId,
       identityClass: IdentityClass.Pseudonymous,
       limit: 200_000_000n,
-      validUntil: now + 600n,
+      validUntil: issuedAt + 600n,
     } as const;
 
     const attestationSignature = await this.deployer.signTypedData({
@@ -1351,7 +1495,7 @@ class Slice {
     ]);
     const payoutBefore = await this.balance(this.account(this.deployer));
 
-    const plan = await this.originate(terms, now);
+    const plan = await this.originate(terms);
 
     // CHKT-04. The merchant has the money when the transaction ends — not within one
     // block, within one *transaction*. Arc finalises in about half a second with no
@@ -1520,23 +1664,36 @@ class Slice {
     // it is supposed to be past.
     const interval = 7n * DAY;
     const terms = this.terms(now - 14n * DAY, interval, now + 1n, 2n);
-    const plan = await this.originate(terms, now);
+    const plan = await this.originate(terms);
 
     const stranger = this.keeper;
     const before = await this.balance(this.account(stranger));
 
-    await this.send(stranger, {
-      account: stranger.account!,
-      chain: arcTestnet,
-      address: plan,
-      abi: PLAN_ABI,
-      functionName: "markMissed",
-      args: [1n],
-    } as never);
+    // Both installments are past grace — the anchor is fourteen days back on a
+    // seven-day interval — so both get marked. Marking only the last one leaves
+    // installment 0 Pending past its window forever, and `_syncMarkState` flags the
+    // whole book `unmarked` on *any* such installment. It stays quiet during this run
+    // only because `front` already stamped `markedEpoch == _epoch`; the first
+    // `markEpoch` of the next epoch walks the plan, sets `unmarkedDelinquencies = 1`,
+    // and from then on `originationOpen()` is false and `closeEpoch()` reverts
+    // `UnmarkedDelinquencyOutstanding` — for every borrower on the book, permanently,
+    // with no path back. The escrow funds both marks. Finding 21.
+    for (const index of [0n, 1n]) {
+      await this.send(stranger, {
+        account: stranger.account!,
+        chain: arcTestnet,
+        address: plan,
+        abi: PLAN_ABI,
+        functionName: "markMissed",
+        args: [index],
+      } as never);
+    }
 
     check(
       "an address with no relationship to the plan recorded the delinquency",
-      await this.read<boolean>(plan, "isMarked", [1n]),
+      (await this.read<boolean>(plan, "isMarked", [0n])) &&
+        (await this.read<boolean>(plan, "isMarked", [1n])),
+      "both installments past grace",
     );
     check(
       "the marker was paid out of the plan's own escrow",
@@ -1547,6 +1704,46 @@ class Slice {
       (await this.read<number>(plan, "state")) === PlanState.Delinquent &&
         (await this.read<bigint>(plan, "feesOutstanding")) > 0n,
     );
+
+    // The delinquency is demonstrated; leaving the plan open is not part of it. Plan B
+    // holds the borrower's only active-plan slot — `capFor` returns zero outright while
+    // `activePlans > 0` — and 75 USDC of the merchant's concentration. The only ways
+    // out of a non-terminal plan are a full payoff or a charge-off six weeks from now,
+    // so the run puts it back rather than stranding the deployment for the next one.
+    // Finding 22.
+    const idB = await this.read<Hex>(plan, "planId");
+    const payoffB = await this.read<bigint>(plan, "payoffAmount");
+    await this.topUp(this.account(this.borrower), payoffB + GAS_RESERVE);
+    await this.send(this.borrower, {
+      account: this.borrower.account!,
+      chain: arcTestnet,
+      address: this.deployment.token,
+      abi: TOKEN_ABI,
+      functionName: "approve",
+      args: [plan, payoffB],
+    } as never);
+    await this.send(this.borrower, {
+      account: this.borrower.account!,
+      chain: arcTestnet,
+      address: plan,
+      abi: PLAN_ABI,
+      functionName: "repay",
+      args: [payoffB],
+    } as never);
+    check(
+      "a delinquent plan cured by push, late fee and all",
+      (await this.read<number>(plan, "state")) === PlanState.Repaid,
+      usdc(payoffB),
+    );
+
+    await this.write(this.keeper, this.deployment.checkoutRouter, ROUTER_ABI, "recognise", [idB]);
+    await this.write(this.keeper, this.deployment.tier0, TIER0_ABI, "notePlanOutcome", [idB]);
+    check(
+      "the run gave the book back everything it borrowed",
+      (await this.view<bigint>(this.deployment.tier0, TIER0_ABI, "outstandingExposure")) === 0n,
+    );
+
+    await this.recycle(this.borrower, "borrower");
     await this.recycle(this.keeper, "keeper");
   }
 }
@@ -1580,18 +1777,46 @@ export function loadDeployment(chainId: number): Deployment {
  * Exported so `faucet.ts` reports the same number the slice enforces. The 406.84 drift
  * came from two copies of one figure; so did this.
  */
-export async function outstandingRequirement(
-  publicClient: PublicClient,
-  deployment: Deployment,
-  merchant: Address,
-): Promise<{needed: bigint; already: bigint; capitalised: boolean; bonded: boolean}> {
-  const capitalised = await shed(() =>
+/**
+ * Whether the book can actually fund the run's ticket — not merely whether its gate
+ * reads open.
+ *
+ * These come apart, and the gap is a trap. `originationOpen()` tests subordination and
+ * reserve, which are *ratios*: they improve as the book shrinks, so a pool drained to
+ * a tenth of its size still reports open. Tier-0 headroom is a *share* of assets, and
+ * at 25% of a 90 USDC book that is 22.50 against a 75 minimum ticket. Reading the gate
+ * alone tells `prepareBook` to skip capitalisation and tells the operator their money
+ * is committed, and then origination fails for want of exactly that money.
+ *
+ * One predicate, used by both, so the funding check can never promise what the setup
+ * will not do. Finding 25.
+ */
+async function bookIsFunded(publicClient: PublicClient, deployment: Deployment): Promise<boolean> {
+  const open = await shed(() =>
     publicClient.readContract({
       address: deployment.creditPool,
       abi: POOL_ABI,
       functionName: "originationOpen",
     }),
   );
+  if (!open) return false;
+
+  const headroom = await shed(() =>
+    publicClient.readContract({
+      address: deployment.tier0,
+      abi: TIER0_ABI,
+      functionName: "bookHeadroom",
+    }),
+  );
+  return headroom >= PRINCIPAL;
+}
+
+export async function outstandingRequirement(
+  publicClient: PublicClient,
+  deployment: Deployment,
+  merchant: Address,
+): Promise<{needed: bigint; already: bigint; capitalised: boolean; bonded: boolean}> {
+  const capitalised = await bookIsFunded(publicClient, deployment);
   const bond = await shed(() =>
     publicClient.readContract({
       address: deployment.merchantRegistry,
