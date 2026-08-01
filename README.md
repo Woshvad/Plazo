@@ -211,7 +211,7 @@ The origination plane — live controls
 27 assertions passed against live chain 5042002.
 ```
 
-The credit half needs **406.84 USDC** on the funding account and has not run. Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it, and the deposits cycle through the plan and are redeemed at the end. Widening that band would make a testnet run cheaper and would remove one of the two things standing between an unproven scorecard and the senior tranche, so it stays where it is and the slice reports the shortfall.
+The credit half needs **408.84 USDC** on the funding account and has not run. Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it, and the deposits cycle through the plan and are redeemed at the end. Widening that band would make a testnet run cheaper and would remove one of the two things standing between an unproven scorecard and the senior tranche, so it stays where it is and the slice reports the shortfall.
 
 To reproduce:
 
@@ -229,7 +229,7 @@ The record comes from Foundry's broadcast artefact rather than from the script, 
 pnpm --filter @plazo/arc-verify slice
 ```
 
-The control half needs `DEPLOYER_PRIVATE_KEY` and pennies. **The credit half needs 406.84 USDC**, and most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, and the band's ceiling is 25%, so the smallest ticket the protocol will originate needs four times its own value in capital behind it before the headroom reaches the ticket. The deposits cycle through the plan and are redeemed at the end. Fund at [`faucet.circle.com`](https://faucet.circle.com) and the slice runs the rest.
+The control half needs `DEPLOYER_PRIVATE_KEY` and pennies. **The credit half needs 408.84 USDC**, and most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, and the band's ceiling is 25%, so the smallest ticket the protocol will originate needs four times its own value in capital behind it before the headroom reaches the ticket. The deposits cycle through the plan and are redeemed at the end. Fund at [`faucet.circle.com`](https://faucet.circle.com) and the slice runs the rest.
 
 Widening that band would make a testnet run cheaper and would also remove one of the two things standing between an unproven scorecard and the senior tranche.
 

@@ -205,7 +205,26 @@ With Phase 2's four contracts the two orders coincided and the record was right 
 
 UW-02 caps Tier-0 paper at a share of the pool's book, enforced onchain. The band's ceiling is 25%, so the smallest ticket the protocol will originate needs four times its own value in pool capital before the headroom reaches it — $300 against a $75 plan, plus the merchant bond and the borrower's float.
 
-The full live slice therefore needs **406.84 USDC** on the funding account. That is a peak holding rather than a spend: deposits go in, cycle through the plan, and are redeemed at the end.
+The full live slice therefore needs **408.84 USDC** on the funding account, and the breakdown is almost entirely capital:
+
+| | |
+|---|---|
+| Senior deposit | 250.00 |
+| Junior deposit | 45.00 |
+| First-loss reserve | 25.00 |
+| Permanent tranche seeds (POOL-12) | 2.00 |
+| Merchant bond | 10.00 |
+| Borrower's float across four installments | 75.00 |
+| Mark escrow, two plans | 1.60 |
+| Gas float, four accounts | 0.24 |
+
+That is a peak holding rather than a spend: the deposits go in, cycle through the plan, and are redeemed at the end. The borrower's float is the part that genuinely moves, and it moves into the pool.
+
+**Two corrections found by pricing it properly**, both of which would have wasted a funded run:
+
+The figure omitted POOL-12's permanent per-tranche seeds — 2 USDC that `prepareBook` spends and `REQUIRED` did not count. A slice that starts and stops two dollars short is worse than one that refuses to start.
+
+And UW-09's per-merchant concentration cap would have refused the origination outright. At the seeded 322 USDC of assets a 20% cap is 64.40, below the protocol's own 75 minimum ticket. It is set to 25% for the run — a setting inside a compiled-in band, not a widening of one — because a one-merchant book is 100% concentrated by construction and concentration is a diversification control with nothing here to diversify. That is a different kind of number from the Tier-0 book share, which bounds what the pool can lose on unproven paper however many merchants there are, and which is why that one sits at its ceiling rather than above it.
 
 It is worth stating plainly because the temptation is to widen the band to make a testnet run cheaper, and the band is one of the two things standing between an unproven scorecard and the senior tranche — DEC-02 put Tier 0 on pool capital from day one against a research recommendation for a shadow book, with the risk accepted knowingly.
 

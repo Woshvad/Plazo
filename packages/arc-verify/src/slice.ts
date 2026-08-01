@@ -222,6 +222,7 @@ const IdentityClass = {Pseudonymous: 0} as const;
 const key = (name: string): Hex => keccak256(toHex(name));
 const TIER0_BOOK_SHARE_BPS = key("plazo.tier0.bookShareBps");
 const MERCHANT_BOND_FLOOR = key("plazo.merchant.bondFloor");
+const MERCHANT_CONCENTRATION_BPS = key("plazo.concentration.merchantBps");
 
 /**
  * What the book has to hold before it can lend at all.
@@ -508,6 +509,20 @@ class Slice {
     await this.write(this.deployer, this.deployment.parameterRegistry, REGISTRY_ABI, "set", [
       MERCHANT_BOND_FLOOR,
       0n,
+    ]);
+    // UW-09's per-merchant cap, raised from 20% to the same 25% the Tier-0 book share
+    // uses. Both are settings inside a compiled-in band, not widenings of one.
+    //
+    // The reason is that a one-merchant book is 100% concentrated by construction, and
+    // concentration is a diversification control — there is nothing here to diversify.
+    // At the seeded 322 USDC a 20% cap refuses the protocol's own minimum ticket, which
+    // is the cap describing a book with one merchant rather than a ticket that is too
+    // large. It is a different kind of number from the Tier-0 share, which bounds what
+    // the pool can lose on unproven paper however many merchants there are, and which
+    // is why that one stays at its ceiling rather than above it.
+    await this.write(this.deployer, this.deployment.parameterRegistry, REGISTRY_ABI, "set", [
+      MERCHANT_CONCENTRATION_BPS,
+      2_500n,
     ]);
 
     await this.write(this.deployer, this.deployment.token, TOKEN_ABI, "approve", [
@@ -1425,6 +1440,7 @@ export async function runSlice(): Promise<void> {
     SENIOR_SEED +
     JUNIOR_SEED +
     RESERVE_SEED +
+    2n * TRANCHE_SEED + // POOL-12's permanent seeds, one per tranche, never redeemable
     MERCHANT_BOND +
     PRINCIPAL + // the borrower's four installments, drawn one at a time
     2n * markEscrowFor(4n) +
