@@ -211,7 +211,23 @@ The origination plane — live controls
 27 assertions passed against live chain 5042002.
 ```
 
-The credit half needs **408.84 USDC** on the funding account and has not run. Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it, and the deposits cycle through the plan and are redeemed at the end. Widening that band would make a testnet run cheaper and would remove one of the two things standing between an unproven scorecard and the senior tranche, so it stays where it is and the slice reports the shortfall.
+**The credit half has now run.** 51 assertions against the live chain, funded to 408.84 USDC by aggregating twenty faucet drips:
+
+```
+Plan A — origination through the router, collection, bounce, cure, payoff
+  ok  the merchant was credited in full minus MDR in the origination transaction
+  ok  the down payment cleared and debited exactly one installment (18.75 USDC)
+  ok  a third-party keeper collected and was paid the quoted bounty
+  ok  a pull against an empty wallet bounced instead of reverting
+  ok  the plan moved to Grace … the same check cleared once funds arrived … the plan cured
+  ok  a stranger's crank booked the repayment and earned the deferred fee (2.008125 USDC)
+
+Plan B — the delinquency signal, with no operator involved
+  ok  an address with no relationship to the plan recorded the delinquency
+  ok  the marker was paid out of the plan's own escrow
+```
+
+Most of the 408.84 is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it. But it is a standing commitment, not a round trip — POOL-10 locks the junior leg for a full 56-day tenor, POOL-09 skims about 1% on the way out of the senior leg, and a run moves roughly 26 USDC of fees permanently into the book. `unwind` is opt-in for that reason.
 
 To reproduce:
 
@@ -229,7 +245,16 @@ The record comes from Foundry's broadcast artefact rather than from the script, 
 pnpm --filter @plazo/arc-verify slice
 ```
 
-The control half needs `DEPLOYER_PRIVATE_KEY` and pennies. **The credit half needs 408.84 USDC**, and most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, and the band's ceiling is 25%, so the smallest ticket the protocol will originate needs four times its own value in capital behind it before the headroom reaches the ticket. The deposits cycle through the plan and are redeemed at the end. Fund at [`faucet.circle.com`](https://faucet.circle.com) and the slice runs the rest.
+The control half needs `DEPLOYER_PRIVATE_KEY` and pennies. **The credit half needs 408.84 USDC on a virgin book**, and most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, and the band's ceiling is 25%, so the smallest ticket the protocol will originate needs four times its own value in capital behind it before the headroom reaches the ticket.
+
+The faucet drips ~20 USDC an address, so it cannot be filled directly. `arc-verify faucet` stands up twenty collection addresses derived from the deployer key — no key file to write, lose or leak — and sweeps them when they are full:
+
+```bash
+pnpm --filter @plazo/arc-verify faucet          # addresses, balances, what is still needed
+pnpm --filter @plazo/arc-verify faucet sweep    # into the funding account
+```
+
+Once the book is capitalised it stays that way, and a re-run needs only the working float. The slice subtracts what the chain already holds rather than quoting the virgin total.
 
 Widening that band would make a testnet run cheaper and would also remove one of the two things standing between an unproven scorecard and the senior tranche.
 

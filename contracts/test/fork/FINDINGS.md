@@ -412,3 +412,112 @@ The orphaned plan is the one that does not have a guard, because it is not idemp
 fixes are to drive it to a terminal state or to redeploy. It was cleared by hand here:
 `repay`, `recognise`, `notePlanOutcome`, all three permissionless, which is at least
 GOV-08 paying for itself in an unplanned way.
+
+## What the funded run proved
+
+**51 assertions against live chain 5042002**, and for the first time the credit half
+ran end to end: a plan originated through the router with the merchant credited inside
+the origination transaction, a down payment cleared, a third-party keeper collected and
+was paid its quoted bounty, a pull against an emptied wallet **bounced instead of
+reverting**, the plan went to Grace and cured, a stranger's crank booked the repayment
+and earned the deferred fee, and a second plan's delinquency was recorded by an address
+with no relationship to it and no operator involved.
+
+The book ended at 336.81 USDC with `grossReceivables` 0, `outstandingExposure` 0,
+`openPlans` 0 and `unmarkedDelinquencies` **0** — the last of which is the whole point
+of finding 21.
+
+Measured on the way past: a keeper `collect()` cost **0.0058 USDC** of gas against a
+0.46875 USDC bounty. That supersedes finding 5's 0.00296, which was taken under the
+legacy pipeline and on a narrower transaction.
+
+A run costs the funding account about **26 USDC net** — MDR, the late fee and retained
+income moving permanently into the book. It is not a round trip.
+
+## 20–27. Eight defects a preflight audit caught before the money moved
+
+After five failures found one at a time, the un-run half of the slice was audited by
+five independent lenses with every finding adversarially verified. Nineteen of
+twenty-seven candidates survived. They are grouped here by what they would have cost.
+
+### 21. Marking one installment of two bricks the book permanently
+
+The worst of them, and it would have passed. `runDelinquency` marked installment 1 and
+left installment 0 Pending past its grace window. `_syncMarkState` flags the whole book
+`unmarked` on *any* such installment.
+
+It stays silent during the run — `front` has already stamped `markedEpoch == _epoch`, so
+the crank never walks the plan and `closeEpoch` sees nothing. Then the epoch turns over,
+and **the next run's first `markEpoch` sets `unmarkedDelinquencies = 1`**. From that
+moment `originationOpen()` is false for every borrower on the book and `closeEpoch()`
+reverts `UnmarkedDelinquencyOutstanding`, with no path back. The capital would have been
+stranded in a pool that could never close another epoch.
+
+A run that reported complete success would have destroyed the deployment.
+
+### 25. A drained book still reports its gate open
+
+`unwind` had never executed — it died on an ABI error before touching state — so making
+it work was the dangerous part. Redeeming the senior leg takes the book from ~337 USDC
+to ~90, and `originationOpen()` stays **true** at that size, because subordination and
+reserve are *ratios* and ratios improve as a book shrinks. Tier-0 headroom is a *share*:
+25% of 90 is 22.50 against a 75 minimum ticket.
+
+So the gate reads open, `prepareBook` skips re-capitalisation, and origination fails for
+want of exactly the money the run gave back. `bookIsFunded()` now tests capacity rather
+than the gate, and both `prepareBook` and the funding check read it, so the check cannot
+promise what the setup will not do. `unwind` is opt-in behind `PLAZO_UNWIND=1`.
+
+### 26. The liquidity fee is charged for undoing your own setup, and is unrecoverable
+
+POOL-09's fee arms above 10% of assets, so a whole-position redemption is far past it
+and retains ~1% — about 2.50 USDC. After the redeemer's shares burn, the only holder
+left in that tranche is POOL-12's permanent seed, which nothing can ever redeem. Per
+run, gone.
+
+### 20. Junior cannot be redeemed for 56 days, so the funding story was overstated
+
+POOL-10's lockup is stamped on the receipt at `claimShares` (DEC-29), and `requestRedeem`
+is a transfer the token refuses until it lapses. Proven live: `unlockAt(deployer)`
+returns a timestamp 56 days out, and the revert payload matches
+`SharesLocked(address,uint256)` carrying exactly that value.
+
+The doc comment claiming deposits "cycle through the plan and are redeemed at the end"
+was therefore false for the junior 45 — and, per finding 26, not quite true for the
+senior 250 either. Both corrected. `unwind` now skips a locked tranche and says so.
+
+### 22. Plan B held the borrower's only slot for good
+
+`capFor` returns zero outright while `activePlans > 0`, so leaving plan B open meant
+every later run reverted `LimitExceeded(75000000, 0)`. The run now settles it — payoff,
+`recognise`, `notePlanOutcome` — all three permissionless, which is GOV-08 paying for
+itself in a way nobody planned.
+
+### 23. A ten-minute attestation struck from a ninety-minute-old clock
+
+`validUntil` was derived from a timestamp captured before `prepareBook`, which can
+legitimately wait a full epoch window. The attestation could be expired at the moment it
+was signed. Both TTLs are now struck at origination.
+
+### 24. A refusal that becomes a permission when nobody is looking
+
+`an epoch cannot be closed before its time` asserts a revert. At the one-hour floor the
+window lapses between runs, `closeEpoch` then simulates cleanly, and the assertion fails
+on a property the contract never violated. Verified live before it could: the window had
+closed 39 minutes earlier and `cast call closeEpoch` returned `0x`. The wall clock is not
+a state the slice controls, so it reports rather than pretending.
+
+### 27. `unwind` had no assertion of any kind
+
+`claimRedemption` returns zero without reverting when the fill line has not reached the
+ticket, so an unwind that paid out nothing was indistinguishable from one that paid out
+everything. The least-exercised code in the file was also the only phase that checked
+nothing. It now asserts the money arrived.
+
+### The two mechanical ones
+
+`TRANCHE_ABI` had no `approve`, so `unwind` threw `AbiFunctionNotFoundError` client-side
+before any RPC. And the redemption index was read with `readContract` — an `eth_call`
+with no `from` — so `msg.sender` was the zero address and `requestRedeem` reverted on
+`transferFrom`. A `peek()` helper now simulates against a named account, because for a
+state-changing call the sender is the whole point.
