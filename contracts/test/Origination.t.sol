@@ -6,7 +6,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {OriginationFixture} from "./helpers/OriginationFixture.sol";
 
 import {CheckoutRouter} from "../src/CheckoutRouter.sol";
-import {CreditPool} from "../src/CreditPool.sol";
+import {TranchedCreditPool} from "../src/TranchedCreditPool.sol";
 import {InstallmentPlan} from "../src/InstallmentPlan.sol";
 import {MerchantRegistry} from "../src/MerchantRegistry.sol";
 import {PlanFactory} from "../src/PlanFactory.sol";
@@ -85,7 +85,7 @@ contract OriginationTest is OriginationFixture {
         assertEq(usdc.balanceOf(address(p)), escrow, "the plan does not hold its escrow");
         assertTrue(p.markBudgetIsFunded(), "the plan cannot afford its own marks");
 
-        CreditPool.PlanBook memory book = creditPool.bookOf(planId);
+        TranchedCreditPool.PlanBook memory book = creditPool.bookOf(planId);
         assertEq(
             book.deferredIncome,
             checkout.mdrFor(PRINCIPAL) - escrow,
@@ -167,7 +167,7 @@ contract OriginationTest is OriginationFixture {
         CheckoutRouter.OriginationInput memory input =
             _originationInput(terms, keccak256("s"), 200e6);
 
-        vm.warp(block.timestamp + 6 minutes);
+        vm.warp(vm.getBlockTimestamp() + 6 minutes);
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -187,7 +187,7 @@ contract OriginationTest is OriginationFixture {
         bytes32 id = PlanId.derive(terms);
 
         LimitAttestation.Attestation memory a = _attestation(keccak256("s"), id, 200e6);
-        a.validUntil = block.timestamp + 2 days;
+        a.validUntil = vm.getBlockTimestamp() + 2 days;
 
         CheckoutRouter.OriginationInput memory input = CheckoutRouter.OriginationInput({
             request: _request(terms, _detail()),
@@ -302,8 +302,8 @@ contract OriginationTest is OriginationFixture {
     ///      recently, and the entire point of consuming compliance as a stream is that
     ///      a party's standing changes between screens.
     function test_aStaleScreenIsNotAScreen() public {
-        uint256 screenedAt = block.timestamp;
-        vm.warp(block.timestamp + 8 days);
+        uint256 screenedAt = vm.getBlockTimestamp();
+        vm.warp(vm.getBlockTimestamp() + 8 days);
 
         CheckoutRouter.OriginationInput memory input =
             _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 200e6);
@@ -337,9 +337,7 @@ contract OriginationTest is OriginationFixture {
         });
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                CheckoutRouter.SettlementRecipientMustBePool.selector, merchant, address(creditPool)
-            )
+            abi.encodeWithSelector(CheckoutRouter.SettlementRecipientNotAPool.selector, merchant)
         );
         checkout.originate(input);
     }
@@ -358,8 +356,21 @@ contract OriginationTest is OriginationFixture {
         factory.deploy(terms);
     }
 
-    function test_theOriginatorCanOnlyBeNamedOnce() public {
-        vm.expectRevert(abi.encodeWithSelector(PlanFactory.OnlyOriginator.selector, address(this)));
+    /// @notice Only the factory's admin may name the originator.
+    /// @dev It was one-shot through Phase 4 and is rotatable from Phase 5 (DEC-15),
+    ///      because a one-shot gate made replacing the funding book cost a migration of
+    ///      every outstanding strip. What has not changed is that a stranger cannot
+    ///      touch it, which is the part the gate was ever for.
+    function test_onlyTheAdminCanNameTheOriginator() public {
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(PlanFactory.OnlyAdmin.selector, stranger));
+        factory.setOriginator(stranger);
+    }
+
+    /// @notice The admin can give up the rotation right, and then nobody has it.
+    function test_theOriginatorCanBeFrozen() public {
+        factory.setAdmin(address(0));
+        vm.expectRevert(abi.encodeWithSelector(PlanFactory.OnlyAdmin.selector, address(this)));
         factory.setOriginator(stranger);
     }
 
@@ -370,14 +381,17 @@ contract OriginationTest is OriginationFixture {
         _onboardMerchant(merchant, 500e6);
         _screenClear(borrower);
         _screenClear(merchant);
-        _deposit(ICreditPool.Tranche.Senior, SENIOR_SEED);
-        _deposit(ICreditPool.Tranche.Junior, JUNIOR_SEED);
+        _seedTranche(ICreditPool.Tranche.Senior);
+        _seedTranche(ICreditPool.Tranche.Junior);
+        _requestDeposit(ICreditPool.Tranche.Junior, JUNIOR_SEED);
+        _requestDeposit(ICreditPool.Tranche.Senior, SENIOR_SEED);
+        _closeEpoch();
 
         assertFalse(creditPool.originationOpen(), "the gate is open with no reserve");
 
         CheckoutRouter.OriginationInput memory input =
             _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 200e6);
-        vm.expectRevert(CreditPool.OriginationClosed.selector);
+        vm.expectRevert(TranchedCreditPool.OriginationClosed.selector);
         checkout.originate(input);
 
         _fundReserve((creditPool.totalAssets() * 600) / PlanParams.BPS);
@@ -440,7 +454,8 @@ contract OriginationTest is OriginationFixture {
             IUnderwritingPartner.IdentityClass.Pseudonymous,
             TermsDetail.SignerClass.EOA,
             merchant,
-            address(usdc)
+            address(usdc),
+            address(creditPool)
         );
         assertEq(max, parameters.get(ParameterKeys.TIER0_INITIAL_LIMIT), "the quote is not the tier cap");
 
@@ -462,7 +477,8 @@ contract OriginationTest is OriginationFixture {
             IUnderwritingPartner.IdentityClass.Pseudonymous,
             TermsDetail.SignerClass.EOA,
             merchant,
-            address(usdc)
+            address(usdc),
+            address(creditPool)
         );
         assertEq(max, 0, "the quote offered credit while origination was paused");
     }

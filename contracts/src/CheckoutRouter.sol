@@ -8,7 +8,9 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import {PlanFactory} from "./PlanFactory.sol";
-import {CreditPool} from "./CreditPool.sol";
+import {TranchedCreditPool} from "./TranchedCreditPool.sol";
+import {PoolRegistry} from "./PoolRegistry.sol";
+import {PlazoPassport} from "./PlazoPassport.sol";
 import {MerchantRegistry} from "./MerchantRegistry.sol";
 import {ReceivableToken} from "./ReceivableToken.sol";
 import {Tier0Underwriter} from "./Tier0Underwriter.sol";
@@ -79,6 +81,7 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ///      thirteen slots to spare.
     struct Context {
         bytes32 planId;
+        TranchedCreditPool pool;
         address plan;
         address borrower;
         address merchant;
@@ -94,7 +97,8 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     }
 
     PlanFactory public immutable factory;
-    CreditPool public immutable pool;
+    PoolRegistry public immutable pools;
+    PlazoPassport public immutable passport;
     MerchantRegistry public immutable merchants;
     ReceivableToken public immutable receivable;
     Tier0Underwriter public immutable underwriter;
@@ -107,6 +111,13 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
 
     /// @notice Sessions already originated. CHKT-02's replay boundary.
     mapping(bytes32 sessionId => bytes32 planId) public sessionPlan;
+
+    /// @notice Which book funded each plan.
+    /// @dev POOL-01 means there is no longer *the* pool. A plan settles to the book
+    ///      named in its own signed terms, forever, and the crank has to find that book
+    ///      rather than assume one — which is also why the pool is not an immutable on
+    ///      this contract any more.
+    mapping(bytes32 planId => address) public poolOf;
 
     event LimitAttested(bytes32 indexed sessionId, uint8 band, address indexed attestor);
     event OriginationCompleted(
@@ -127,13 +138,16 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     error TicketOutOfRange(uint256 principal, uint256 min, uint256 max);
     error MerchantConcentration(uint256 principal, uint256 headroom);
     error CorridorConcentration(uint256 principal, uint256 headroom);
-    error SettlementRecipientMustBePool(address provided, address pool);
+    error SettlementRecipientNotAPool(address provided);
+    error ScheduleNotFunded(address pool, uint256 installmentCount, uint256 interval);
     error FxRouterMismatch(address expected, address provided);
     error UnsupportedPayoutDomain(uint32 domain);
+    error PlanNotOriginatedHere(bytes32 planId);
 
     struct Wiring {
         address factory;
-        address pool;
+        address pools;
+        address passport;
         address merchants;
         address receivable;
         address underwriter;
@@ -148,7 +162,8 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     constructor(address admin, Wiring memory wiring) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         factory = PlanFactory(wiring.factory);
-        pool = CreditPool(wiring.pool);
+        pools = PoolRegistry(wiring.pools);
+        passport = PlazoPassport(wiring.passport);
         merchants = MerchantRegistry(wiring.merchants);
         receivable = ReceivableToken(wiring.receivable);
         underwriter = Tier0Underwriter(wiring.underwriter);
@@ -181,7 +196,7 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         // its own delinquency budget rather than trusting the factory to have sent
         // one — which is the difference between a plan that can pay for its own mark
         // and a plan that discovers it cannot at the moment the mark is needed.
-        pool.front(
+        ctx.pool.front(
             ctx.planId,
             ctx.plan,
             ctx.merchant,
@@ -207,9 +222,23 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         // The plan settles to the book that funded it. Without this check a merchant
         // could name themselves as the settlement recipient and be paid twice: once
         // by the pool at checkout and again by every installment the borrower makes.
-        if (detail.settlementRecipient != address(pool)) {
-            revert SettlementRecipientMustBePool(detail.settlementRecipient, address(pool));
+        //
+        // The borrower's signed terms choose *which* book, and the registry decides
+        // whether that is a book at all. Letting the terms name it is what makes a plan
+        // portable across product lines without a signed product-line field: the pool
+        // is already inside `termsHash`, so a strip cannot be redirected to a different
+        // one.
+        if (!pools.isPool(detail.settlementRecipient)) {
+            revert SettlementRecipientNotAPool(detail.settlementRecipient);
         }
+        ctx.pool = TranchedCreditPool(detail.settlementRecipient);
+
+        // POOL-01, DEC-26. No tenor commingling, enforced by asking the book whether it
+        // funds paper of this shape rather than by trusting a label on the request.
+        if (!ctx.pool.acceptsSchedule(terms.installmentCount, terms.interval)) {
+            revert ScheduleNotFunded(address(ctx.pool), terms.installmentCount, terms.interval);
+        }
+
         if (detail.fxRouter != fxRouter) revert FxRouterMismatch(fxRouter, detail.fxRouter);
 
         ctx.planId = factory.derivePlanId(terms);
@@ -308,7 +337,7 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         if (ctx.principal > limit) revert LimitExceeded(ctx.principal, limit);
 
         (uint256 merchantRoom, uint256 corridorRoom) =
-            pool.concentrationHeadroom(ctx.merchant, ctx.corridor);
+            ctx.pool.concentrationHeadroom(ctx.merchant, ctx.corridor);
         if (ctx.principal > merchantRoom) revert MerchantConcentration(ctx.principal, merchantRoom);
         if (ctx.principal > corridorRoom) revert CorridorConcentration(ctx.principal, corridorRoom);
 
@@ -341,11 +370,12 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     function _register(Context memory ctx, bytes32 sessionId) private {
         sessionPlan[sessionId] = ctx.planId;
 
-        receivable.mint(ctx.planId, address(pool), ctx.principal);
+        poolOf[ctx.planId] = address(ctx.pool);
+        receivable.mint(ctx.planId, address(ctx.pool), ctx.principal);
 
         bool seasoned = underwriter.isSeasoned(ctx.personId);
         underwriter.notePlan(ctx.personId, ctx.identity, ctx.planId, ctx.principal);
-        underwriter.bindPlan(ctx.planId, ctx.plan);
+        underwriter.bindPlan(ctx.planId, ctx.plan, ctx.borrower);
         killSwitch.noteOrigination(ctx.planId, ctx.plan, seasoned);
     }
 
@@ -371,9 +401,12 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ///      what the merchant is no longer on the hook for, whether it came back as a
     ///      repayment or was written off.
     function recognise(bytes32 planId) external {
-        CreditPool.PlanBook memory before = pool.bookOf(planId);
+        TranchedCreditPool pool = TranchedCreditPool(poolOf[planId]);
+        if (address(pool) == address(0)) revert PlanNotOriginatedHere(planId);
+
+        TranchedCreditPool.PlanBook memory before = pool.bookOf(planId);
         pool.recognise(planId);
-        CreditPool.PlanBook memory settled = pool.bookOf(planId);
+        TranchedCreditPool.PlanBook memory settled = pool.bookOf(planId);
 
         uint256 recovered = before.carrying > settled.carrying ? before.carrying - settled.carrying : 0;
         if (recovered > 0) merchants.noteRecovered(before.merchant, recovered);
@@ -406,8 +439,12 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         IUnderwritingPartner.IdentityClass identity,
         TermsDetail.SignerClass signerClass,
         address merchant,
-        address token
+        address token,
+        address pool_
     ) external view returns (uint256) {
+        TranchedCreditPool pool = TranchedCreditPool(pool_);
+        if (!pools.isPool(pool_)) return 0;
+
         uint256 limit = underwriter.capFor(personId, identity, signerClass);
 
         uint256 ceiling = parameters.get(ParameterKeys.LIMIT_HARD_CEILING);
@@ -456,6 +493,21 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ///      why this is a function and not a constant.
     function corridorOf(address token) public pure returns (bytes32) {
         return keccak256(abi.encode("PLAZO.CORRIDOR", token));
+    }
+
+    /// @notice A borrower's coarse Passport tier.
+    ///
+    /// @dev PASS-02's "only a coarse tier exposed through the router", and this is that
+    ///      exposure. The router holds `READER_ROLE`; a merchant, a PSP or a partner
+    ///      lender asks here and gets one of five words. Anything richer requires the
+    ///      borrower's signed consent presented directly to the Passport, which is
+    ///      where PASS-04 is enforced and where PASS-07's revocation bites.
+    ///
+    ///      Nothing about the underwriting decision reads this. The tier is a summary
+    ///      for counterparties; `Tier0Underwriter` computes the limit from the plans
+    ///      themselves, so a Passport that was wrong could not raise anybody's credit.
+    function passportTierOf(address borrower) external view returns (PlazoPassport.Tier) {
+        return passport.tierOf(borrower);
     }
 
     /// @notice Which band a limit falls in. CHKT-05's "emits only a band".

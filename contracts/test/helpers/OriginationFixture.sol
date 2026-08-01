@@ -13,7 +13,11 @@ import {AllowlistCompliance} from "../../src/AllowlistCompliance.sol";
 import {ArcLocalPayout} from "../../src/ArcLocalPayout.sol";
 import {ReceivableToken} from "../../src/ReceivableToken.sol";
 import {MerchantRegistry} from "../../src/MerchantRegistry.sol";
-import {CreditPool} from "../../src/CreditPool.sol";
+import {TranchedCreditPool} from "../../src/TranchedCreditPool.sol";
+import {PoolRegistry} from "../../src/PoolRegistry.sol";
+import {PlazoPassport} from "../../src/PlazoPassport.sol";
+import {AttestationSchemaRegistry} from "../../src/AttestationSchemaRegistry.sol";
+import {RelayerGate} from "../../src/RelayerGate.sol";
 import {FirstPaymentDefaultSwitch} from "../../src/FirstPaymentDefaultSwitch.sol";
 import {Tier0Underwriter} from "../../src/Tier0Underwriter.sol";
 import {OriginationPause} from "../../src/OriginationPause.sol";
@@ -48,7 +52,11 @@ abstract contract OriginationFixture is PlanFixture {
     ArcLocalPayout internal payout;
     ReceivableToken internal receivable;
     MerchantRegistry internal merchants;
-    CreditPool internal creditPool;
+    TranchedCreditPool internal creditPool;
+    PoolRegistry internal poolRegistry;
+    PlazoPassport internal passport;
+    AttestationSchemaRegistry internal schemas;
+    RelayerGate internal relayer;
     FirstPaymentDefaultSwitch internal killSwitch;
     Tier0Underwriter internal tier0;
     OriginationPause internal pauses;
@@ -66,6 +74,14 @@ abstract contract OriginationFixture is PlanFixture {
     uint256 internal constant SENIOR_SEED = 80_000e6;
     uint256 internal constant JUNIOR_SEED = 20_000e6;
 
+    /// @notice The product line this book funds. Pay-in-4 only, in v1.
+    bytes32 internal constant PAY_IN_4 = keccak256("PLAZO.PAY_IN_4");
+
+    /// @dev POOL-12's permanent seed. Protocol money, never redeemable, and the reason
+    ///      the "first depositor into an empty vault" case is unreachable rather than
+    ///      merely expensive.
+    uint256 internal constant TRANCHE_SEED = 1e6;
+
     function _deployStack() internal virtual override {
         borrower = vm.addr(BORROWER_KEY);
         underwriterKey = vm.addr(UNDERWRITER_KEY);
@@ -81,7 +97,25 @@ abstract contract OriginationFixture is PlanFixture {
 
         receivable = new ReceivableToken(address(this), address(eligibility));
         merchants = new MerchantRegistry(address(this), address(usdc), address(parameters));
-        creditPool = new CreditPool(address(this), address(usdc), address(parameters), address(eligibility));
+        poolRegistry = new PoolRegistry(address(this));
+        passport = new PlazoPassport(address(this), address(parameters));
+        schemas = new AttestationSchemaRegistry(address(this));
+        relayer = new RelayerGate(address(this), address(parameters));
+
+        creditPool = new TranchedCreditPool(
+            TranchedCreditPool.Wiring({
+                admin: address(this),
+                token: address(usdc),
+                parameters: address(parameters),
+                eligibility: address(eligibility),
+                productLine: PAY_IN_4,
+                minInstallments: 2,
+                maxInstallments: 6,
+                minInterval: 7 days,
+                maxInterval: 31 days
+            })
+        );
+        poolRegistry.register(PAY_IN_4, address(creditPool));
 
         killSwitch = new FirstPaymentDefaultSwitch(address(this), address(parameters));
         tier0 = new Tier0Underwriter(address(this), address(parameters), address(killSwitch));
@@ -94,7 +128,8 @@ abstract contract OriginationFixture is PlanFixture {
             address(this),
             CheckoutRouter.Wiring({
                 factory: address(factory),
-                pool: address(creditPool),
+                pools: address(poolRegistry),
+                passport: address(passport),
                 merchants: address(merchants),
                 receivable: address(receivable),
                 underwriter: address(tier0),
@@ -108,35 +143,92 @@ abstract contract OriginationFixture is PlanFixture {
         );
 
         factory.setOriginator(address(checkout));
-        creditPool.grantRole(creditPool.ORIGINATOR_ROLE(), address(checkout));
+        creditPool.setOriginator(address(checkout));
         receivable.grantRole(receivable.ISSUER_ROLE(), address(checkout));
         tier0.grantRole(tier0.ORIGINATOR_ROLE(), address(checkout));
         killSwitch.grantRole(killSwitch.REGISTRAR_ROLE(), address(checkout));
         merchants.grantRole(merchants.BOOKKEEPER_ROLE(), address(checkout));
         merchants.grantRole(merchants.KYB_ROLE(), address(this));
         checkout.grantRole(checkout.UNDERWRITER_ROLE(), underwriterKey);
+        passport.grantRole(passport.WRITER_ROLE(), address(tier0));
+        passport.grantRole(passport.READER_ROLE(), address(checkout));
+        passport.grantRole(passport.READER_ROLE(), address(tier0));
 
         eligibility.setGlobal(address(creditPool), true);
         eligibility.setGlobal(address(checkout), true);
         eligibility.setGlobal(lender, true);
+        eligibility.setGlobal(address(this), true);
         tier0.setPool(address(creditPool));
+        tier0.setPassport(address(passport));
 
         pool = address(creditPool);
     }
 
     /// @notice Capitalise the book and open the gate.
+    ///
+    /// @dev Three steps rather than one, because POOL-03 made entry asynchronous: the
+    ///      protocol seeds each tranche permanently, lenders queue a deposit, and an
+    ///      epoch close is what turns assets into shares at a price nobody could have
+    ///      chosen after the fact. A fixture that shortcut that would be testing a pool
+    ///      nobody deploys.
     function _seedPool() internal {
-        _deposit(ICreditPool.Tranche.Senior, SENIOR_SEED);
-        _deposit(ICreditPool.Tranche.Junior, JUNIOR_SEED);
+        _seedTranche(ICreditPool.Tranche.Senior);
+        _seedTranche(ICreditPool.Tranche.Junior);
+
+        // Junior first. Senior capacity is a function of the subordination beneath it,
+        // so a book is capitalised from the bottom up — which is how one actually is.
+        _requestDeposit(ICreditPool.Tranche.Junior, JUNIOR_SEED);
+        _requestDeposit(ICreditPool.Tranche.Senior, SENIOR_SEED);
+        _closeEpoch();
+        _claim(ICreditPool.Tranche.Senior);
+        _claim(ICreditPool.Tranche.Junior);
+
         _fundReserve((creditPool.totalAssets() * 600) / PlanParams.BPS);
     }
 
-    function _deposit(ICreditPool.Tranche tranche, uint256 amount) internal {
+    function _seedTranche(ICreditPool.Tranche tranche) internal {
+        usdc.mint(address(this), TRANCHE_SEED);
+        usdc.approve(address(creditPool), TRANCHE_SEED);
+        creditPool.seed(tranche, TRANCHE_SEED);
+    }
+
+    function _requestDeposit(ICreditPool.Tranche tranche, uint256 amount) internal {
         usdc.mint(lender, amount);
         vm.startPrank(lender);
         usdc.approve(address(creditPool), amount);
-        creditPool.deposit(tranche, amount);
+        creditPool.requestDeposit(tranche, amount);
         vm.stopPrank();
+    }
+
+    function _claim(ICreditPool.Tranche tranche) internal {
+        vm.prank(lender);
+        creditPool.claimShares(tranche);
+    }
+
+    /// @notice Run both crank phases and close the epoch.
+    /// @dev Permissionless, so the fixture calls them as anybody would.
+    function _closeEpoch() internal {
+        vm.warp(creditPool.epochEndsAt() + 1);
+        creditPool.markEpoch(64);
+        creditPool.closeEpoch();
+    }
+
+    /// @notice Bring the reserve back to its target after capital has been added.
+    /// @dev POOL-05 measures the reserve as a share of total assets, so raising capital
+    ///      dilutes it and shuts the gate. That is the requirement working, not a
+    ///      nuisance — but a test about something else should not have to rediscover it.
+    function _fundReserveToTarget() internal {
+        uint256 rate = parameters.get(ParameterKeys.RESERVE_TARGET_BPS);
+        uint256 assets = creditPool.totalAssets();
+        uint256 held = creditPool.reserveBalance();
+        uint256 need = (assets * rate) / PlanParams.BPS;
+        if (need <= held) return;
+
+        // Topping the reserve up raises the total it is measured against, so paying in
+        // the shortfall lands short of the target. Solve for the amount that lands *on*
+        // it: x ≥ (rA − R) / (1 − r).
+        uint256 top = ((need - held) * PlanParams.BPS) / (PlanParams.BPS - rate) + 1e6;
+        _fundReserve(top);
     }
 
     function _fundReserve(uint256 amount) internal {
@@ -205,7 +297,7 @@ abstract contract OriginationFixture is PlanFixture {
             personId: tier0.pseudonymousId(borrower),
             identityClass: uint8(IUnderwritingPartner.IdentityClass.Pseudonymous),
             limit: limit,
-            validUntil: block.timestamp + 5 minutes
+            validUntil: vm.getBlockTimestamp() + 5 minutes
         });
     }
 

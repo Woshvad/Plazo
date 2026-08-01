@@ -116,7 +116,7 @@ abstract contract PlanInvariants is Test {
     function check_everyOverdueInstallmentIsAccountedFor() public view {
         uint256 count = subject.installmentCount();
         for (uint256 i = 0; i < count; ++i) {
-            if (block.timestamp <= subject.graceEndsAt(i)) continue;
+            if (vm.getBlockTimestamp() <= subject.graceEndsAt(i)) continue;
 
             IInstallmentPlan.InstallmentStatus status = subject.installmentStatus(i);
             bool accounted = status == IInstallmentPlan.InstallmentStatus.Cleared

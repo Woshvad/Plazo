@@ -339,3 +339,204 @@ export const pauseEvent = onchainTable(
     timeIdx: index().on(table.timestamp),
   }),
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The capital plane (Phase 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Every epoch the book has closed, with the price it struck.
+ *
+ * The NAV series a lender's chart is drawn from, and the only honest source for it:
+ * a share price sampled between closes is an interpolation, because the price does
+ * not exist until the epoch strikes it.
+ */
+export const epoch = onchainTable(
+  "epoch",
+  (t) => ({
+    number: t.bigint().primaryKey(),
+    seniorNav: t.bigint().notNull(),
+    juniorNav: t.bigint().notNull(),
+    /** POOL-09. Zero in an ordinary epoch; the same for everybody when it is not. */
+    liquidityFeeBps: t.bigint().notNull(),
+    closedAt: t.integer().notNull(),
+    blockNumber: t.bigint().notNull(),
+  }),
+  (table) => ({
+    closedIdx: index().on(table.closedAt),
+  }),
+);
+
+/**
+ * The provision outstanding against each plan, bucketed by the epoch that raised it.
+ *
+ * POOL-07's bucketing is what lets a cure release exactly what the delinquency took,
+ * and this is where an LP can check that it did. `raised` and `released` are kept
+ * separately rather than netted, because the round trip is the property — a net of
+ * zero could mean nothing happened or could mean a provision was released against a
+ * different bucket than the one that took it.
+ */
+export const provision = onchainTable(
+  "provision",
+  (t) => ({
+    planId: t.hex().primaryKey(),
+    epoch: t.bigint().notNull(),
+    raised: t.bigint().notNull().default(0n),
+    released: t.bigint().notNull().default(0n),
+    outstanding: t.bigint().notNull().default(0n),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    epochIdx: index().on(table.epoch),
+  }),
+);
+
+/**
+ * A lender's position in one tranche.
+ *
+ * `holder` is a first-class key here, unlike anywhere in the plan or Passport tables.
+ * A tranche share is a transfer-restricted ERC-20 whose holder set is already public
+ * in every `Transfer`, and the lender needs to see their own position — so hiding it
+ * would cost a feature and protect nothing.
+ */
+export const lenderPosition = onchainTable(
+  "lender_position",
+  (t) => ({
+    id: t.text().primaryKey(),
+    tranche: t.integer().notNull(),
+    holder: t.hex().notNull(),
+    depositedAssets: t.bigint().notNull().default(0n),
+    claimedShares: t.bigint().notNull().default(0n),
+    redeemedShares: t.bigint().notNull().default(0n),
+    redeemedAssets: t.bigint().notNull().default(0n),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    holderIdx: index().on(table.holder),
+  }),
+);
+
+/**
+ * Every redemption ticket, and how far the fill line has reached it.
+ *
+ * APP-04's queue position with an ETA. The ETA is the app's arithmetic over recent
+ * fill rates; `position` and the epoch's fills are the inputs it needs.
+ */
+export const redemptionTicket = onchainTable(
+  "redemption_ticket",
+  (t) => ({
+    id: t.text().primaryKey(),
+    tranche: t.integer().notNull(),
+    holder: t.hex().notNull(),
+    index: t.bigint().notNull(),
+    shares: t.bigint().notNull(),
+    /** Cumulative queue position of the last share in this ticket. */
+    position: t.bigint().notNull(),
+    claimedAssets: t.bigint().notNull().default(0n),
+    requestedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    holderIdx: index().on(table.holder),
+    trancheIdx: index().on(table.tranche),
+  }),
+);
+
+/** Each epoch's fill of each tranche's queue. */
+export const queueFill = onchainTable(
+  "queue_fill",
+  (t) => ({
+    id: t.text().primaryKey(),
+    tranche: t.integer().notNull(),
+    epoch: t.bigint().notNull(),
+    shares: t.bigint().notNull(),
+    assets: t.bigint().notNull(),
+    feeBps: t.bigint().notNull(),
+    filledAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    epochIdx: index().on(table.epoch),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Passport (Phase 4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A borrower's credit standing, keyed by their salted subject.
+ *
+ * **There is no wallet column, and there cannot be one.** The subject is
+ * `keccak256(prefix ‖ salt ‖ borrower)`; the operator holds the salt in its own
+ * private schema and joins there, behind the consent gate, where a correction or a
+ * deletion can actually be honoured. Putting the wallet in the indexed chain schema
+ * would rebuild exactly the enumerable credit file the salt exists to prevent — and
+ * it would do it in the one table an analyst is most likely to export.
+ */
+export const passportRecord = onchainTable(
+  "passport_record",
+  (t) => ({
+    subject: t.hex().primaryKey(),
+    completions: t.integer().notNull().default(0),
+    negativesEver: t.integer().notNull().default(0),
+    commitment: t.hex(),
+    schemaId: t.hex(),
+    version: t.bigint().notNull().default(0n),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    updatedIdx: index().on(table.updatedAt),
+  }),
+);
+
+/** Every negative mark, so ageing can be recomputed rather than trusted. */
+export const passportMark = onchainTable(
+  "passport_mark",
+  (t) => ({
+    id: t.text().primaryKey(),
+    subject: t.hex().notNull(),
+    markedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    subjectIdx: index().on(table.subject),
+  }),
+);
+
+/** Consent grants and revocations, in the order they happened. */
+export const consentEvent = onchainTable(
+  "consent_event",
+  (t) => ({
+    id: t.text().primaryKey(),
+    subject: t.hex().notNull(),
+    reader: t.hex().notNull(),
+    schemaId: t.hex().notNull(),
+    granted: t.boolean().notNull(),
+    validUntil: t.bigint().notNull().default(0n),
+    at: t.integer().notNull(),
+  }),
+  (table) => ({
+    readerIdx: index().on(table.reader),
+    subjectIdx: index().on(table.subject),
+  }),
+);
+
+/**
+ * Collections the operator's gate made.
+ *
+ * COLL-10's denominator comes from `collectionAttempt`; this is the numerator's
+ * complement. Kept separate so the share of third-party cranks is a join rather than
+ * a claim.
+ */
+export const relayedCollection = onchainTable(
+  "relayed_collection",
+  (t) => ({
+    id: t.text().primaryKey(),
+    plan: t.hex().notNull(),
+    index: t.bigint().notNull(),
+    cleared: t.boolean().notNull(),
+    reason: t.integer().notNull(),
+    at: t.integer().notNull(),
+  }),
+  (table) => ({
+    planIdx: index().on(table.plan),
+  }),
+);

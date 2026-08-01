@@ -76,6 +76,17 @@ export class Keeper {
   readonly config: Required<Pick<KeeperConfig, "factory" | "gasEstimate" | "send">> & KeeperConfig;
   readonly publicClient: PublicClient;
   private readonly wallet?: WalletClient;
+
+  /**
+   * The signer, for callers that need to send something this class does not model.
+   * The epoch crank is one: it is permissionless like a collection, but it belongs to
+   * the funding book rather than to a plan, so it is a separate module reusing the
+   * transport rather than another method here.
+   */
+  get walletClient(): WalletClient | undefined {
+    return this.wallet;
+  }
+
   private readonly account?: Account;
   private readonly token: Address;
   private readonly log: (message: string) => void;

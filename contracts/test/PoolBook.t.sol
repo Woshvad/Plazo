@@ -3,7 +3,7 @@ pragma solidity 0.8.30;
 
 import {OriginationFixture} from "./helpers/OriginationFixture.sol";
 
-import {CreditPool} from "../src/CreditPool.sol";
+import {TranchedCreditPool} from "../src/TranchedCreditPool.sol";
 import {InstallmentPlan} from "../src/InstallmentPlan.sol";
 import {ICreditPool} from "../src/interfaces/ICreditPool.sol";
 import {IInstallmentPlan} from "../src/interfaces/IInstallmentPlan.sol";
@@ -236,7 +236,7 @@ contract PoolBookTest is OriginationFixture {
         InstallmentPlan p = _checkoutDefault();
         bytes32 id = planId;
 
-        creditPool.grantRole(creditPool.ORIGINATOR_ROLE(), address(this));
+        creditPool.setOriginator(address(this));
         uint256 seniorBefore = creditPool.trancheAssets(ICreditPool.Tranche.Senior);
         uint256 juniorBefore = creditPool.trancheAssets(ICreditPool.Tranche.Junior);
         uint256 reserveBefore = creditPool.reserveBalance();
@@ -288,50 +288,117 @@ contract PoolBookTest is OriginationFixture {
 
     // ─── Capital ─────────────────────────────────────────────────────────────
 
-    /// @notice Deposits are eligibility-gated from the first one.
-    /// @dev POOL-02 makes the tranche shares transfer-restricted ERC-20s in Phase 5.
-    ///      Gating the entry now means the holder set is correct from the beginning
-    ///      rather than needing a snapshot when the shares become transferable.
+    /// @notice Deposits are eligibility-gated from the request, not from the fill.
+    /// @dev POOL-02. Gating the entry means the holder set is correct from the
+    ///      beginning rather than needing a snapshot the day the shares move.
     function test_depositsAreEligibilityGated() public {
         usdc.mint(stranger, 1_000e6);
         vm.startPrank(stranger);
         usdc.approve(address(creditPool), 1_000e6);
-        vm.expectRevert(abi.encodeWithSelector(CreditPool.NotEligible.selector, stranger));
-        creditPool.deposit(ICreditPool.Tranche.Senior, 1_000e6);
+        vm.expectRevert(abi.encodeWithSelector(TranchedCreditPool.NotEligible.selector, stranger));
+        creditPool.requestDeposit(ICreditPool.Tranche.Senior, 1_000e6);
         vm.stopPrank();
     }
 
-    /// @notice A redemption pays out at the tranche's own share price.
-    function test_aRedemptionPaysTheTranchePrice() public {
-        uint256 shares = creditPool.sharesOf(ICreditPool.Tranche.Senior, lender);
+    /// @notice A redemption pays the tranche price, less the epoch's liquidity fee.
+    ///
+    /// @dev Three transactions now, because POOL-03 made exit asynchronous: request,
+    ///      close, claim. The price is struck once for the whole epoch, so what a
+    ///      redeemer gets cannot depend on when inside the epoch they asked.
+    ///
+    ///      Half the senior tranche leaving in one epoch is far past the ten-percent
+    ///      threshold, so POOL-09's fee is on — and the one percent it takes stays in
+    ///      the tranche for the holders who did not redeem. That is the whole
+    ///      mechanism: the exit is priced, so being first through the door buys nothing.
+    function test_aRedemptionPaysTheTranchePriceLessTheEpochFee() public {
+        uint256 shares = creditPool.seniorShares().balanceOf(lender);
+
+        vm.startPrank(lender);
+        creditPool.seniorShares().approve(address(creditPool), shares / 2);
+        uint256 index = creditPool.requestRedeem(ICreditPool.Tranche.Senior, shares / 2);
+        vm.stopPrank();
+
+        _closeEpoch();
 
         vm.prank(lender);
-        uint256 assets = creditPool.redeem(ICreditPool.Tranche.Senior, shares / 2);
+        uint256 assets = creditPool.claimRedemption(ICreditPool.Tranche.Senior, index, 8);
+
+        uint256 feeBps = parameters.get(ParameterKeys.LIQUIDITY_FEE_BPS);
+        uint256 expected = (SENIOR_SEED / 2) * (PlanParams.BPS - feeBps) / PlanParams.BPS;
 
         assertEq(usdc.balanceOf(lender), assets, "the redemption paid something else");
-        assertApproxEqRel(assets, SENIOR_SEED / 2, 1e15, "half the shares were not worth half the stake");
+        assertApproxEqRel(assets, expected, 1e15, "half the shares were not worth half the stake");
+
+        TranchedCreditPool.Fill memory fill =
+            creditPool.fillAt(ICreditPool.Tranche.Senior, creditPool.fillCount(ICreditPool.Tranche.Senior) - 1);
+        assertEq(fill.feeBps, feeBps, "the epoch's fill did not carry the liquidity fee");
     }
 
-    /// @notice A redemption cannot exceed the cash on the book.
+    /// @notice A small exit pays par. The fee is a threshold, not a toll.
+    /// @dev POOL-09 is about runs, not about discouraging redemption. Ordinary runoff —
+    ///      here, well under a tenth of the book — costs nothing, because a fee that
+    ///      applied always would just be a worse product.
+    function test_anOrdinaryRedemptionPaysPar() public {
+        uint256 shares = creditPool.seniorShares().balanceOf(lender) / 100;
+
+        vm.startPrank(lender);
+        creditPool.seniorShares().approve(address(creditPool), shares);
+        uint256 index = creditPool.requestRedeem(ICreditPool.Tranche.Senior, shares);
+        vm.stopPrank();
+
+        _closeEpoch();
+
+        vm.prank(lender);
+        uint256 assets = creditPool.claimRedemption(ICreditPool.Tranche.Senior, index, 8);
+
+        assertApproxEqRel(assets, SENIOR_SEED / 100, 1e15, "an ordinary exit was charged a fee");
+    }
+
+    /// @notice A redemption the book cannot fund waits in the queue instead of failing.
     ///
-    /// @dev The alternative is a redemption that sells a receivable at whatever price
-    ///      is available in a hurry. POOL-08's queue gives the redeemer a position and
-    ///      an ETA in Phase 5; here they get a legible refusal, which is still better
-    ///      than a fire sale.
-    function test_aRedemptionIsBoundedByCash() public {
-        creditPool.grantRole(creditPool.ORIGINATOR_ROLE(), address(this));
+    /// @dev POOL-08, and the difference from a synchronous vault is the whole point. A
+    ///      redeemer who cannot be paid today keeps their cumulative position and is
+    ///      filled by natural runoff; the alternative is either a revert, which tells
+    ///      them nothing about when they will be paid, or a fire sale of a receivable
+    ///      at whatever price is available in a hurry.
+    function test_aRedemptionTheBookCannotFundWaitsInTheQueue() public {
+        creditPool.setOriginator(address(this));
         bytes32 corridor = checkout.corridorOf(address(usdc));
 
         // Nearly all the book's cash into receivables.
         uint256 drain = creditPool.bookedCash() - 10e6;
         creditPool.front(keccak256("drain"), address(0xF11), merchant, corridor, drain, 0, 0, address(this));
 
-        uint256 shares = creditPool.sharesOf(ICreditPool.Tranche.Senior, lender);
-        vm.prank(lender);
-        vm.expectRevert();
-        creditPool.redeem(ICreditPool.Tranche.Senior, shares);
+        uint256 shares = creditPool.seniorShares().balanceOf(lender);
+        vm.startPrank(lender);
+        creditPool.seniorShares().approve(address(creditPool), shares);
+        uint256 index = creditPool.requestRedeem(ICreditPool.Tranche.Senior, shares);
+        vm.stopPrank();
 
-        assertEq(creditPool.bookedCash(), 10e6, "the book still held cash it could have paid with");
+        _closeEpoch();
+
+        (uint256 ahead, uint256 size, uint256 filled) =
+            _position(ICreditPool.Tranche.Senior, lender, index);
+        assertEq(ahead, 0, "the ticket was not at the head of the queue");
+        assertLt(filled, size, "the whole request filled out of a book that could not fund it");
+
+        vm.prank(lender);
+        uint256 paid = creditPool.claimRedemption(ICreditPool.Tranche.Senior, index, 8);
+        assertLe(paid, 10e6, "the fill paid out more cash than the book held");
+    }
+
+    /// @dev The queue position, as the lender app reads it.
+    function _position(ICreditPool.Tranche tranche, address holder, uint256 index)
+        private
+        view
+        returns (uint256 ahead, uint256 size, uint256 filled)
+    {
+        TranchedCreditPool.RedeemTicket memory ticket =
+            creditPool.redeemTicketAt(tranche, holder, index);
+        (, uint256 line) = creditPool.queueDepth(tranche);
+        ahead = ticket.lo > line ? ticket.lo - line : 0;
+        size = ticket.hi - ticket.lo;
+        filled = line > ticket.lo ? (line < ticket.hi ? line - ticket.lo : size) : 0;
     }
 
     function test_reserveFundingIsPermissionless() public {
@@ -364,7 +431,7 @@ contract PoolBookTest is OriginationFixture {
     ///      is still carrying.
     function _forceLoss(uint256 amount) private {
         ConfigurablePlan stub = new ConfigurablePlan();
-        stub.initHealthy(4, amount, block.timestamp + 365 days, 14 days);
+        stub.initHealthy(4, amount, vm.getBlockTimestamp() + 365 days, 14 days);
 
         bytes32 id = keccak256("synthetic");
         bytes32 corridor = checkout.corridorOf(address(usdc));

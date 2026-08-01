@@ -15,6 +15,157 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  apps/borrower:
+    dependencies:
+      '@plazo/passport':
+        specifier: workspace:*
+        version: link:../../packages/passport
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../../packages/plan-core
+      '@plazo/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      next:
+        specifier: 16.2.12
+        version: 16.2.12(@opentelemetry/api@1.9.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@tailwindcss/postcss':
+        specifier: 4.3.3
+        version: 4.3.3
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
+      '@types/react':
+        specifier: 19.2.17
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      tailwindcss:
+        specifier: 4.3.3
+        version: 4.3.3
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/checkout:
+    dependencies:
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../../packages/plan-core
+      '@plazo/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      next:
+        specifier: 16.2.12
+        version: 16.2.12(@opentelemetry/api@1.9.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@tailwindcss/postcss':
+        specifier: 4.3.3
+        version: 4.3.3
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
+      '@types/react':
+        specifier: 19.2.17
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      tailwindcss:
+        specifier: 4.3.3
+        version: 4.3.3
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/console:
+    dependencies:
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../../packages/plan-core
+      '@plazo/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      next:
+        specifier: 16.2.12
+        version: 16.2.12(@opentelemetry/api@1.9.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@tailwindcss/postcss':
+        specifier: 4.3.3
+        version: 4.3.3
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
+      '@types/react':
+        specifier: 19.2.17
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      tailwindcss:
+        specifier: 4.3.3
+        version: 4.3.3
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/lender:
+    dependencies:
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../../packages/plan-core
+      '@plazo/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      next:
+        specifier: 16.2.12
+        version: 16.2.12(@opentelemetry/api@1.9.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@tailwindcss/postcss':
+        specifier: 4.3.3
+        version: 4.3.3
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
+      '@types/react':
+        specifier: 19.2.17
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      tailwindcss:
+        specifier: 4.3.3
+        version: 4.3.3
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   apps/shell:
     dependencies:
       '@plazo/plan-core':
@@ -103,6 +254,19 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@26.1.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6)
 
+  packages/passport:
+    dependencies:
+      viem:
+        specifier: 2.55.10
+        version: 2.55.10(typescript@5.9.3)
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@26.1.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6)
+
   packages/plan-core:
     dependencies:
       viem:
@@ -158,6 +322,34 @@ importers:
       '@plazo/events':
         specifier: workspace:*
         version: link:../../packages/events
+      '@plazo/plan-core':
+        specifier: workspace:*
+        version: link:../../packages/plan-core
+      hono:
+        specifier: 4.12.32
+        version: 4.12.32
+      viem:
+        specifier: 2.55.10
+        version: 2.55.10(typescript@5.9.3)
+    devDependencies:
+      '@types/node':
+        specifier: 26.1.2
+        version: 26.1.2
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@26.1.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6)
+
+  services/servicing:
+    dependencies:
+      '@plazo/events':
+        specifier: workspace:*
+        version: link:../../packages/events
+      '@plazo/passport':
+        specifier: workspace:*
+        version: link:../../packages/passport
       '@plazo/plan-core':
         specifier: workspace:*
         version: link:../../packages/plan-core

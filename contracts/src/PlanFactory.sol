@@ -53,49 +53,75 @@ contract PlanFactory {
     ///      The verification stays inside the plan regardless. This gate stops the
     ///      griefing; it is not what makes the terms trustworthy.
     ///
-    ///      Set once, after deployment, because the router needs this factory's
-    ///      address in its own constructor and this factory's address is in the
-    ///      `planId` preimage — so neither can be a constructor argument to the
-    ///      other. The setter burns itself on use, which makes "set once" a property
-    ///      of the code rather than a promise about the deployment script.
+    ///      Set after deployment rather than in the constructor, because the router
+    ///      needs this factory's address in its own constructor and this factory's
+    ///      address is in the `planId` preimage — so neither can be an argument to the
+    ///      other.
+    ///
+    ///      **Rotatable by the admin, and Phase 5 is why (DEC-15).** It was one-shot
+    ///      through Phase 4. That made a router upgrade impossible without a new
+    ///      factory, and a new factory changes every `planId` — so replacing the
+    ///      funding book, which forces a new router, forced a new plan vintage and
+    ///      orphaned every outstanding strip's derivation. Paying that cost once was
+    ///      defensible; paying it every time anything upstream of the router moves is
+    ///      not.
+    ///
+    ///      Rotation is safe for the reason this gate was always narrow: the plan
+    ///      re-verifies `planId`, `termsHash` and the borrower's acceptance against its
+    ///      own address, so a hostile originator cannot originate terms the borrower did
+    ///      not sign. What it could do is deny service by squatting counterfactual
+    ///      addresses, which is exactly what an admin-held rotation does not enable and
+    ///      an open factory would.
     address public originator;
 
-    /// @notice The only address that may ever name the originator. Cleared on use.
-    address private _originatorSetter;
+    /// @notice May name the originator.
+    address public admin;
 
     /// @notice `planId` → deployed clone, zero until originated.
     mapping(bytes32 planId => address plan) public planOf;
 
     event PlanDeployed(bytes32 indexed planId, address indexed plan, address indexed implementation);
     event OriginatorSet(address indexed originator);
+    event AdminSet(address indexed admin);
 
     error ImplementationZero();
     error JurisdictionsZero();
     error OriginatorZero();
     error OnlyOriginator(address caller);
+    error OnlyAdmin(address caller);
     error PlanAlreadyDeployed(bytes32 planId, address existing);
     error FactoryMismatch(address expected, address provided);
     error ChainIdMismatch(uint256 expected, uint256 provided);
     error ImplementationMismatch(address expected, address provided);
     error AddressMismatch(address predicted, address deployed);
 
-    /// @param originatorSetter The address permitted to name the originator, once.
-    constructor(address implementation_, address jurisdictions_, address originatorSetter) {
+    /// @param admin_ The address permitted to name and rotate the originator.
+    constructor(address implementation_, address jurisdictions_, address admin_) {
         if (implementation_ == address(0)) revert ImplementationZero();
         if (jurisdictions_ == address(0)) revert JurisdictionsZero();
-        if (originatorSetter == address(0)) revert OriginatorZero();
+        if (admin_ == address(0)) revert OriginatorZero();
         implementation = implementation_;
         jurisdictions = JurisdictionRegistry(jurisdictions_);
-        _originatorSetter = originatorSetter;
+        admin = admin_;
     }
 
-    /// @notice Name the sole originator. Callable once, then never again.
+    /// @notice Name the sole originator.
+    /// @dev One at a time, always. Two simultaneous originators would be two doors into
+    ///      the book, which is the thing Phase 3 spent a phase closing.
     function setOriginator(address originator_) external {
-        if (msg.sender != _originatorSetter) revert OnlyOriginator(msg.sender);
+        if (msg.sender != admin) revert OnlyAdmin(msg.sender);
         if (originator_ == address(0)) revert OriginatorZero();
         originator = originator_;
-        _originatorSetter = address(0);
         emit OriginatorSet(originator_);
+    }
+
+    /// @notice Hand the rotation right on, or give it up entirely.
+    /// @dev Setting it to the zero address freezes the originator permanently, which is
+    ///      what a deployment does once it is finished moving.
+    function setAdmin(address admin_) external {
+        if (msg.sender != admin) revert OnlyAdmin(msg.sender);
+        admin = admin_;
+        emit AdminSet(admin_);
     }
 
     modifier onlyOriginator() {

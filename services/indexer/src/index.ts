@@ -310,3 +310,4 @@ ponder.on("InstallmentPlan:RefundCredited", async ({event, context}) => {
  * happened to a plan"; `origination.ts` is "what the book did about it".
  */
 import "./origination.js";
+import "./capital.js";

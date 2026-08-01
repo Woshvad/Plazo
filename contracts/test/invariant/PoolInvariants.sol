@@ -113,9 +113,28 @@ abstract contract PoolInvariants is Test {
     }
 
     /// @notice Provision never exceeds the assets it is held against.
-    /// @custom:certora provisionBoundedByAssets
+    ///
+    /// @dev **Amended in Phase 5, and the comparand is the amendment.** As written it
+    ///      compared the provision to `totalAssets()`. Once provisioning was real, that
+    ///      turned out to state something nobody chose: a provision reduces NAV
+    ///      one-for-one, so `provision ≤ assets_after` is `provision ≤ assets_before/2`
+    ///      — an accidental fifty-percent ceiling on cumulative provisioning, which a
+    ///      book with two-thirds of its receivables delinquent would breach while
+    ///      behaving perfectly correctly.
+    ///
+    ///      The assets a provision is held *against* are the receivables, not the
+    ///      pool's net worth — that is what a valuation allowance is. So the comparand
+    ///      is `grossReceivables`, which restores the property's actual content: you may
+    ///      not mark down more than you are carrying. An allowance larger than the book
+    ///      it sits on has stopped describing anything.
+    ///
+    /// @custom:certora provisionBoundedByReceivables
     function check_provisionNeverExceedsAssets() public view {
-        assertLe(pool.totalProvisioned(), pool.totalAssets(), "provision exceeds total assets");
+        assertLe(
+            pool.totalProvisioned(),
+            pool.grossReceivables(),
+            "provision exceeds the receivables it is held against"
+        );
     }
 
     // ─── Loss waterfall ──────────────────────────────────────────────────────

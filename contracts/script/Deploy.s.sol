@@ -14,7 +14,12 @@ import {AllowlistCompliance} from "../src/AllowlistCompliance.sol";
 import {ArcLocalPayout} from "../src/ArcLocalPayout.sol";
 import {ReceivableToken} from "../src/ReceivableToken.sol";
 import {MerchantRegistry} from "../src/MerchantRegistry.sol";
-import {CreditPool} from "../src/CreditPool.sol";
+import {TranchedCreditPool} from "../src/TranchedCreditPool.sol";
+import {PoolRegistry} from "../src/PoolRegistry.sol";
+import {PlazoPassport} from "../src/PlazoPassport.sol";
+import {AttestationSchemaRegistry} from "../src/AttestationSchemaRegistry.sol";
+import {RelayerGate} from "../src/RelayerGate.sol";
+import {ParkedYieldVenue} from "../src/ParkedYieldVenue.sol";
 import {FirstPaymentDefaultSwitch} from "../src/FirstPaymentDefaultSwitch.sol";
 import {Tier0Underwriter} from "../src/Tier0Underwriter.sol";
 import {OriginationPause} from "../src/OriginationPause.sol";
@@ -46,14 +51,23 @@ import {CheckoutRouter} from "../src/CheckoutRouter.sol";
 ///      receipts and cannot claim a transaction that was never mined, so the record
 ///      is derived from that instead.
 ///
-///      **This is vintage 2.** `InstallmentPlan` gained one accounting view
-///      (`forwarded()`, DEC-08) and `PlanFactory` gained an originator gate, so every
-///      address below is new and every plan id derived against the Phase 2 factory is
-///      unreachable from here. That is the intended consequence of the implementation
-///      address living in the `planId` preimage.
+///      **This is vintage 3.** `InstallmentPlan` itself is unchanged from vintage 2,
+///      but `PlanFactory` is not — Phase 5 replaced the flat funding book with a
+///      tranched one, which forces a new router, which under the old one-shot
+///      `setOriginator` forced a new factory. The factory is in the `planId` preimage,
+///      so every plan id moves.
+///
+///      That is the last time it moves for this reason. `setOriginator` is now
+///      rotatable by an admin (DEC-15), because the gate was always anti-griefing —
+///      the plan re-verifies its own `planId`, `termsHash` and acceptance — and making
+///      a router upgrade cost a migration of every outstanding strip was a price nobody
+///      chose to pay.
 contract Deploy is Script {
     /// @dev The check rail. Verified live on chain 5042002 by `pnpm arc:verify`.
     address internal constant ARC_USDC = 0x3600000000000000000000000000000000000000;
+
+    /// @dev The one product line v1 funds.
+    bytes32 internal constant PAY_IN_4 = keccak256("PLAZO.PAY_IN_4");
 
     struct Stack {
         JurisdictionRegistry jurisdictions;
@@ -64,7 +78,12 @@ contract Deploy is Script {
         ArcLocalPayout payout;
         ReceivableToken receivable;
         MerchantRegistry merchants;
-        CreditPool pool;
+        PoolRegistry pools;
+        TranchedCreditPool pool;
+        ParkedYieldVenue venue;
+        PlazoPassport passport;
+        AttestationSchemaRegistry schemas;
+        RelayerGate relayer;
         FirstPaymentDefaultSwitch killSwitch;
         Tier0Underwriter underwriter;
         OriginationPause pauses;
@@ -98,7 +117,28 @@ contract Deploy is Script {
 
         s.receivable = new ReceivableToken(deployer, address(s.eligibility));
         s.merchants = new MerchantRegistry(deployer, token, address(s.parameters));
-        s.pool = new CreditPool(deployer, token, address(s.parameters), address(s.eligibility));
+        s.pools = new PoolRegistry(deployer);
+        s.passport = new PlazoPassport(deployer, address(s.parameters));
+        s.schemas = new AttestationSchemaRegistry(deployer);
+        s.relayer = new RelayerGate(deployer, address(s.parameters));
+        s.venue = new ParkedYieldVenue(deployer, token);
+
+        // Pay-in-4 only, in v1. The tenor band is the pool's own, so POOL-01's
+        // no-commingling guarantee is enforced by the book rather than by a label on a
+        // request — and Flex and Terms are a deployment plus a registry row.
+        s.pool = new TranchedCreditPool(
+            TranchedCreditPool.Wiring({
+                admin: deployer,
+                token: token,
+                parameters: address(s.parameters),
+                eligibility: address(s.eligibility),
+                productLine: PAY_IN_4,
+                minInstallments: 2,
+                maxInstallments: 6,
+                minInterval: 7 days,
+                maxInterval: 31 days
+            })
+        );
 
         s.killSwitch = new FirstPaymentDefaultSwitch(deployer, address(s.parameters));
         s.underwriter =
@@ -112,7 +152,8 @@ contract Deploy is Script {
             deployer,
             CheckoutRouter.Wiring({
                 factory: address(s.factory),
-                pool: address(s.pool),
+                pools: address(s.pools),
+                passport: address(s.passport),
                 merchants: address(s.merchants),
                 receivable: address(s.receivable),
                 underwriter: address(s.underwriter),
@@ -132,7 +173,8 @@ contract Deploy is Script {
     function _wire(Stack memory s, address deployer) private {
         // The router is the only address that can create a plan or move the book.
         s.factory.setOriginator(address(s.router));
-        s.pool.grantRole(s.pool.ORIGINATOR_ROLE(), address(s.router));
+        s.pools.register(PAY_IN_4, address(s.pool));
+        s.pool.setOriginator(address(s.router));
         s.receivable.grantRole(s.receivable.ISSUER_ROLE(), address(s.router));
         s.underwriter.grantRole(s.underwriter.ORIGINATOR_ROLE(), address(s.router));
         s.killSwitch.grantRole(s.killSwitch.REGISTRAR_ROLE(), address(s.router));
@@ -148,9 +190,26 @@ contract Deploy is Script {
         s.eligibility.setGlobal(address(s.pool), true);
         s.eligibility.setGlobal(address(s.router), true);
         s.underwriter.setPool(address(s.pool));
+
+        // PASS-01. The only writer is the underwriter, and every write it makes is
+        // derived from a plan's own state through a permissionless, self-verifying
+        // path. The router reads the coarse tier and nothing else (PASS-02).
+        s.passport.grantRole(s.passport.WRITER_ROLE(), address(s.underwriter));
+        s.passport.grantRole(s.passport.READER_ROLE(), address(s.router));
+        s.passport.grantRole(s.passport.READER_ROLE(), address(s.underwriter));
+        s.underwriter.setPassport(address(s.passport));
+
+        // COLL-07. The operator's collection key holds nothing but this, so every
+        // collection it makes is late and every earlier one is provably somebody else's.
+        s.relayer.grantRole(s.relayer.RELAYER_ROLE(), deployer);
+
+        // POOL-13. The venue is allowlisted but not activated; the buffer stays as cash
+        // until a treasurer decides otherwise, which is the correct default for a book
+        // whose redemption queue fills from cash.
+        s.pool.setVenueAllowed(address(s.venue), true);
     }
 
-    function _report(Stack memory s, address deployer, address token) private pure {
+    function _report(Stack memory s, address deployer, address token) private view {
         console.log("deployer              ", deployer);
         console.log("token                 ", token);
         console.log("JurisdictionRegistry  ", address(s.jurisdictions));
@@ -161,7 +220,14 @@ contract Deploy is Script {
         console.log("ArcLocalPayout        ", address(s.payout));
         console.log("ReceivableToken       ", address(s.receivable));
         console.log("MerchantRegistry      ", address(s.merchants));
-        console.log("CreditPool            ", address(s.pool));
+        console.log("PoolRegistry          ", address(s.pools));
+        console.log("TranchedCreditPool    ", address(s.pool));
+        console.log("SeniorShares          ", address(s.pool.seniorShares()));
+        console.log("JuniorShares          ", address(s.pool.juniorShares()));
+        console.log("ParkedYieldVenue      ", address(s.venue));
+        console.log("PlazoPassport         ", address(s.passport));
+        console.log("AttestationSchemas    ", address(s.schemas));
+        console.log("RelayerGate           ", address(s.relayer));
         console.log("FirstPaymentDefault   ", address(s.killSwitch));
         console.log("Tier0Underwriter      ", address(s.underwriter));
         console.log("OriginationPause      ", address(s.pauses));

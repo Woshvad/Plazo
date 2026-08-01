@@ -226,7 +226,7 @@ contract KeeperMarketTest is PlanFixture {
         _originateDefault();
 
         for (uint256 i = 0; i < 40; ++i) {
-            vm.warp(block.timestamp + PlanParams.REVALIDATION_WINDOW);
+            vm.warp(vm.getBlockTimestamp() + PlanParams.REVALIDATION_WINDOW);
             vm.prank(stranger);
             plan.revalidate();
         }

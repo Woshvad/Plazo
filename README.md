@@ -10,20 +10,25 @@ Every incumbent staples together four separate systems — a settlement rail, a 
 
 ## Status
 
-**Phase 3 of 9 complete.** Credit now has exactly one door. A plan can only be created by a router that screens both parties, verifies a signed limit bounded by five separate on-chain caps, checks the merchant's standing, moves the pool's capital, pays the merchant in the same transaction, and mints a transfer-restricted receivable — reading every parameter from a registry whose bands are compiled in and can only be narrowed.
+**Phases 4 and 5 of 9 complete.** The funding book is a credit market and the borrower has somewhere to live.
 
-Phase 2 proved the mechanism: a borrower signs once, a third-party keeper collects and is paid, a drained borrower produces a delinquency signal with no operator involved, and the borrower cures and pays off through a rail that is never pausable. Two plans against real USDC, sixteen live assertions, and the published keeper finding and cranking the outstanding work given only a factory address.
+Senior and junior claims sit over a first-loss reserve, priced at an epoch NAV nobody can choose after the fact and exited through a queue where being first is worth nothing — a delinquency marks NAV down in the epoch it becomes public, a cure releases exactly what it took, and a charge-off at sixty days flows down reserve → junior → senior with the split itemised in the log.
 
-Deployed on Arc testnet, chain `5042002`, from block `54561488`. Fifteen contracts; the full list is in [`contracts/deployments/5042002.json`](contracts/deployments/5042002.json).
+On the other side, a borrower sees one balance that means something, gets warned before a shortfall becomes a bounce, tops up in one tap sized to the whole horizon, signs on an origin the merchant page cannot reach into, and reads a credit record they can recompute themselves with an open-source library.
+
+Phase 3 gave credit exactly one door; Phase 2 proved the mechanism against real USDC with no operator involved.
+
+Deployed on Arc testnet, chain `5042002`, from block `54714174`. Twenty-one contracts; the full list is in [`contracts/deployments/5042002.json`](contracts/deployments/5042002.json).
 
 | | |
 |---|---|
-| `CheckoutRouter` | [`0xd18d9bc9…5fec`](https://testnet.arcscan.app/address/0xd18d9bc9f9bfca07b73746be82e3b27b55245fec) — the only address that can create a plan |
-| `PlanFactory` | [`0x3debc13f…347e`](https://testnet.arcscan.app/address/0x3debc13fde095788d9488d034d5f8cf69cb3347e) |
-| `InstallmentPlan` | [`0x3d928f31…3547`](https://testnet.arcscan.app/address/0x3d928f31297fb75e94aa6d624757a5dae9893547) — vintage 2, the implementation clones point at |
-| `CreditPool` | [`0x1da66d97…bd90`](https://testnet.arcscan.app/address/0x1da66d97de638bf2863aaf1b8fa6cf902b38bd90) |
-| `Tier0Underwriter` | [`0xc82ff622…f894`](https://testnet.arcscan.app/address/0xc82ff622ed0224df5b84aad60a39726194e1f894) |
-| `ParameterRegistry` | [`0xeee0320d…b9bd`](https://testnet.arcscan.app/address/0xeee0320d40fbbdaedd034ea90d1399f4f830b9bd) |
+| `CheckoutRouter` | [`0x26482cfc…777e`](https://testnet.arcscan.app/address/0x26482cfc9ff45ec9d79a67689136bc4ff2bb777e) — the only address that can create a plan |
+| `TranchedCreditPool` | [`0xe0eF3fa7…2CeF`](https://testnet.arcscan.app/address/0xe0eF3fa7925D538668E7023090B28308Aa3a2CeF) — the book, the tranches, the epochs and the queue |
+| `PlazoPassport` | [`0x5dA94df5…76eE`](https://testnet.arcscan.app/address/0x5dA94df51cB626E8c6a979AcB9bbc8193d6276eE) |
+| `PlanFactory` | [`0xE598c6bF…E7f3`](https://testnet.arcscan.app/address/0xE598c6bF83650CCE33f18e97464A2A9649ACE7f3) |
+| `InstallmentPlan` | [`0xeA0B6f4c…f2A8`](https://testnet.arcscan.app/address/0xeA0B6f4cf3a972045A4181e241Ae01f31Cc5f2A8) — vintage 3, the implementation clones point at |
+| `RelayerGate` | [`0x7cea8452…7C73`](https://testnet.arcscan.app/address/0x7cea8452B6feab6C4cc684d6a8CB31D8933F7C73) — where the operator's collections are held back |
+| `ParameterRegistry` | [`0x753E08A6…7338`](https://testnet.arcscan.app/address/0x753E08A63ec767045052A0E491eaeF67A6C57338) |
 | Arc mainnet | **Not live, no announced date.** There is no mainnet phase; readiness is a CI gate and a config flip. |
 
 ## The mechanism
@@ -52,15 +57,17 @@ Deployed on Arc testnet, chain `5042002`, from block `54561488`. Fifteen contrac
 
 ## Verification
 
-**Seventeen properties, written before the contracts, now bound to them.** Phase 1 proved the suite bites by driving each assertion into failure against a breakable stub. Phase 2 points the plan properties at the real plan under a fuzzer; Phase 3 does the same for the pool, across 16,384 fuzzed calls.
+**Twenty-seven properties, written before the contracts, now bound to them.** Phase 1 proved the suite bites by driving each assertion into failure against a breakable stub. Phase 2 pointed the plan properties at the real plan under a fuzzer; Phase 3 did the same for the pool; Phase 5 binds the same pool properties, unchanged, to the tranched book — which is the check that "a refinement, not a replacement" is a true description rather than a comforting one. The deep campaign runs 2,048 runs at depth 256.
 
-Between them the fuzzers have found five defects nobody would have written a test for: `revalidate()` could starve the delinquency budget; a pause nobody observed kept the grace clock running against a borrower who could not have paid; the charge-off clock started at the wrong installment, leaving one plan shape unable to reach a terminal state at all; cancelling a defaulted plan's deferred income wrote off money the book still had; and a merchant's exposure never came down, so a merchant who had repaid everything could never recover their bond.
+Between them the fuzzers have found six defects nobody would have written a test for. `revalidate()` could starve the delinquency budget. A pause nobody observed kept the grace clock running against a borrower who could not have paid. The charge-off clock started at the wrong installment, leaving one plan shape unable to reach a terminal state at all. Cancelling a defaulted plan's deferred income wrote off money the book still had. A merchant's exposure never came down, so a merchant who had repaid everything could never recover their bond. And the merchant fee was recognised against the original principal rather than the remaining balance, which compounds — a fully repaid plan left carrying unearned income against no receivable, understating NAV for the life of every plan and then jumping at close.
 
-Two Phase 1 properties were amended in the process, both with the reasoning written into the suite. `check_sharesImplyAssets` was false for a tranche wiped out by a loss — and junior being wiped out is the product, not a bug. `check_reserveAbsorbsBeforeJunior` is a state proxy for a transition: a book that correctly struck the reserve to zero and was then replenished looks identical to one whose waterfall ran out of order, so the fuzz binding watches the step instead.
+Three Phase 1 properties have been amended, each with the reasoning written into the suite where the property lives. `check_sharesImplyAssets` was false for a tranche wiped out by a loss, and junior being wiped out is the product. `check_reserveAbsorbsBeforeJunior` is a state proxy for a transition, so the fuzz binding watches the step. `check_provisionNeverExceedsAssets` compared an allowance to net assets, which imposed an accidental fifty-percent ceiling on provisioning that nobody chose; it compares to gross receivables now.
 
-**Derivation parity, extended again.** Three corpora generated from Solidity and recomputed in TypeScript — identity and clone address; then the terms commitment, schedule, authorization windows and acceptance digest; then the attestation digest, the Tier-0 limit curve and the credit band. Moving the jitter half-width by one hour fails 64 of 64 rows; moving the growth factor by one basis point fails wherever it matters.
+**Derivation parity, four corpora.** Identity and clone address; the terms commitment, schedule, authorization windows and acceptance digest; the attestation digest, Tier-0 curve and credit band; and the credit score, its ageing window and the record commitment. Each is generated from Solidity and recomputed in TypeScript, and each carries a perturbation test proving the comparison would notice a divergence rather than merely reporting agreement.
 
 **The Arc gate**, twenty-five assertions against the live network on every push and daily on a schedule, with the domain separator derived rather than hardcoded.
+
+**Twenty-seven live assertions** against the deployed bytecode — the refusals, which are the half a mock cannot prove: a book that will not fund a tenor it was not stood up for, a tranche that refuses deposits before the protocol has seeded it, an epoch that will not close early, a credit record no stranger can read and no admin can write.
 
 ## What the fork spike settled
 
@@ -78,15 +85,23 @@ contracts/           Foundry. Apache-2.0.
 packages/plan-core/  Identity, schedule and strip derivation. Apache-2.0.
 packages/events/     The frozen event schema. Apache-2.0.
 packages/arc-verify/ The Arc primitive gate and the live slice. Apache-2.0.
-packages/keeper/     The reference keeper. Apache-2.0.
+packages/keeper/     The reference keeper, and the epoch crank. Apache-2.0.
+packages/passport/   Credit scoring, record encoding, commitment. Apache-2.0.
 packages/ui/         Design system. Proprietary.
 apps/shell/          App chassis. Proprietary.
+apps/borrower/       Plans, balance, top-up, Passport. Proprietary.
+apps/checkout/       Hosted checkout. Own origin, strict CSP. Proprietary.
+apps/console/        Operator console. Proprietary.
+apps/lender/         NAV, receivables, buffer, queue. Proprietary.
 services/indexer/    Ponder over the frozen schema. Proprietary.
 services/origination/ Quote, session, underwriting, compliance. Proprietary.
+services/servicing/  Reminders, balances, relayer, console API. Proprietary.
 tools/               Boundary and token enforcement, dependency pinning.
 ```
 
 The open tree may never import from the closed tree, and CI fails the build if it does. `packages/plan-core` in particular has no network, server or database dependency: a borrower holding a signed strip must be able to recompute the plan id, the payee address and every nonce from the disclosed terms alone. If verifying the deal needed Plazo's cooperation, "the signed bytes commit to the disclosed deal" would be a claim rather than a property.
+
+`packages/passport` is open for the same reason and it is the newer half of the argument: a borrower should be able to recompute their own credit standing and check the chain agrees, without asking the party whose interest it serves.
 
 ## Getting started
 
@@ -120,7 +135,12 @@ The fork spike. Needs network access; skips cleanly without it.
 pnpm --filter @plazo/shell dev
 ```
 
-The design system at `localhost:3000`.
+The design system at `localhost:3000`. The four product surfaces run the same way:
+`@plazo/borrower`, `@plazo/checkout`, `@plazo/console` and `@plazo/lender`. Each reads a
+live service when `PLAZO_SERVICING_URL` or `PLAZO_INDEXER_URL` is set and a labelled
+sample when it is not — the banner is unconditional, because a demo indistinguishable
+from production is how a screenshot ends up in a deck describing a book that does not
+exist.
 
 ## The live slice
 
@@ -156,11 +176,11 @@ send  markMissed(0) on 0xbCdCaf6d8d2AeF511B4Bef03ab7456c30b925663 — grace expi
 1 action(s) worth 0.1 USDC, 1 transaction(s) sent
 ```
 
-Phase 3 adds the origination plane, and its controls are verified against the deployed bytecode:
+Phases 3 to 5 add the origination, capital and servicing planes. What can be proved without capital is what they *refuse*, and that is the half a mock cannot prove — so it runs on every slice invocation, costs pennies, and is verified against the deployed bytecode:
 
 ```
 The origination plane — live controls
-  ok  every contract in the deployment record holds bytecode (12 contracts)
+  ok  every contract in the deployment record holds bytecode (19 contracts)
   ok  every Appendix A parameter reads from the registry (Tier-0 book share 1000 bp)
   ok  a value outside its hard-coded band is refused onchain (25% is the ceiling; 90% was refused)
   ok  an uncapitalised book refuses to originate
@@ -172,7 +192,26 @@ The origination plane — live controls
   ok  the operator's feed cleared the borrower
   ok  the receivable refuses to mint to an address nobody has considered
   ok  nobody but the router can deploy a plan
+  ok  the Pay-in-4 book funds Pay-in-4 paper
+  ok  and refuses a tenor it was not stood up for
+  ok  the registry knows which book backs the line
+  ok  and refuses to repoint it
+  ok  a tranche refuses deposits until the protocol has seeded it
+  ok  share units carry the decimals offset (9 decimals against USDC's 6)
+  ok  junior is locked for a full tenor and senior is not (junior 56 days)
+  ok  nobody but the pool can mint a tranche share
+  ok  an epoch cannot be closed before its time
+  ok  senior capacity is zero against a book with no junior
+  ok  the operator's collections are held back by an onchain floor (30 minutes)
+  ok  a borrower's tier is not readable by whoever asks
+  ok  and nobody outside the protocol can write one
+  ok  the credit score is a pure function anyone can evaluate
+  ok  a schema cannot be published without a content hash
+
+27 assertions passed against live chain 5042002.
 ```
+
+The credit half needs **406.84 USDC** on the funding account and has not run. Most of that is the book rather than a cost: UW-02 caps Tier-0 paper at a share of the pool, so the smallest ticket the protocol will originate needs four times its own value in capital behind it, and the deposits cycle through the plan and are redeemed at the end. Widening that band would make a testnet run cheaper and would remove one of the two things standing between an unproven scorecard and the senior tranche, so it stays where it is and the slice reports the shortfall.
 
 To reproduce:
 
@@ -198,7 +237,9 @@ Widening that band would make a testnet run cheaper and would also remove one of
 
 ## Next
 
-Phase 4 is servicing and the borrower path: Passport as a commitment, the reminder ladder and balance monitoring, one-tap top-up, hosted checkout, the borrower app, and the relayer and ops console. Phase 5 — the tranched capital market — can run alongside it; both consume Phase 3 and neither depends on the other.
+Phase 6 closes the Pay-in-4 loop: refunds and voids, physical-goods escrow, the merchant dashboard and sandbox, the drop-in SDK, and cross-chain payout and deposit. Its gate is GOV-08 — with every operator role set to the zero address, collection, cure, marking, epoch settlement, redemption requests and refunds all still work, proven by test.
+
+The formal-verification track starts now rather than at Phase 9. It was chartered to run from Phase 5 in parallel, because FV finds design flaws rather than bugs and discovering one on frozen code inside a terminal gate is a schedule catastrophe. Share accounting and the loss waterfall are the subjects; `PoolInvariants` already carries the Certora rule names.
 
 Third-party access acquisition runs alongside. See [`ACCESS.md`](ACCESS.md); nothing on that list blocks the build, and everything on it is stubbed behind an interface.
 

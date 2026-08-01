@@ -48,6 +48,22 @@ library ParameterKeys {
     bytes32 internal constant MIN_RESERVE_BPS = keccak256("plazo.pool.minReserveBps");
     bytes32 internal constant RESERVE_TARGET_BPS = keccak256("plazo.pool.reserveTargetBps");
 
+    // ─── Epoch accounting (Phase 5) ──────────────────────────────────────────
+
+    bytes32 internal constant EPOCH_LENGTH = keccak256("plazo.pool.epochLength");
+    bytes32 internal constant DELINQUENT_PROVISION_BPS = keccak256("plazo.pool.delinquentProvisionBps");
+    bytes32 internal constant BUFFER_FLOOR_BPS = keccak256("plazo.pool.bufferFloorBps");
+    bytes32 internal constant LIQUIDITY_FEE_THRESHOLD_BPS = keccak256("plazo.pool.liquidityFeeThresholdBps");
+    bytes32 internal constant LIQUIDITY_FEE_BPS = keccak256("plazo.pool.liquidityFeeBps");
+    bytes32 internal constant JUNIOR_LOCK_PERIOD = keccak256("plazo.pool.juniorLockPeriod");
+    bytes32 internal constant SENIOR_TARGET_APY_BPS = keccak256("plazo.pool.seniorTargetApyBps");
+
+    // ─── Passport and servicing (Phase 4) ────────────────────────────────────
+
+    bytes32 internal constant PASSPORT_NEGATIVE_MARK_TTL = keccak256("plazo.passport.negativeMarkTtl");
+    bytes32 internal constant PASSPORT_CONSENT_MAX_TTL = keccak256("plazo.passport.consentMaxTtl");
+    bytes32 internal constant RELAYER_DELAY_FLOOR = keccak256("plazo.relayer.delayFloor");
+
     // ─── Merchant ────────────────────────────────────────────────────────────
 
     bytes32 internal constant MERCHANT_BOND_BPS = keccak256("plazo.merchant.bondBps");

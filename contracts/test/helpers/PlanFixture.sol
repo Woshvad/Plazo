@@ -87,7 +87,7 @@ abstract contract PlanFixture is Test {
             token: address(usdc),
             principal: principal,
             installmentCount: count,
-            firstDueDate: block.timestamp,
+            firstDueDate: vm.getBlockTimestamp(),
             interval: INTERVAL,
             originationNonce: nonce,
             termsHash: TermsDetail.hash(_detail())

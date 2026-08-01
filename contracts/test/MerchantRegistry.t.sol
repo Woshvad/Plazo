@@ -175,7 +175,7 @@ contract MerchantRegistryTest is OriginationFixture {
 
     /// @notice A seasoned merchant is paid in full.
     function test_aSeasonedMerchantHasNothingWithheld() public {
-        vm.warp(block.timestamp + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
+        vm.warp(vm.getBlockTimestamp() + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
         _screenClear(borrower);
         _screenClear(merchant);
 
@@ -236,18 +236,18 @@ contract MerchantRegistryTest is OriginationFixture {
         merchants.grantRole(merchants.BOOKKEEPER_ROLE(), address(this));
         merchants.noteOrigination(merchant, cap);
 
-        vm.warp(block.timestamp + window / 2);
+        vm.warp(vm.getBlockTimestamp() + window / 2);
         assertApproxEqAbs(
             merchants.velocityUsed(merchant), cap / 2, 1, "half a window did not drain half the bucket"
         );
 
-        vm.warp(block.timestamp + window);
+        vm.warp(vm.getBlockTimestamp() + window);
         assertEq(merchants.velocityUsed(merchant), 0, "a full window did not drain the bucket");
     }
 
     /// @notice A seasoned merchant is uncapped unless governance says otherwise.
     function test_aSeasonedMerchantIsUncappedUnlessOverridden() public {
-        vm.warp(block.timestamp + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
+        vm.warp(vm.getBlockTimestamp() + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
         assertEq(merchants.velocityCapFor(merchant), type(uint256).max, "a seasoned merchant is capped");
 
         merchants.setVelocityCapOverride(merchant, 1_000e6);
@@ -303,7 +303,7 @@ contract MerchantRegistryTest is OriginationFixture {
         assertEq(room, (creditPool.totalAssets() * 100) / PlanParams.BPS, "headroom is not the share");
 
         // Fill this merchant's bucket to the cap with a synthetic front.
-        creditPool.grantRole(creditPool.ORIGINATOR_ROLE(), address(this));
+        creditPool.setOriginator(address(this));
         creditPool.front(keccak256("filler"), address(0xF11), merchant, corridor, room, 0, 0, address(this));
 
         (uint256 remaining,) = creditPool.concentrationHeadroom(merchant, corridor);

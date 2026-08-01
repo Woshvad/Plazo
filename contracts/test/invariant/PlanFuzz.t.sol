@@ -113,7 +113,7 @@ contract PlanHandler is Test {
     }
 
     function warp(uint256 seconds_) external {
-        vm.warp(block.timestamp + bound(seconds_, 1 hours, 45 days));
+        vm.warp(vm.getBlockTimestamp() + bound(seconds_, 1 hours, 45 days));
     }
 
     function pauseToken(bool value) external {
@@ -284,7 +284,7 @@ contract PlanFuzzTest is PlanFixture, PlanInvariants {
         address honest = address(0xA11CE);
 
         for (uint256 i = 0; i < plan.installmentCount(); ++i) {
-            if (block.timestamp <= plan.graceEndsAt(i)) continue;
+            if (vm.getBlockTimestamp() <= plan.graceEndsAt(i)) continue;
 
             IInstallmentPlan.InstallmentStatus status = plan.installmentStatus(i);
             if (

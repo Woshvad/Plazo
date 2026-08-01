@@ -102,7 +102,7 @@ ponder.on("CheckoutRouter:OriginationCompleted", async ({event, context}) => {
 
 // ─── The funding book ─────────────────────────────────────────────────────────
 
-ponder.on("CreditPool:Fronted", async ({event, context}) => {
+ponder.on("TranchedCreditPool:Fronted", async ({event, context}) => {
   await context.db
     .insert(bookEntry)
     .values({
@@ -113,7 +113,7 @@ ponder.on("CreditPool:Fronted", async ({event, context}) => {
     .onConflictDoNothing();
 });
 
-ponder.on("CreditPool:Recognised", async ({event, context}) => {
+ponder.on("TranchedCreditPool:Recognised", async ({event, context}) => {
   await context.db
     .insert(bookEntry)
     .values({
@@ -133,7 +133,7 @@ ponder.on("CreditPool:Recognised", async ({event, context}) => {
     }));
 });
 
-ponder.on("CreditPool:LossAbsorbed", async ({event, context}) => {
+ponder.on("TranchedCreditPool:LossAbsorbed", async ({event, context}) => {
   const total = event.args.fromReserve + event.args.fromJunior + event.args.fromSenior;
 
   await context.db
@@ -155,7 +155,7 @@ ponder.on("CreditPool:LossAbsorbed", async ({event, context}) => {
     }));
 });
 
-ponder.on("CreditPool:UnmarkedDelinquency", async ({event, context}) => {
+ponder.on("TranchedCreditPool:UnmarkedDelinquency", async ({event, context}) => {
   await context.db
     .insert(bookEntry)
     .values({
@@ -174,7 +174,7 @@ ponder.on("CreditPool:UnmarkedDelinquency", async ({event, context}) => {
  * is the only way to answer "when was the book closed, and for how long" after the
  * fact, and that is the question an allocator asks.
  */
-ponder.on("CreditPool:OriginationGated", async ({event, context}) => {
+ponder.on("TranchedCreditPool:OriginationGated", async ({event, context}) => {
   await context.db.insert(gateReading).values({
     id: eventId(event),
     open: event.args.open,

@@ -351,7 +351,7 @@ contract InstallmentPlanTest is PlanFixture {
         assertEq(uint256(plan.state()), uint256(IInstallmentPlan.PlanState.HALTED));
 
         uint256 graceBefore = plan.graceEndsAt(1);
-        vm.warp(block.timestamp + 6 days);
+        vm.warp(vm.getBlockTimestamp() + 6 days);
         assertEq(plan.graceEndsAt(1), graceBefore + 6 days, "the halt did not suspend the clock");
 
         // The bounty for the cycle lands on `resume()`, because paying it during the

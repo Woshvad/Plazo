@@ -84,7 +84,7 @@ contract SignerMutationTest is PlanFixture {
         vm.prank(stranger);
         plan.revalidate();
 
-        assertEq(plan.revalidatedAt(), block.timestamp);
+        assertEq(plan.revalidatedAt(), vm.getBlockTimestamp());
         assertEq(
             uint256(plan.installmentStatus(1)),
             uint256(IInstallmentPlan.InstallmentStatus.Bounced),
@@ -93,7 +93,7 @@ contract SignerMutationTest is PlanFixture {
         // Discovered days before the due date rather than at it — which is the whole
         // point, because at the due date the information arrives too late to reprice
         // anything.
-        assertLt(block.timestamp, plan.dueDate(1));
+        assertLt(vm.getBlockTimestamp(), plan.dueDate(1));
     }
 
     function test_revalidatingAValidStripChangesNothing() public {
@@ -123,7 +123,7 @@ contract SignerMutationTest is PlanFixture {
         vm.expectRevert();
         plan.revalidate();
 
-        vm.warp(block.timestamp + PlanParams.REVALIDATION_WINDOW);
+        vm.warp(vm.getBlockTimestamp() + PlanParams.REVALIDATION_WINDOW);
         vm.prank(stranger);
         plan.revalidate();
         assertEq(usdc.balanceOf(stranger), 2 * PlanParams.MARK_BOUNTY);

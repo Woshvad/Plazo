@@ -92,19 +92,64 @@ const ROUTER_ABI = parseAbi([
   "function recognise(bytes32 planId)",
   "function mdrFor(uint256 principal) view returns (uint256)",
   "function corridorOf(address token) pure returns (bytes32)",
-  "function maxPrincipalFor(bytes32 personId, uint8 identity, uint8 signerClass, address merchant, address token) view returns (uint256)",
+  "function maxPrincipalFor(bytes32 personId, uint8 identity, uint8 signerClass, address merchant, address token, address pool) view returns (uint256)",
 ]);
 
 const POOL_ABI = parseAbi([
-  "function deposit(uint8 tranche, uint256 assets) returns (uint256 shares)",
-  "function redeem(uint8 tranche, uint256 shares) returns (uint256 assets)",
+  "function seed(uint8 tranche, uint256 assets)",
+  "function requestDeposit(uint8 tranche, uint256 assets)",
+  "function claimShares(uint8 tranche) returns (uint256 shares)",
+  "function requestRedeem(uint8 tranche, uint256 shares) returns (uint256 index)",
+  "function claimRedemption(uint8 tranche, uint256 index, uint256 maxSteps) returns (uint256 assets)",
+  "function markEpoch(uint256 limit) returns (uint256 walked)",
+  "function closeEpoch()",
   "function fundReserve(uint256 amount)",
   "function totalAssets() view returns (uint256)",
   "function bookedCash() view returns (uint256)",
   "function originationOpen() view returns (bool)",
-  "function sharesOf(uint8 tranche, address holder) view returns (uint256)",
   "function subordinationBps() view returns (uint256)",
   "function reserveBps() view returns (uint256)",
+  "function currentEpoch() view returns (uint256)",
+  "function epochEndsAt() view returns (uint256)",
+  "function markComplete() view returns (bool)",
+  "function seeded(uint8 tranche) view returns (bool)",
+  "function acceptsSchedule(uint256 installmentCount, uint256 interval) view returns (bool)",
+  "function maxSeniorDeposit() view returns (uint256)",
+  "function navPerShare(uint8 tranche) view returns (uint256)",
+  "function seniorShares() view returns (address)",
+  "function juniorShares() view returns (address)",
+]);
+
+const TRANCHE_ABI = parseAbi([
+  "function decimals() view returns (uint8)",
+  "function totalSupply() view returns (uint256)",
+  "function balanceOf(address holder) view returns (uint256)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+  "function lockPeriod() view returns (uint256)",
+  "function mint(address to, uint256 shares)",
+]);
+
+const PASSPORT_ABI = parseAbi([
+  "function tierOf(address borrower) view returns (uint8)",
+  "function score(uint256 completions, uint256 active) pure returns (uint8)",
+  "function activeNegatives(address borrower) view returns (uint256)",
+  "function noteOutcome(address borrower, bool clean)",
+]);
+
+const POOL_REGISTRY_ABI = parseAbi([
+  "function poolFor(bytes32 productLine) view returns (address)",
+  "function isPool(address pool) view returns (bool)",
+  "function register(bytes32 productLine, address pool)",
+]);
+
+const RELAYER_ABI = parseAbi([
+  "function delayFloor() view returns (uint256)",
+  "function collect(address plan, uint256 index)",
+]);
+
+const SCHEMAS_ABI = parseAbi([
+  "function publish(bytes32 schemaId, uint64 version, bytes32 contentHash, string uri)",
+  "function versionCount(bytes32 schemaId) view returns (uint256)",
 ]);
 
 const MERCHANTS_ABI = parseAbi([
@@ -236,7 +281,14 @@ interface Deployment {
   payout: Address;
   receivable: Address;
   merchantRegistry: Address;
+  poolRegistry: Address;
   creditPool: Address;
+  seniorShares: Address;
+  juniorShares: Address;
+  yieldVenue: Address;
+  passport: Address;
+  attestationSchemas: Address;
+  relayerGate: Address;
   killSwitch: Address;
   tier0: Address;
   pauses: Address;
@@ -244,6 +296,12 @@ interface Deployment {
   planFactory: Address;
   checkoutRouter: Address;
 }
+
+/** POOL-12's permanent per-tranche seed. Protocol money, never redeemable. */
+const TRANCHE_SEED = 1_000_000n;
+
+/** The one product line v1 funds. Matches `Deploy.s.sol`. */
+const PAY_IN_4 = keccak256(toHex("PLAZO.PAY_IN_4"));
 
 let passed = 0;
 
@@ -454,16 +512,37 @@ class Slice {
 
     await this.write(this.deployer, this.deployment.token, TOKEN_ABI, "approve", [
       this.deployment.creditPool,
-      SENIOR_SEED + JUNIOR_SEED + RESERVE_SEED,
+      SENIOR_SEED + JUNIOR_SEED + RESERVE_SEED + 2n * TRANCHE_SEED,
     ]);
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "deposit", [
-      Tranche.Senior,
-      SENIOR_SEED,
-    ]);
-    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "deposit", [
+
+    // POOL-12's permanent seed, before anybody can be the first depositor. Protocol
+    // money, never redeemable, and the reason the empty-vault case is unreachable
+    // rather than merely expensive.
+    for (const tranche of [Tranche.Junior, Tranche.Senior] as const) {
+      if (await this.view<boolean>(this.deployment.creditPool, POOL_ABI, "seeded", [tranche])) continue;
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "seed", [
+        tranche,
+        TRANCHE_SEED,
+      ]);
+    }
+
+    // POOL-03. Entry is a request, a close and a claim — three transactions, because
+    // the price a deposit settles at does not exist when the deposit is made.
+    //
+    // Junior first. Senior capacity is a function of the subordination beneath it, so
+    // a book is capitalised from the bottom up, which is how one actually is.
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
       Tranche.Junior,
       JUNIOR_SEED,
     ]);
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestDeposit", [
+      Tranche.Senior,
+      SENIOR_SEED,
+    ]);
+    await this.closeEpoch();
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimShares", [Tranche.Junior]);
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimShares", [Tranche.Senior]);
+
     await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "fundReserve", [
       RESERVE_SEED,
     ]);
@@ -538,7 +617,14 @@ class Slice {
       ["ArcLocalPayout", d.payout],
       ["ReceivableToken", d.receivable],
       ["MerchantRegistry", d.merchantRegistry],
-      ["CreditPool", d.creditPool],
+      ["PoolRegistry", d.poolRegistry],
+      ["TranchedCreditPool", d.creditPool],
+      ["SeniorShares", d.seniorShares],
+      ["JuniorShares", d.juniorShares],
+      ["ParkedYieldVenue", d.yieldVenue],
+      ["PlazoPassport", d.passport],
+      ["AttestationSchemaRegistry", d.attestationSchemas],
+      ["RelayerGate", d.relayerGate],
       ["FirstPaymentDefaultSwitch", d.killSwitch],
       ["Tier0Underwriter", d.tier0],
       ["OriginationPause", d.pauses],
@@ -592,6 +678,7 @@ class Slice {
         SignerClass.EOA,
         this.account(this.merchant),
         d.token,
+        d.creditPool,
       ])) === 0n,
     );
 
@@ -651,6 +738,138 @@ class Slice {
         this.deployer,
       ),
     );
+
+    await this.capitalControls();
+    await this.servicingControls();
+  }
+
+  /**
+   * The capital plane's refusals, on the live chain.
+   *
+   * Every one of these is a thing the book will not do, and a refusal is the only half
+   * of a credit market that can be tested without capital. The half that needs money is
+   * `prepareBook`, and it reports its own shortfall rather than pretending.
+   */
+  private async capitalControls(): Promise<void> {
+    const d = this.deployment;
+
+    // POOL-01. One book per product line, and the book itself decides what it funds.
+    check(
+      "the Pay-in-4 book funds Pay-in-4 paper",
+      await this.view<boolean>(d.creditPool, POOL_ABI, "acceptsSchedule", [4n, 14n * DAY]),
+    );
+    check(
+      "and refuses a tenor it was not stood up for",
+      !(await this.view<boolean>(d.creditPool, POOL_ABI, "acceptsSchedule", [12n, 30n * DAY])),
+      "a twelve-month Flex schedule against the Pay-in-4 book",
+    );
+    check(
+      "the registry knows which book backs the line",
+      (await this.view<Address>(d.poolRegistry, POOL_REGISTRY_ABI, "poolFor", [PAY_IN_4]))
+        .toLowerCase() === d.creditPool.toLowerCase(),
+    );
+    check(
+      "and refuses to repoint it",
+      await this.reverts(d.poolRegistry, POOL_REGISTRY_ABI, "register", [PAY_IN_4, d.yieldVenue], this.deployer),
+      "outstanding plans settle to the book that funded them",
+    );
+
+    // POOL-12. The empty-vault case is unreachable, not merely expensive.
+    check(
+      "a tranche refuses deposits until the protocol has seeded it",
+      !(await this.view<boolean>(d.creditPool, POOL_ABI, "seeded", [Tranche.Junior])) &&
+        (await this.reverts(d.creditPool, POOL_ABI, "requestDeposit", [Tranche.Junior, 1_000_000n], this.deployer)),
+    );
+
+    const seniorDecimals = await this.view<number>(d.seniorShares, TRANCHE_ABI, "decimals");
+    check(
+      "share units carry the decimals offset",
+      seniorDecimals === 9,
+      `${seniorDecimals} decimals against USDC's 6`,
+    );
+
+    // POOL-10. Junior is locked for a full product tenor; senior is not.
+    const juniorLock = await this.view<bigint>(d.juniorShares, TRANCHE_ABI, "lockPeriod");
+    const seniorLock = await this.view<bigint>(d.seniorShares, TRANCHE_ABI, "lockPeriod");
+    check(
+      "junior is locked for a full tenor and senior is not",
+      juniorLock === 56n * DAY && seniorLock === 0n,
+      `junior ${juniorLock / DAY} days`,
+    );
+
+    // POOL-02. Only the pool mints a claim on the book.
+    check(
+      "nobody but the pool can mint a tranche share",
+      await this.reverts(d.seniorShares, TRANCHE_ABI, "mint", [this.account(this.deployer), 1n], this.deployer),
+    );
+
+    // POOL-04. An epoch cannot be closed before its window has passed.
+    const epoch = await this.view<bigint>(d.creditPool, POOL_ABI, "currentEpoch");
+    check(
+      "an epoch cannot be closed before its time",
+      await this.reverts(d.creditPool, POOL_ABI, "closeEpoch", [], this.deployer),
+      `epoch ${epoch} is still open`,
+    );
+
+    // POOL-06. Senior capacity is a function of the subordination beneath it, and
+    // there is none yet — you cannot be senior to nothing.
+    check(
+      "senior capacity is zero against a book with no junior",
+      (await this.view<bigint>(d.creditPool, POOL_ABI, "maxSeniorDeposit")) === 0n,
+    );
+  }
+
+  /**
+   * The servicing plane's refusals.
+   *
+   * COLL-07's delay floor and PASS-02's read gate are both things that only mean
+   * anything if they hold against a live contract rather than a configuration file.
+   */
+  private async servicingControls(): Promise<void> {
+    const d = this.deployment;
+
+    // COLL-07. The floor is a registry row the gate reads, not a constant it holds.
+    const floor = await this.view<bigint>(d.relayerGate, RELAYER_ABI, "delayFloor");
+    check(
+      "the operator's collections are held back by an onchain floor",
+      floor === 1_800n,
+      `${floor / 60n} minutes after each due date`,
+    );
+
+    // PASS-02. A stranger cannot read a borrower's tier, and the deployer is a
+    // stranger — the router holds the reader role, not the key that deployed it.
+    check(
+      "a borrower's tier is not readable by whoever asks",
+      await this.reverts(d.passport, PASSPORT_ABI, "tierOf", [this.account(this.borrower)], this.merchant),
+    );
+
+    // PASS-01. Written only by protocol contracts. Not even by the admin.
+    check(
+      "and nobody outside the protocol can write one",
+      await this.reverts(d.passport, PASSPORT_ABI, "noteOutcome", [this.account(this.borrower), true], this.deployer),
+    );
+
+    // PASS-06. The tier is a pure function, evaluated by the chain, matching the
+    // corpus `packages/passport` is asserted against.
+    const impaired = await this.view<number>(d.passport, PASSPORT_ABI, "score", [9n, 2n]);
+    const trusted = await this.view<number>(d.passport, PASSPORT_ABI, "score", [5n, 0n]);
+    check(
+      "the credit score is a pure function anyone can evaluate",
+      impaired === 1 && trusted === 4,
+      "two marks impair; five clean completions are trusted",
+    );
+
+    // PASS-05. A schema version without a content hash is a link, not a commitment.
+    check(
+      "a schema cannot be published without a content hash",
+      await this.reverts(
+        d.attestationSchemas,
+        SCHEMAS_ABI,
+        "publish",
+        [keccak256(toHex("plazo.passport.v1")), 1n, `0x${"0".repeat(64)}`, "ipfs://nothing"],
+        this.deployer,
+      ),
+    );
   }
 
   /**
@@ -696,25 +915,43 @@ class Slice {
     }
   }
 
-  /** Return the pool's capital and the merchant's bond to the funding account. */
+  /**
+   * Return the pool's capital and the merchant's bond to the funding account.
+   *
+   * Three steps per tranche now rather than one, because POOL-03 made exit
+   * asynchronous: queue the shares, close the epoch that prices them, collect. A
+   * redeemer who cannot be paid this epoch keeps their cumulative position, so a
+   * partial unwind is not a failure — it is the queue doing what it is for, and the
+   * remainder fills from natural runoff.
+   */
   async unwind(): Promise<void> {
     for (const tranche of [Tranche.Senior, Tranche.Junior] as const) {
-      const shares = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "sharesOf", [
-        tranche,
+      const share = tranche === Tranche.Senior ? this.deployment.seniorShares : this.deployment.juniorShares;
+      const held = await this.view<bigint>(share, TRANCHE_ABI, "balanceOf", [
         this.account(this.deployer),
       ]);
-      if (shares === 0n) continue;
-      const cash = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "bookedCash");
-      if (cash === 0n) continue;
-      try {
-        await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "redeem", [tranche, shares]);
-      } catch {
-        // Bounded by cash on the book, which is the intended behaviour. A redeemer
-        // who cannot be paid today waits; Phase 5 gives them a queue position.
-      }
+      if (held === 0n) continue;
+
+      await this.write(this.deployer, share, TRANCHE_ABI, "approve", [this.deployment.creditPool, held]);
+      const index = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "requestRedeem", [
+        tranche,
+        held,
+      ]);
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "requestRedeem", [
+        tranche,
+        held,
+      ]);
+      await this.closeEpoch();
+      await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "claimRedemption", [
+        tranche,
+        index,
+        8n,
+      ]);
     }
   }
 
+
+  /** The plan under test, derived exactly as `plan-core` derives it. */
   terms(firstDueDate: bigint, interval: bigint, nonce: bigint, count = 4n): PlanTerms {
     const detail = this.detail();
     return {
@@ -733,7 +970,29 @@ class Slice {
       termsHash: hashTermsDetail(detail),
     };
   }
+  /**
+   * Run both crank phases and close the epoch. POOL-04 and COLL-04.
+   *
+   * Permissionless, so the slice calls them as any lender in the queue would. It waits
+   * out the epoch window by polling rather than warping, because there is no cheatcode
+   * on a real chain — which is also the honest cost of a one-day epoch on testnet.
+   */
+  private async closeEpoch(): Promise<void> {
+    const endsAt = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "epochEndsAt");
+    const block = await shed(() => this.publicClient.getBlock());
 
+    if (block.timestamp < endsAt) {
+      throw new Error(
+        `The epoch runs until ${endsAt} and it is ${block.timestamp}. ` +
+          `Lower plazo.pool.epochLength to its one-hour floor, or wait ${
+            (endsAt - block.timestamp) / 60n
+          } minutes.`,
+      );
+    }
+
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "markEpoch", [32n]);
+    await this.write(this.deployer, this.deployment.creditPool, POOL_ABI, "closeEpoch", []);
+  }
   /**
    * Originate through the real factory, with a strip the borrower actually signs.
    *

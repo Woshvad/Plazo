@@ -6,6 +6,30 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@plazo/shell", "dev"],
       "port": 3000
+    },
+    {
+      "name": "borrower",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@plazo/borrower", "dev", "--port", "3001"],
+      "port": 3001
+    },
+    {
+      "name": "checkout",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@plazo/checkout", "dev", "--port", "3002"],
+      "port": 3002
+    },
+    {
+      "name": "console",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@plazo/console", "dev", "--port", "3003"],
+      "port": 3003
+    },
+    {
+      "name": "lender",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@plazo/lender", "dev", "--port", "3004"],
+      "port": 3004
     }
   ]
 }

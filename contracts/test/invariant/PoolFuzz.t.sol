@@ -7,7 +7,8 @@ import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {PoolInvariants} from "./PoolInvariants.sol";
 import {ConfigurablePlan} from "./stubs/ConfigurablePlan.sol";
 
-import {CreditPool} from "../../src/CreditPool.sol";
+import {TranchedCreditPool} from "../../src/TranchedCreditPool.sol";
+import {TrancheToken} from "../../src/TrancheToken.sol";
 import {ParameterRegistry} from "../../src/ParameterRegistry.sol";
 import {EligibilityRegistry} from "../../src/EligibilityRegistry.sol";
 import {ICreditPool} from "../../src/interfaces/ICreditPool.sol";
@@ -29,8 +30,15 @@ import {MockArcUsdc} from "../mocks/MockArcUsdc.sol";
 ///      Cash is moved for real. When the handler says a plan forwarded money, the
 ///      money arrives; otherwise `bookedCash` would drift from the balance and the
 ///      suite would be proving a property about a fiction.
+///
+///      **Phase 5 made entry and exit asynchronous, so the handler runs epochs.** A
+///      deposit is a request, a close is what prices it, and a claim is what collects
+///      it — three separate actions the fuzzer interleaves freely with fronts,
+///      collections, defaults and warps. That interleaving is the point: the
+///      oscillation POOL-07 exists to prevent is exactly a deposit landing between a
+///      provision and its release.
 contract PoolHandler is Test {
-    CreditPool internal immutable pool;
+    TranchedCreditPool internal immutable pool;
     MockArcUsdc internal immutable usdc;
     ParameterRegistry internal immutable parameters;
 
@@ -48,14 +56,22 @@ contract PoolHandler is Test {
     ///      well-behaved crank would hide it.
     bool public waterfallInverted;
 
+    /// @notice Set if two redeemers filled in the same epoch at different fee rates.
+    /// @dev POOL-09's whole anti-run argument is that the fee is struck on the epoch
+    ///      rather than on a queue position. If two fills in one epoch could carry
+    ///      different rates, redeeming early would pay again.
+    bool public feeWasNotUniform;
+
     uint256 public deposits;
     uint256 public redemptions;
+    uint256 public claims;
     uint256 public fronts;
     uint256 public recognitions;
     uint256 public defaults;
     uint256 public payments;
+    uint256 public closes;
 
-    constructor(CreditPool pool_, MockArcUsdc usdc_, ParameterRegistry parameters_) {
+    constructor(TranchedCreditPool pool_, MockArcUsdc usdc_, ParameterRegistry parameters_) {
         pool = pool_;
         usdc = usdc_;
         parameters = parameters_;
@@ -71,39 +87,68 @@ contract PoolHandler is Test {
         return planIds.length;
     }
 
-    /// @dev Every action is wrapped so a revert does not abort the run and does not
-    ///      leave a prank armed. A prank consumed by a reverting call stays armed and
-    ///      poisons the next action — the same trap the plan fuzzer hit in Phase 2.
-    modifier as_(address who) {
-        vm.startPrank(who);
-        _;
-        vm.stopPrank();
+    function _tranche(bool junior) private pure returns (ICreditPool.Tranche) {
+        return junior ? ICreditPool.Tranche.Junior : ICreditPool.Tranche.Senior;
     }
 
-    // ─── Capital ─────────────────────────────────────────────────────────────
+    function _shareToken(bool junior) private view returns (TrancheToken) {
+        return junior ? pool.juniorShares() : pool.seniorShares();
+    }
 
-    function deposit(uint256 seed, uint256 amount, bool junior) external {
+    // ─── Capital in ──────────────────────────────────────────────────────────
+
+    function requestDeposit(uint256 seed, uint256 amount, bool junior) external {
         address who = lenderAt(seed);
         amount = bound(amount, 1e6, 100_000e6);
         usdc.mint(who, amount);
 
         vm.startPrank(who);
         usdc.approve(address(pool), amount);
-        try pool.deposit(junior ? ICreditPool.Tranche.Junior : ICreditPool.Tranche.Senior, amount) {
+        try pool.requestDeposit(_tranche(junior), amount) {
             deposits++;
         } catch {}
         vm.stopPrank();
     }
 
-    function redeem(uint256 seed, uint256 shares, bool junior) external as_(lenderAt(seed)) {
-        ICreditPool.Tranche tranche =
-            junior ? ICreditPool.Tranche.Junior : ICreditPool.Tranche.Senior;
-        uint256 held = pool.sharesOf(tranche, lenderAt(seed));
+    function cancelDeposit(uint256 seed, bool junior) external {
+        vm.startPrank(lenderAt(seed));
+        try pool.cancelDeposit(_tranche(junior)) {} catch {}
+        vm.stopPrank();
+    }
+
+    function claimShares(uint256 seed, bool junior) external {
+        vm.startPrank(lenderAt(seed));
+        try pool.claimShares(_tranche(junior)) {
+            claims++;
+        } catch {}
+        vm.stopPrank();
+    }
+
+    // ─── Capital out ─────────────────────────────────────────────────────────
+
+    function requestRedeem(uint256 seed, uint256 shares, bool junior) external {
+        address who = lenderAt(seed);
+        TrancheToken share = _shareToken(junior);
+        uint256 held = share.balanceOf(who);
         if (held == 0) return;
         shares = bound(shares, 1, held);
-        try pool.redeem(tranche, shares) {
+
+        vm.startPrank(who);
+        share.approve(address(pool), shares);
+        try pool.requestRedeem(_tranche(junior), shares) {
             redemptions++;
         } catch {}
+        vm.stopPrank();
+    }
+
+    function claimRedemption(uint256 seed, uint256 index, bool junior) external {
+        address who = lenderAt(seed);
+        uint256 count = pool.redeemTicketCount(_tranche(junior), who);
+        if (count == 0) return;
+
+        vm.startPrank(who);
+        try pool.claimRedemption(_tranche(junior), index % count, 8) {} catch {}
+        vm.stopPrank();
     }
 
     function fundReserve(uint256 amount) external {
@@ -123,7 +168,7 @@ contract PoolHandler is Test {
 
         ConfigurablePlan p = new ConfigurablePlan();
         // Dated forward, so nothing is past grace until the handler warps.
-        p.initHealthy(4, principal, block.timestamp + 7 days, 14 days);
+        p.initHealthy(4, principal, vm.getBlockTimestamp() + 7 days, 14 days);
 
         bytes32 id = keccak256(abi.encode("plan", planIds.length, principal));
 
@@ -167,6 +212,21 @@ contract PoolHandler is Test {
         defaults++;
     }
 
+    /// @notice Move a plan into and out of delinquency. POOL-07's round trip.
+    /// @dev The interesting half is the *cure*: a provision that releases something
+    ///      other than exactly what it took is the harvestable oscillation D11 named,
+    ///      and it only shows up when a plan goes both ways.
+    function setDelinquent(uint256 seed, bool delinquent) external {
+        if (planIds.length == 0) return;
+        bytes32 id = planIds[seed % planIds.length];
+        ConfigurablePlan p = planOf[id];
+        if (p.state() == IInstallmentPlan.PlanState.Defaulted) return;
+        if (p.state() == IInstallmentPlan.PlanState.Repaid) return;
+        p.setState(
+            delinquent ? IInstallmentPlan.PlanState.Delinquent : IInstallmentPlan.PlanState.Active
+        );
+    }
+
     function repayFully(uint256 seed) external {
         if (planIds.length == 0) return;
         bytes32 id = planIds[seed % planIds.length];
@@ -183,10 +243,15 @@ contract PoolHandler is Test {
         p.setState(IInstallmentPlan.PlanState.Repaid);
     }
 
-    function markMissed(uint256 seed) external {
+    /// @notice Record every past-grace installment. COLL-04's unblocker.
+    function markAll(uint256 seed) external {
         if (planIds.length == 0) return;
-        bytes32 id = planIds[seed % planIds.length];
-        planOf[id].setStatus(0, IInstallmentPlan.InstallmentStatus.Missed);
+        ConfigurablePlan p = planOf[planIds[seed % planIds.length]];
+        for (uint256 i = 0; i < 4; ++i) {
+            if (p.installmentStatus(i) == IInstallmentPlan.InstallmentStatus.Pending) {
+                p.setStatus(i, IInstallmentPlan.InstallmentStatus.Missed);
+            }
+        }
     }
 
     /// @notice Crank the book, and watch the waterfall while it runs.
@@ -210,6 +275,10 @@ contract PoolHandler is Test {
             return;
         }
 
+        _checkWaterfall(juniorBefore, seniorBefore);
+    }
+
+    function _checkWaterfall(uint256 juniorBefore, uint256 seniorBefore) private {
         if (pool.trancheAssets(ICreditPool.Tranche.Junior) < juniorBefore) {
             // Junior was struck. The reserve had to be exhausted for that to be legal.
             if (pool.reserveBalance() != 0) waterfallInverted = true;
@@ -221,8 +290,50 @@ contract PoolHandler is Test {
         }
     }
 
+    // ─── Epochs ──────────────────────────────────────────────────────────────
+
+    function markEpoch(uint256 limit) external {
+        uint256 juniorBefore = pool.trancheAssets(ICreditPool.Tranche.Junior);
+        uint256 seniorBefore = pool.trancheAssets(ICreditPool.Tranche.Senior);
+        try pool.markEpoch(bound(limit, 1, 32)) {} catch {}
+        _checkWaterfall(juniorBefore, seniorBefore);
+    }
+
+    /// @notice Try to close. It usually fails, and every reason it fails is a rule.
+    function closeEpoch() external {
+        uint256 seniorFills = pool.fillCount(ICreditPool.Tranche.Senior);
+        uint256 juniorFills = pool.fillCount(ICreditPool.Tranche.Junior);
+
+        try pool.closeEpoch() {
+            closes++;
+        } catch {
+            return;
+        }
+
+        _checkFeeUniformity(ICreditPool.Tranche.Senior, seniorFills);
+        _checkFeeUniformity(ICreditPool.Tranche.Junior, juniorFills);
+    }
+
+    /// @dev A close appends at most one fill per tranche, and both tranches' fills in
+    ///      one epoch must carry the same rate. Anything else means a redeemer's price
+    ///      depended on something other than which epoch they were in.
+    function _checkFeeUniformity(ICreditPool.Tranche tranche, uint256 before) private {
+        uint256 count = pool.fillCount(tranche);
+        if (count <= before) return;
+        if (count - before > 1) feeWasNotUniform = true;
+
+        TranchedCreditPool.Fill memory latest = pool.fillAt(tranche, count - 1);
+        ICreditPool.Tranche other =
+            tranche == ICreditPool.Tranche.Senior ? ICreditPool.Tranche.Junior : ICreditPool.Tranche.Senior;
+        uint256 otherCount = pool.fillCount(other);
+        if (otherCount == 0) return;
+
+        TranchedCreditPool.Fill memory peer = pool.fillAt(other, otherCount - 1);
+        if (peer.epoch == latest.epoch && peer.feeBps != latest.feeBps) feeWasNotUniform = true;
+    }
+
     function warp(uint256 seconds_) external {
-        vm.warp(block.timestamp + bound(seconds_, 1 hours, 30 days));
+        vm.warp(vm.getBlockTimestamp() + bound(seconds_, 1 hours, 30 days));
     }
 }
 
@@ -233,25 +344,50 @@ contract PoolHandler is Test {
 ///      implementations out, and discovering during formal verification that the
 ///      accounting shape was wrong is a redesign at the worst possible moment.
 ///
-///      This is the moment they stop being aspirations.
+///      Phase 3 bound them to a flat book. Phase 5 binds them, unchanged, to the
+///      tranched one — which is the check that DEC-21's "refinement, not replacement"
+///      is a true description rather than a comforting one.
 contract PoolFuzzTest is StdInvariant, PoolInvariants {
     MockArcUsdc internal usdc;
     ParameterRegistry internal parameters;
     EligibilityRegistry internal eligibility;
-    CreditPool internal subject;
+    TranchedCreditPool internal subject;
     PoolHandler internal handler;
+
+    uint256 internal constant SEED = 1e6;
 
     function setUp() public {
         usdc = new MockArcUsdc();
         parameters = new ParameterRegistry(address(this));
         eligibility = new EligibilityRegistry(address(this));
-        subject = new CreditPool(address(this), address(usdc), address(parameters), address(eligibility));
+
+        subject = new TranchedCreditPool(
+            TranchedCreditPool.Wiring({
+                admin: address(this),
+                token: address(usdc),
+                parameters: address(parameters),
+                eligibility: address(eligibility),
+                productLine: keccak256("PLAZO.PAY_IN_4"),
+                minInstallments: 2,
+                maxInstallments: 6,
+                minInterval: 7 days,
+                maxInterval: 31 days
+            })
+        );
 
         handler = new PoolHandler(subject, usdc, parameters);
-        subject.grantRole(subject.ORIGINATOR_ROLE(), address(handler));
+        subject.setOriginator(address(handler));
 
         eligibility.setGlobal(address(0xA11CE), true);
         eligibility.setGlobal(address(0xB0B), true);
+        eligibility.setGlobal(address(this), true);
+        eligibility.setGlobal(address(subject), true);
+
+        // POOL-12's permanent seed, before anybody can be the first depositor.
+        usdc.mint(address(this), 2 * SEED);
+        usdc.approve(address(subject), 2 * SEED);
+        subject.seed(ICreditPool.Tranche.Senior, SEED);
+        subject.seed(ICreditPool.Tranche.Junior, SEED);
 
         pool = ICreditPool(address(subject));
 
@@ -286,7 +422,7 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
     ///
     /// @dev `check_reserveAbsorbsBeforeJunior` is bound here in its transition form
     ///      rather than its state form, and the reason is a genuine limit of the state
-    ///      form that this campaign found.
+    ///      form that the Phase 3 campaign found.
     ///
     ///      The balance sheet does not record *when* the reserve was emptied. A pool
     ///      that correctly struck the reserve to zero, took the overflow out of
@@ -295,9 +431,10 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
     ///      waterfall ran out of order. The state form flags the first as a violation,
     ///      and it is not one; the recovery is the system working.
     ///
-    ///      So the handler watches every `recognise` and latches a flag if a tranche
-    ///      was ever struck while something senior to it in the waterfall still held
-    ///      assets. That is the property POOL-16 states, checked where it happens.
+    ///      So the handler watches every step that can take a loss and latches a flag
+    ///      if a tranche was ever struck while something senior to it in the waterfall
+    ///      still held assets. That is the property POOL-16 states, checked where it
+    ///      happens.
     function invariant_theWaterfallWasNeverOutOfOrder() public view {
         assertFalse(
             handler.waterfallInverted(),
@@ -317,31 +454,38 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
         check_epochBlocksOnUnmarkedDelinquency();
     }
 
-    // ─── Phase 3 additions ───────────────────────────────────────────────────
+    // ─── The balance sheet ───────────────────────────────────────────────────
 
-    /// @notice NAV is exactly cash plus receivables less unearned fees.
+    /// @notice NAV is exactly what the book holds, less what it does not own.
     ///
     /// @dev The bridge between the two halves of the balance sheet. `totalAssets` is
-    ///      the sum of the three claims; this asserts the sum of the three *holdings*
-    ///      is the same number. If they can diverge, one of them is wrong and nobody
-    ///      finds out until a redemption fails.
+    ///      the sum of the three claims; this asserts the sum of the *holdings* is the
+    ///      same number. If they can diverge, one of them is wrong and nobody finds out
+    ///      until a redemption fails.
+    ///
+    ///      Phase 5 added two terms and both are the point of their requirement: the
+    ///      venue position (POOL-13) is an asset held somewhere else, and the provision
+    ///      (POOL-07) is a valuation allowance against receivables the book has already
+    ///      marked down. Pending deposits and unclaimed redemption proceeds appear on
+    ///      neither side, because they are money in this contract that belongs to
+    ///      somebody who is not a holder yet or is no longer one.
     function invariant_bookedIdentity() public view {
         assertEq(
-            subject.totalAssets(),
-            subject.bookedCash() + subject.bookedReceivables() - subject.deferredIncome(),
+            subject.totalAssets() + subject.deferredIncome() + subject.totalProvisioned(),
+            subject.bookedCash() + subject.deployedAssets() + subject.bookedReceivables(),
             "the book's claims and its holdings disagree"
         );
     }
 
-    /// @notice Booked cash never exceeds the cash actually held.
+    /// @notice Every dollar the contract believes it is holding is really there.
     ///
-    /// @dev POOL-11 from the other direction. The balance may be *higher* — that is a
-    ///      donation, and the whole point is that it does not reach NAV. It may never
-    ///      be lower, because that would be a book that believes it can pay
-    ///      redemptions it cannot.
+    /// @dev POOL-11 from the other direction, and it now has to cover three pots. The
+    ///      balance may be *higher* — that is a donation, and the whole point is that it
+    ///      does not reach NAV. It may never be lower, because that would be a book that
+    ///      believes it can pay redemptions it cannot.
     function invariant_bookedCashIsBacked() public view {
         assertLe(
-            subject.bookedCash(),
+            subject.bookedCash() + subject.pendingDepositAssets() + subject.pendingRedemptionAssets(),
             usdc.balanceOf(address(subject)),
             "the book counts cash it does not hold"
         );
@@ -358,6 +502,46 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
         );
     }
 
+    /// @notice A pending deposit is never a claim.
+    ///
+    /// @dev DEC-22. Assets waiting for a price confer nothing: no shares, no NAV, no
+    ///      vote in the loss waterfall. If they could reach `totalAssets` before being
+    ///      priced, a large pending queue would move the very NAV it is about to be
+    ///      struck at — which is the synchronous-deposit failure POOL-03 exists to
+    ///      remove.
+    function invariant_pendingDepositsAreNotClaims() public view {
+        assertLe(
+            subject.pendingDepositAssets(),
+            usdc.balanceOf(address(subject)),
+            "pending deposits exceed what the contract holds"
+        );
+        assertEq(
+            subject.totalAssets(),
+            subject.reserveBalance() + subject.trancheAssets(ICreditPool.Tranche.Junior)
+                + subject.trancheAssets(ICreditPool.Tranche.Senior),
+            "a pending deposit reached the claims side"
+        );
+    }
+
+    /// @notice The redemption queue only ever moves forward, and never past its tail.
+    /// @dev POOL-08's cumulative position is only meaningful if the fill line is
+    ///      monotone. A line that could retreat would let a ticket be filled twice.
+    function invariant_queueLineIsSane() public view {
+        for (uint256 t = 0; t < 2; ++t) {
+            (uint256 queued, uint256 filled) = subject.queueDepth(ICreditPool.Tranche(t));
+            assertLe(filled, queued, "the fill line ran past the end of the queue");
+        }
+    }
+
+    /// @notice Every redeemer filled in one epoch paid the same rate.
+    /// @dev POOL-09 and DEC-23. If the fee depended on anything but the epoch, leaving
+    ///      early would be profitable again and the gate would be back in all but name.
+    function invariant_liquidityFeeIsUniform() public view {
+        assertFalse(
+            handler.feeWasNotUniform(), "two redeemers in one epoch were charged different rates"
+        );
+    }
+
     /// @notice The handler actually exercises the book.
     ///
     /// @dev Foundry resets state between invariant runs, so `afterInvariant` ghost
@@ -366,10 +550,19 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
     ///      a suite that silently stopped reaching the interesting paths fails rather
     ///      than passing quietly.
     function test_theHandlerDrivesTheBook() public {
-        handler.deposit(0, 50_000e6, false);
-        handler.deposit(1, 20_000e6, true);
+        handler.requestDeposit(1, 20_000e6, true);
+        handler.requestDeposit(0, 50_000e6, false);
         handler.fundReserve(10_000e6);
         assertEq(handler.deposits(), 2, "deposits did not land");
+
+        handler.warp(2 days);
+        handler.markEpoch(32);
+        handler.closeEpoch();
+        assertEq(handler.closes(), 1, "the epoch did not close");
+
+        handler.claimShares(0, false);
+        handler.claimShares(1, true);
+        assertEq(handler.claims(), 2, "the shares were not claimed");
 
         handler.front(1_000e6, 40e6);
         assertEq(handler.fronts(), 1, "the front did not land");
@@ -380,8 +573,8 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
         handler.recognise(0);
         assertEq(handler.recognitions(), 1, "recognition did not land");
 
-        handler.redeem(0, 1e6, false);
-        assertEq(handler.redemptions(), 1, "the redemption did not land");
+        handler.requestRedeem(0, 1e9, false);
+        assertEq(handler.redemptions(), 1, "the redemption request did not land");
 
         handler.defaultPlan(0);
         handler.recognise(0);
@@ -390,5 +583,6 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
         check_assetsEqualClaims();
         invariant_bookedIdentity();
         invariant_bookedCashIsBacked();
+        invariant_pendingDepositsAreNotClaims();
     }
 }

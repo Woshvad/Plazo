@@ -130,6 +130,50 @@ contract ParameterRegistry is Ownable {
         _define(ParameterKeys.MIN_RESERVE_BPS, 200, 50, 2_000);
         _define(ParameterKeys.RESERVE_TARGET_BPS, 500, 100, 5_000);
 
+        // ─── Epoch accounting ────────────────────────────────────────────────
+
+        // A day on testnet. The band's floor is an hour, which is short enough to
+        // exercise the machinery and long enough that an epoch is never a block.
+        // Its ceiling is thirty days, because an LP whose deposit waits longer than a
+        // month for a price is an LP holding an option they did not buy.
+        _define(ParameterKeys.EPOCH_LENGTH, 1 days, 1 hours, 30 days);
+        // POOL-07. Half of a delinquent plan's carrying value, marked down the moment
+        // the delinquency is public rather than at charge-off. A book that waits until
+        // the sixtieth day to admit a loss is a book selling shares at a price it
+        // already knows is wrong.
+        _define(ParameterKeys.DELINQUENT_PROVISION_BPS, 5_000, 0, 10_000);
+        // The share of assets kept as cash rather than deployed to the savings venue.
+        // Redemptions fill from cash, so this is the difference between a queue that
+        // moves every epoch and one that waits on a venue redemption.
+        _define(ParameterKeys.BUFFER_FLOOR_BPS, 1_000, 0, 5_000);
+        // POOL-09. Above this much net redemption in one epoch the liquidity fee
+        // switches on. Ten percent of the book leaving in a day is not ordinary
+        // runoff.
+        _define(ParameterKeys.LIQUIDITY_FEE_THRESHOLD_BPS, 1_000, 100, 10_000);
+        // One percent, charged uniformly to everyone filled in that epoch, and it
+        // stays in the pool. The point is not the revenue — it is that redeeming
+        // early stops being profitable, which is the only thing that stops a run.
+        _define(ParameterKeys.LIQUIDITY_FEE_BPS, 100, 0, 500);
+        // POOL-10. One full Pay-in-4 tenor: four biweekly installments.
+        _define(ParameterKeys.JUNIOR_LOCK_PERIOD, 56 days, 1 days, 365 days);
+        // Senior's target return. It is a target and not a promise: the claim accrues
+        // and is paid first out of income, and if income is short the shortfall
+        // carries rather than being conjured. The band's ceiling is 30% because a
+        // senior tranche demanding more than that is not senior paper.
+        _define(ParameterKeys.SENIOR_TARGET_APY_BPS, 800, 0, 3_000);
+
+        // ─── Passport and servicing ──────────────────────────────────────────
+
+        // PASS-03. Twenty-four months, and the band's floor is six because a record
+        // that forgets faster than a borrower can rebuild is not a record.
+        _define(ParameterKeys.PASSPORT_NEGATIVE_MARK_TTL, 730 days, 180 days, 1095 days);
+        // PASS-04. A consent grant is a bearer credential for a borrower's credit
+        // record; ninety days is already generous and the band says so.
+        _define(ParameterKeys.PASSPORT_CONSENT_MAX_TTL, 90 days, 1 days, 365 days);
+        // COLL-07. The operator's collections wait this long after `validAfter`, so
+        // anything collected earlier is provably not the operator's.
+        _define(ParameterKeys.RELAYER_DELAY_FLOOR, 30 minutes, 1 minutes, 24 hours);
+
         // ─── Merchant ────────────────────────────────────────────────────────
 
         // The bond scales with outstanding fronted exposure rather than being a flat

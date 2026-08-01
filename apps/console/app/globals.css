@@ -1,0 +1,10 @@
+/*
+ * The only stylesheet any surface owns.
+ *
+ * It imports the design system and adds nothing. If a surface needs a value the
+ * system does not have, the value goes into `@plazo/ui` — not here. Four surfaces
+ * each adding "just one" local override is how a design system stops being one.
+ */
+@import "@plazo/ui/theme.css";
+
+@source "../app";

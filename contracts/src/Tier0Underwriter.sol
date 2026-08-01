@@ -12,6 +12,7 @@ import {ParameterRegistry} from "./ParameterRegistry.sol";
 import {ParameterKeys} from "./libraries/ParameterKeys.sol";
 import {PlanParams} from "./libraries/PlanParams.sol";
 import {FirstPaymentDefaultSwitch} from "./FirstPaymentDefaultSwitch.sol";
+import {PlazoPassport} from "./PlazoPassport.sol";
 
 /// @title Tier0Underwriter
 /// @notice Credit for a borrower with no history, sized to what the book can lose.
@@ -62,8 +63,15 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     struct PlanRecord {
         bytes32 personId;
         address plan;
+        /// @notice The wallet the Passport record is keyed by.
+        /// @dev A `personId` can span wallets; a Passport record cannot, because it is
+        ///      what a wallet presents. Stored so the permissionless settlement path
+        ///      can write the mark without the caller supplying an address.
+        address borrower;
         uint256 principal;
         bool open;
+        /// @notice Whether a delinquency mark has already been written for this plan.
+        bool marked;
     }
 
     ParameterRegistry public immutable parameters;
@@ -76,12 +84,21 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     ///      kind of thing that should be visible.
     ICreditPool public pool;
 
+    /// @notice Where a plan's outcome is written as credit standing.
+    /// @dev Settable for the same circularity reason as `pool`, and optional: a
+    ///      deployment without a Passport still underwrites, it just does not record.
+    ///      Every call into it originates from a path that has already read a plan's own
+    ///      state, which is what makes PASS-01's "written only by protocol contracts"
+    ///      mean something stronger than "written by a privileged key".
+    PlazoPassport public passport;
+
     mapping(bytes32 personId => Person) private _people;
     mapping(bytes32 planId => PlanRecord) private _plans;
 
     uint256 private _outstandingExposure;
 
     event PoolChanged(address indexed previous, address indexed current);
+    event PassportChanged(address indexed previous, address indexed current);
 
     /// @dev Neither of these carries `personId`, and that is deliberate.
     ///
@@ -106,6 +123,7 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     error PlanAlreadySettled(bytes32 planId);
     error PlanNotTerminal(bytes32 planId, IInstallmentPlan.PlanState state);
     error PoolUnset();
+    error PlanNotDelinquent(bytes32 planId, IInstallmentPlan.PlanState state);
 
     constructor(address admin, address parameters_, address killSwitch_) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -117,6 +135,12 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
         address previous = address(pool);
         pool = ICreditPool(pool_);
         emit PoolChanged(previous, pool_);
+    }
+
+    function setPassport(address passport_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        address previous = address(passport);
+        passport = PlazoPassport(passport_);
+        emit PassportChanged(previous, passport_);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -210,10 +234,34 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     /// @dev Separate from `notePlan` only because the router knows the address and
     ///      the id at different points in the same transaction; both are
     ///      originator-gated and both must happen before the plan can be settled.
-    function bindPlan(bytes32 planId, address plan) external onlyRole(ORIGINATOR_ROLE) {
+    function bindPlan(bytes32 planId, address plan, address borrower) external onlyRole(ORIGINATOR_ROLE) {
         PlanRecord storage record = _plans[planId];
         if (record.personId == bytes32(0)) revert PlanNotNoted(planId);
         record.plan = plan;
+        record.borrower = borrower;
+    }
+
+    /// @notice Write a delinquency to the borrower's Passport. Permissionless.
+    ///
+    /// @dev Self-verifying like `notePlanOutcome`: it reads the plan's own state and
+    ///      refuses unless the plan really is delinquent, so the mark cannot be
+    ///      manufactured by a caller and cannot be suppressed by an operator declining
+    ///      to run something. Idempotent per plan, because a plan that bounces, cures
+    ///      and bounces again is one borrower having a bad quarter, not two.
+    function noteDelinquency(bytes32 planId) external {
+        PlanRecord storage record = _plans[planId];
+        if (record.personId == bytes32(0) || record.plan == address(0)) revert PlanNotNoted(planId);
+        if (record.marked) return;
+
+        IInstallmentPlan.PlanState planState = IInstallmentPlan(record.plan).state();
+        if (planState != IInstallmentPlan.PlanState.Delinquent) {
+            revert PlanNotDelinquent(planId, planState);
+        }
+
+        record.marked = true;
+        if (address(passport) != address(0) && record.borrower != address(0)) {
+            passport.noteNegative(record.borrower);
+        }
     }
 
     /// @inheritdoc IUnderwritingPartner
@@ -260,6 +308,14 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
             record.principal > _outstandingExposure ? _outstandingExposure : record.principal;
 
         if (clean) p.cleanCompletions += 1;
+
+        // A defaulted plan is a mark; a refunded or cancelled one is not evidence about
+        // the borrower in either direction, and a plan already marked delinquent has
+        // had its mark written. `clean` alone would conflate all three.
+        if (address(passport) != address(0) && record.borrower != address(0)) {
+            if (repaid) passport.noteOutcome(record.borrower, clean);
+            else if (defaulted && !record.marked) passport.noteOutcome(record.borrower, false);
+        }
 
         emit PlanSettled(planId, clean);
     }

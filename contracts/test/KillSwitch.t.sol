@@ -219,7 +219,7 @@ contract KillSwitchTest is Test {
         _observe(minCohort, minCohort, true);
         assertEq(switchboard.throttleBps(), 0, "the book stayed open on a total default cohort");
 
-        vm.warp(block.timestamp + parameters.get(ParameterKeys.FPD_OBSERVATION_WINDOW));
+        vm.warp(vm.getBlockTimestamp() + parameters.get(ParameterKeys.FPD_OBSERVATION_WINDOW));
 
         assertEq(switchboard.cohortSize(), 0, "the cohort did not decay");
         assertEq(switchboard.throttleBps(), PlanParams.BPS, "the throttle did not lift with the cohort");
@@ -229,7 +229,7 @@ contract KillSwitchTest is Test {
 
     function _register(bool seasoned) private returns (bytes32 id) {
         ConfigurablePlan p = new ConfigurablePlan();
-        p.initHealthy(4, 100e6, block.timestamp + 1 days, 14 days);
+        p.initHealthy(4, 100e6, vm.getBlockTimestamp() + 1 days, 14 days);
 
         id = keccak256(abi.encode("plan", nextPlan++));
         switchboard.noteOrigination(id, address(p), seasoned);

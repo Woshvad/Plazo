@@ -84,13 +84,32 @@ const CONTRACTS = {
   payout: "ArcLocalPayout",
   receivable: "ReceivableToken",
   merchantRegistry: "MerchantRegistry",
-  creditPool: "CreditPool",
+  poolRegistry: "PoolRegistry",
+  creditPool: "TranchedCreditPool",
+  yieldVenue: "ParkedYieldVenue",
+  passport: "PlazoPassport",
+  attestationSchemas: "AttestationSchemaRegistry",
+  relayerGate: "RelayerGate",
   killSwitch: "FirstPaymentDefaultSwitch",
   tier0: "Tier0Underwriter",
   pauses: "OriginationPause",
   installmentPlan: "InstallmentPlan",
   planFactory: "PlanFactory",
   checkoutRouter: "CheckoutRouter",
+};
+
+/**
+ * Contracts a parent deploys with `new`, which never appear as their own CREATE
+ * transaction.
+ *
+ * `TranchedCreditPool` constructs both tranche tokens, so their addresses are known
+ * only to the chain. They are read back rather than inferred, because a record that
+ * guessed at them would be a record naming an address nobody has checked holds code —
+ * which is the failure this whole script exists to prevent.
+ */
+const NESTED = {
+  seniorShares: {of: "creditPool", selector: "0x33e83c59"},
+  juniorShares: {of: "creditPool", selector: "0x5379c262"},
 };
 
 const missing = Object.values(CONTRACTS).filter((name) => !deployed[name]);
@@ -105,6 +124,46 @@ const record = {
   token: process.env.PLAZO_TOKEN ?? "0x3600000000000000000000000000000000000000",
   ...Object.fromEntries(Object.entries(CONTRACTS).map(([key, name]) => [key, deployed[name]])),
 };
+
+const rpc = process.env.ARC_TESTNET_RPC_URL ?? "https://rpc.testnet.arc.io";
+
+/**
+ * Arc's public RPC sheds roughly a quarter of requests regardless of pacing, and this
+ * script found out the same way `arc-verify`, the indexer and the keeper each did: two
+ * identical reads, the first succeeded and the second came back empty. It is not rate
+ * limiting — spacing them does not help — so the only thing that works is asking again.
+ */
+async function call(to, selector) {
+  for (let attempt = 0; attempt < 6; ++attempt) {
+    try {
+      const response = await fetch(rpc, {
+        method: "POST",
+        headers: {"content-type": "application/json"},
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
+          params: [{to, data: selector}, "latest"],
+        }),
+      });
+      const {result, error} = await response.json();
+      if (!error && result && result !== "0x") return result;
+    } catch {
+      // A dropped connection is the same failure wearing a different coat.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
+  return null;
+}
+
+for (const [key, {of, selector}] of Object.entries(NESTED)) {
+  const result = await call(record[of], selector);
+  if (!result) {
+    console.error(`Could not read ${key} from ${of} (${record[of]}) after six attempts.`);
+    process.exit(1);
+  }
+  record[key] = `0x${result.slice(-40)}`;
+}
 
 const dir = join(ROOT, "contracts", "deployments");
 mkdirSync(dir, {recursive: true});

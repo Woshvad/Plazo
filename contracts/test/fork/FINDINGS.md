@@ -224,3 +224,68 @@ Twelve assertions against the deployed bytecode at chain 5042002. The credit hal
 | Unknown is not clear (CHKT-03) | an unscreened address is not clear; the operator's key made it so |
 | The receivable is default-deny from the first mint (GOV-10) | a mint to an unlisted address refused |
 | The factory is the router's alone | `deploy` from the deployer refused |
+
+---
+
+# Phases 4 and 5 addendum — the IR pipeline, and what it broke
+
+## 14. Under `via_ir`, `block.timestamp` is hoisted past `vm.warp`, and a test can silently stop testing
+
+Phase 5 turned the IR pipeline on (DEC-30). `TranchedCreditPool` is a credit book, a tranche structure, an epoch accountant and a redemption queue in one contract — because splitting it would put one balance sheet in two places, which is the bug Phase 3 shipped and had to fix — and through the legacy pipeline it lands about 2 kB over EIP-170. The IR pipeline is the standard answer, and it is not only a size fix: every contract in the tree got smaller, `InstallmentPlan` by about 11%.
+
+It also changed a test's behaviour, and the way it changed it is worth knowing.
+
+The IR optimizer treats `block.timestamp` as constant within a call, because on a real chain it is. `vm.warp` is a cheatcode the optimizer cannot see. So a loop like
+
+```solidity
+for (uint256 i = 0; i < 40; ++i) {
+    vm.warp(block.timestamp + PlanParams.REVALIDATION_WINDOW);
+    plan.revalidate();
+}
+```
+
+reads the timestamp **once**, hoists it out, and warps to the same moment on every iteration. `KeeperMarket.t.sol` caught it by failing on the second pass — but only because that test happened to assert something the stalled clock made impossible. A test asserting a weaker property would have gone on passing while exercising one iteration of forty.
+
+Two things follow.
+
+**`vm.getBlockTimestamp()` goes through the cheatcode address and cannot be hoisted.** Every read in `contracts/test` and `contracts/script` was converted. Mocks and stubs are exempt: they are plain contracts called from the test, so each call is its own frame and reads the clock fresh.
+
+**`tools/check-test-clock.mjs` fails the build on a `block.timestamp` in test code**, and runs in `pnpm boundary`. A hazard that depends on remembering is a hazard that comes back.
+
+## 15. Recognising a fee against the original principal compounds, and strands income
+
+Found by the invariant fuzzer, via `deferredIncome ≤ bookedReceivables`.
+
+The pool defers the MDR at origination and earns it as principal comes back. The first implementation apportioned it against the plan's *original* principal:
+
+```
+earned = deferredIncome × recovered / principal
+```
+
+That compounds. A plan of 1,000 with 100 deferred recovers 500 and earns 50, leaving 50 against 500 outstanding; the second 500 then earns `50 × 500/1000 = 25`, and a fully repaid plan is left carrying 25 of unearned income against no receivable at all. NAV is understated for the whole life of every plan and then jumps at close — the flatter-then-correct pattern the deferral exists to prevent, running backwards. With enough repaid-but-unclosed plans the unearned total exceeds the receivables it is held against, which is what the fuzzer found.
+
+**The denominator is what is still owed, not what was originally lent.** Against the remaining balance it amortises exactly: the last dollar of principal earns the last cent of fee.
+
+The same formula shipped in Phase 3's flat pool. It never surfaced there because that campaign's handler did not interleave partial collections with epoch closes; adding the epoch actions in Phase 5 is what produced the state.
+
+## What the Phases 4 and 5 live run proved
+
+Twenty-seven assertions against the deployed bytecode at chain 5042002, up from twelve. The credit half still needs the funding in finding 13; the control half does not, and it now covers the capital plane and the Passport as well as origination.
+
+| Claim | Evidence |
+|---|---|
+| Every contract in the record exists | 19 addresses, all holding bytecode |
+| One book per product line, and the book decides what it funds (POOL-01) | Pay-in-4 accepted, a twelve-month schedule refused |
+| A product line cannot be repointed | `register` on a taken line refused |
+| The empty-vault case is unreachable (POOL-12) | an unseeded tranche refuses deposits; shares carry a 3-decimal offset |
+| Junior is locked for a full tenor and senior is not (POOL-10) | 56 days against 0 |
+| Only the pool mints a claim on the book (POOL-02) | a direct `mint` refused |
+| An epoch cannot be closed early (POOL-04) | `closeEpoch` refused inside the window |
+| You cannot be senior to nothing (POOL-06) | `maxSeniorDeposit` is zero with no junior |
+| The operator's collections are held back onchain (COLL-07) | the gate reads a 30-minute floor from the registry |
+| A borrower's tier is not readable by whoever asks (PASS-02) | `tierOf` refused to a merchant key |
+| Nobody outside the protocol writes a record (PASS-01) | `noteOutcome` refused to the deployer |
+| The credit score is a pure function anyone can evaluate (PASS-06) | the chain returns the same tiers as the corpus |
+| A schema needs a content hash, not a link (PASS-05) | `publish` with a zero hash refused |
+
+**Not re-measured:** finding 5's collection gas (140,885 → ~$0.00296) was taken from a live Phase 2 run under the legacy pipeline. `via_ir` shrank `InstallmentPlan` by about 11% and the figure is almost certainly lower now, but it has not been measured on chain again — the next funded slice run should re-take it rather than assume the improvement.

@@ -1,5 +1,5 @@
 /**
- * The Plazo event schema, version 2.
+ * The Plazo event schema, version 3.
  *
  * The schema is the API. Four surfaces, an indexer, a merchant SDK and every LP
  * report read it, so changing it after they exist is a full-stack refactor rather
@@ -34,10 +34,48 @@
  * is to ignore contracts it does not know, and a bump was taken rather than a silent
  * append because a committed hash that only changes when someone remembers is not a
  * commitment.
+ *
+ * ## What changed in v3, and why this one is not additive
+ *
+ * The capital plane and the Passport, and unlike v2 this bump **rewrites** entries
+ * rather than appending to them.
+ *
+ * Phases 1 and 2 wrote the pool and Passport definitions *before* those contracts
+ * existed — deliberately, because the schema was frozen first so the contracts would
+ * have to satisfy it. Mostly that worked. Where it did not is that the placeholder
+ * entries named contracts that were never built (`EpochAccountant`,
+ * `RedemptionQueue`, `Passport`) and guessed at field lists. Phase 5 built one
+ * `TranchedCreditPool` rather than three contracts, because splitting the balance
+ * sheet across three would have put one NAV in three places.
+ *
+ * Those entries are corrected here rather than carried. A schema describing contracts
+ * that do not exist is worse than one that is out of date: an indexer configured
+ * against it silently receives nothing, and nobody finds out until an LP asks why the
+ * NAV chart is empty. **No event that was ever emitted has been changed** — the
+ * rewritten entries had no emitters, which is exactly what made them safe to fix and
+ * is why the migration for a v2 consumer is still "ignore what you do not know".
+ *
+ * Two substantive changes, both of which reverse an earlier note on purpose:
+ *
+ * **The redemption queue carries its holder.** v1 said it deliberately did not,
+ * because "queue depth is public, queue membership is not". POOL-02 then made the
+ * tranche shares transfer-restricted ERC-20s, and an ERC-20's holder set is public by
+ * construction — every `Transfer` reveals it. Withholding the holder here would
+ * protect nothing while making a lender unable to see their own queue position without
+ * an archive query.
+ *
+ * **Every Passport event is keyed by a salted subject rather than by the wallet.**
+ * This is the reverse trade and it is the more important one. `keccak256(prefix ‖ salt
+ * ‖ borrower)`, with the salt readable only by the borrower and the operator, so the
+ * stream is indexable by whoever is entitled to read it and is not enumerable by
+ * somebody holding a list of wallet addresses. It also makes erasure free: rotating the
+ * salt orphans the entire prior stream. The first draft of `PlazoPassport` indexed the
+ * borrower directly, which would have made the credit record itself a permanent public
+ * file — the same leak Phase 3 caught in `Tier0Underwriter`'s `personId`, one layer up.
  */
 import {keccak256, toHex} from "viem";
 
-export const SCHEMA_VERSION = 2 as const;
+export const SCHEMA_VERSION = 3 as const;
 
 export interface EventField {
   name: string;
@@ -161,38 +199,53 @@ const PLAN_EVENTS: EventDefinition[] = [
 const POOL_EVENTS: EventDefinition[] = [
   {
     name: "EpochClosed",
-    contract: "EpochAccountant",
+    contract: "TranchedCreditPool",
     fields: [
       field("epoch", "uint256", true),
-      field("totalAssets", "uint256"),
-      field("provisioned", "uint256"),
-    ],
-    purpose: "NAV struck. Deposits and redemptions in the epoch price against this.",
-  },
-  {
-    name: "ProvisionRaised",
-    contract: "EpochAccountant",
-    fields: [
-      field("epoch", "uint256", true),
-      field("planId", "bytes32", true),
-      field("amount", "uint256"),
+      field("seniorNav", "uint256"),
+      field("juniorNav", "uint256"),
+      field("liquidityFeeBps", "uint256"),
     ],
     purpose:
-      "Bucketed by epoch, so a cure releases exactly what the delinquency took. Un-bucketed release is a harvestable NAV oscillation.",
+      "NAV struck. Every deposit and redemption in the epoch prices against this one number per tranche, which is what makes being first through the door worth nothing.",
+  },
+  {
+    name: "EpochMarked",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("epoch", "uint256", true),
+      field("marked", "uint256"),
+      field("openPlans", "uint256"),
+    ],
+    purpose:
+      "The mark phase's progress. An LP watching an epoch that will not close can see whether the crank is behind or the book is blocked on an unmarked delinquency.",
+  },
+  {
+    name: "Provisioned",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("planId", "bytes32", true),
+      field("epoch", "uint256"),
+      field("amount", "uint256"),
+      field("total", "uint256"),
+    ],
+    purpose:
+      "Bucketed by the epoch that raised it, so a cure releases exactly what the delinquency took. Un-bucketed release is a harvestable NAV oscillation and junior wears it.",
   },
   {
     name: "ProvisionReleased",
-    contract: "EpochAccountant",
+    contract: "TranchedCreditPool",
     fields: [
-      field("epoch", "uint256", true),
       field("planId", "bytes32", true),
+      field("epoch", "uint256"),
       field("amount", "uint256"),
+      field("total", "uint256"),
     ],
-    purpose: "The cure round trip. Must exactly reverse a ProvisionRaised in the same bucket.",
+    purpose: "The cure round trip. Must exactly reverse a Provisioned in the same bucket.",
   },
   {
     name: "LossAbsorbed",
-    contract: "CreditPool",
+    contract: "TranchedCreditPool",
     fields: [
       field("planId", "bytes32", true),
       field("fromReserve", "uint256"),
@@ -203,28 +256,132 @@ const POOL_EVENTS: EventDefinition[] = [
       "The waterfall, itemised. Senior was sold on being struck last; this is the evidence it was.",
   },
   {
+    name: "FraudLossAbsorbed",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("planId", "bytes32", true),
+      field("fromReserve", "uint256"),
+      field("beyondReserve", "uint256"),
+    ],
+    purpose:
+      "POOL-14. A fraud is not a credit loss and does not belong in the waterfall senior was sold on. A separate event so a lender can tell the two apart in their own performance data.",
+  },
+  {
     name: "OriginationGated",
-    contract: "CreditPool",
+    contract: "TranchedCreditPool",
     fields: [field("open", "bool"), field("subordinationBps", "uint256"), field("reserveBps", "uint256")],
     purpose: "The subordination and reserve floors binding. Visible to LPs in real time.",
   },
   {
-    name: "RedemptionQueued",
-    contract: "RedemptionQueue",
+    name: "DepositRequested",
+    contract: "TranchedCreditPool",
     fields: [
       field("tranche", "uint8", true),
-      field("position", "uint256"),
-      field("shares", "uint256"),
+      field("holder", "address", true),
+      field("epoch", "uint256"),
+      field("assets", "uint256"),
     ],
     purpose:
-      "Cumulative queue position. Deliberately carries no holder address — queue depth is public, queue membership is not.",
+      "Money escrowed against a price that does not exist yet. Confers no claim and is excluded from NAV until the epoch closes.",
   },
   {
-    name: "LiquidityFeeApplied",
-    contract: "RedemptionQueue",
-    fields: [field("epoch", "uint256", true), field("feeBps", "uint256")],
+    name: "SharesClaimed",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("tranche", "uint8", true),
+      field("holder", "address", true),
+      field("assets", "uint256"),
+      field("shares", "uint256"),
+    ],
+    purpose: "A settled deposit collected. The pair of DepositRequested, one epoch later.",
+  },
+  {
+    name: "RedeemRequested",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("tranche", "uint8", true),
+      field("holder", "address", true),
+      field("index", "uint256"),
+      field("shares", "uint256"),
+      field("position", "uint256"),
+    ],
     purpose:
-      "Uniform across every redeemer in an over-threshold epoch. A gate's threat is itself what causes the run, so the fee replaces it.",
+      "A cumulative queue position. It carries the holder, reversing a v1 note: POOL-02 made the shares transfer-restricted ERC-20s, whose holder set is already public in every Transfer, so withholding it here would protect nothing and would stop a lender seeing their own position.",
+  },
+  {
+    name: "QueueFilled",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("tranche", "uint8", true),
+      field("epoch", "uint256", true),
+      field("shares", "uint256"),
+      field("assets", "uint256"),
+      field("feeBps", "uint256"),
+    ],
+    purpose:
+      "One fill per tranche per epoch, at one rate. POOL-09's uniformity is checkable from the log alone: two rates in one epoch would be visible here.",
+  },
+  {
+    name: "RedemptionClaimed",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("tranche", "uint8", true),
+      field("holder", "address", true),
+      field("index", "uint256"),
+      field("assets", "uint256"),
+    ],
+    purpose: "Proceeds collected from a filled ticket.",
+  },
+  {
+    name: "ReserveFunded",
+    contract: "TranchedCreditPool",
+    fields: [field("from", "address", true), field("amount", "uint256"), field("balance", "uint256")],
+    purpose:
+      "The first-loss reserve. Permissionless — it issues no shares and confers no claim, which is what makes it first-loss rather than another tranche.",
+  },
+  {
+    name: "Seeded",
+    contract: "TranchedCreditPool",
+    fields: [field("tranche", "uint8", true), field("assets", "uint256"), field("shares", "uint256")],
+    purpose:
+      "POOL-12's permanent seed. Protocol money, never redeemable, and the reason the first-depositor-into-an-empty-vault case is unreachable rather than merely expensive.",
+  },
+  {
+    name: "VenueSynced",
+    contract: "TranchedCreditPool",
+    fields: [field("delta", "int256"), field("deployed", "uint256")],
+    purpose:
+      "POOL-13. The buffer position marked to what it would return rather than to what it cost. A gain goes down the income waterfall; a shortfall goes down the loss waterfall.",
+  },
+  {
+    name: "Fronted",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("planId", "bytes32", true),
+      field("merchant", "address", true),
+      field("principal", "uint256"),
+      field("mdr", "uint256"),
+    ],
+    purpose: "Capital leaving the book against a receivable. NAV-neutral by construction.",
+  },
+  {
+    name: "Recognised",
+    contract: "TranchedCreditPool",
+    fields: [
+      field("planId", "bytes32", true),
+      field("inflow", "uint256"),
+      field("principalRecovered", "uint256"),
+      field("incomeEarned", "uint256"),
+    ],
+    purpose:
+      "The permissionless crank that keeps NAV honest. The pool learns from the plan's own accounting, never from its token balance.",
+  },
+  {
+    name: "UnmarkedDelinquency",
+    contract: "TranchedCreditPool",
+    fields: [field("planId", "bytes32", true), field("unmarked", "bool")],
+    purpose:
+      "What blocks an epoch from closing. The reason somebody always has a motive to pay for a mark nobody profits from cranking.",
   },
 ];
 
@@ -259,21 +416,100 @@ const MERCHANT_EVENTS: EventDefinition[] = [
 ];
 
 /**
- * Passport. Commitments only — never a readable record.
+ * Passport. Commitments and counters — never a readable record, and never a wallet.
+ *
+ * Every event is keyed by `subject` = `keccak256(prefix | salt | borrower)`. The salt is
+ * readable only by the borrower and the operator, so this stream is indexable by whoever
+ * is entitled to read it and is not enumerable by somebody holding a list of addresses.
+ * Rotating the salt on erasure orphans the whole prior stream.
  */
 const PASSPORT_EVENTS: EventDefinition[] = [
   {
-    name: "PassportCommitted",
-    contract: "Passport",
-    fields: [field("commitment", "bytes32", true), field("recordVersion", "uint256")],
+    name: "OutcomeNoted",
+    contract: "PlazoPassport",
+    fields: [
+      field("subject", "bytes32", true),
+      field("clean", "bool"),
+      field("completions", "uint32"),
+      field("negativesEver", "uint32"),
+    ],
     purpose:
-      "keccak256(recordVersion ‖ salt). Not the record, and not the subject. A soulbound readable credit record cannot satisfy FCRA correction, NYDFS deletion or GDPR erasure — you cannot unpublish a chain.",
+      "How a plan ended, written by a permissionless self-verifying path. The counters are what the tier is a pure function of, which is what makes PASS-06 checkable rather than believable.",
   },
   {
-    name: "PassportSaltRotated",
-    contract: "Passport",
-    fields: [field("oldCommitment", "bytes32", true), field("newCommitment", "bytes32", true)],
-    purpose: "Erasure. Rotating the salt orphans the old commitment without rewriting history.",
+    name: "NegativeNoted",
+    contract: "PlazoPassport",
+    fields: [field("subject", "bytes32", true), field("at", "uint64"), field("negativesEver", "uint32")],
+    purpose:
+      "A delinquency, recorded when it happens rather than when the plan terminates — otherwise the tier always describes a borrower's position several weeks ago.",
+  },
+  {
+    name: "CommitmentWritten",
+    contract: "PlazoPassport",
+    fields: [
+      field("subject", "bytes32", true),
+      field("version", "uint64"),
+      field("commitment", "bytes32"),
+      field("schemaId", "bytes32"),
+    ],
+    purpose:
+      "keccak256(version | salt | recordHash). Not the record, and not the subject. A soulbound readable credit record cannot satisfy FCRA correction, NYDFS deletion or GDPR erasure — you cannot unpublish a chain.",
+  },
+  {
+    name: "SaltRotated",
+    contract: "PlazoPassport",
+    fields: [
+      field("previousSubject", "bytes32", true),
+      field("subject", "bytes32", true),
+      field("version", "uint64"),
+    ],
+    purpose:
+      "Erasure. Both subjects appear together once, here and nowhere else, so a borrower can prove continuity to a counterparty they choose while nobody else can follow the chain.",
+  },
+  {
+    name: "CorrectionRequested",
+    contract: "PlazoPassport",
+    fields: [
+      field("subject", "bytes32", true),
+      field("disputed", "bytes32", true),
+      field("reason", "string"),
+    ],
+    purpose:
+      "PASS-07. The borrower's own transaction, so the request is on the chain rather than in a support queue only the operator can see.",
+  },
+  {
+    name: "ConsentGranted",
+    contract: "PlazoPassport",
+    fields: [
+      field("subject", "bytes32", true),
+      field("reader", "address", true),
+      field("schemaId", "bytes32", true),
+      field("validUntil", "uint256"),
+    ],
+    purpose:
+      "PASS-04. The reader is indexed because a reader is a business counterparty who needs to enumerate the grants they hold; the borrower stays behind the salt.",
+  },
+  {
+    name: "ConsentRevoked",
+    contract: "PlazoPassport",
+    fields: [
+      field("subject", "bytes32", true),
+      field("reader", "address", true),
+      field("schemaId", "bytes32", true),
+    ],
+    purpose: "Effective immediately. A revocation that took effect at the next renewal would be an expiry.",
+  },
+  {
+    name: "SchemaPublished",
+    contract: "AttestationSchemaRegistry",
+    fields: [
+      field("schemaId", "bytes32", true),
+      field("version", "uint64", true),
+      field("contentHash", "bytes32"),
+      field("uri", "string"),
+    ],
+    purpose:
+      "PASS-05. A commitment means nothing without a published schema, and a schema that could change under a commitment would make every historical record unverifiable.",
   },
 ];
 
@@ -316,71 +552,6 @@ const ORIGINATION_EVENTS: EventDefinition[] = [
     ],
     purpose:
       "The transfer-restricted receivable, minted at the first origination rather than in a later compliance phase. `tokenId` is the `planId`.",
-  },
-  {
-    name: "Fronted",
-    contract: "CreditPool",
-    fields: [
-      field("planId", "bytes32", true),
-      field("merchant", "address", true),
-      field("principal", "uint256"),
-      field("mdr", "uint256"),
-    ],
-    purpose:
-      "Capital out. NAV-neutral by construction: the fee net of the plan's delinquency escrow is deferred rather than recognised, so no origination makes the book look richer.",
-  },
-  {
-    name: "Recognised",
-    contract: "CreditPool",
-    fields: [
-      field("planId", "bytes32", true),
-      field("inflow", "uint256"),
-      field("principalRecovered", "uint256"),
-      field("incomeEarned", "uint256"),
-    ],
-    purpose:
-      "The permissionless book crank. Moves no money — it reads the plan's own accumulators and books the delta, so a donation to the pool never reaches NAV.",
-  },
-  {
-    name: "UnmarkedDelinquency",
-    contract: "CreditPool",
-    fields: [field("planId", "bytes32", true), field("unmarked", "bool")],
-    purpose:
-      "The book has seen a delinquency nobody recorded, and origination is shut until someone does. What makes the bountied mark unavoidable rather than merely available.",
-  },
-  {
-    name: "Deposited",
-    contract: "CreditPool",
-    fields: [
-      field("tranche", "uint8", true),
-      field("holder", "address", true),
-      field("assets", "uint256"),
-      field("shares", "uint256"),
-    ],
-    purpose:
-      "Capital in. `holder` is indexed because a lender is an institutional counterparty, not a data subject with an erasure right.",
-  },
-  {
-    name: "Redeemed",
-    contract: "CreditPool",
-    fields: [
-      field("tranche", "uint8", true),
-      field("holder", "address", true),
-      field("shares", "uint256"),
-      field("assets", "uint256"),
-    ],
-    purpose: "Capital out, at the tranche's own share price.",
-  },
-  {
-    name: "ReserveFunded",
-    contract: "CreditPool",
-    fields: [
-      field("from", "address", true),
-      field("amount", "uint256"),
-      field("balance", "uint256"),
-    ],
-    purpose:
-      "The first-loss reserve. Issues no shares and confers no claim, which is what makes it first-loss rather than another tranche.",
   },
   {
     name: "KybAttested",
@@ -490,12 +661,38 @@ const ORIGINATION_EVENTS: EventDefinition[] = [
   },
 ];
 
+/**
+ * Servicing. Added in v3 — the relayer gate and the pool registry.
+ */
+const SERVICING_EVENTS: EventDefinition[] = [
+  {
+    name: "Collected",
+    contract: "RelayerGate",
+    fields: [
+      field("plan", "address", true),
+      field("index", "uint256", true),
+      field("cleared", "bool"),
+      field("reason", "uint8"),
+    ],
+    purpose:
+      "COLL-07. Every collection the operator makes comes through this one address and every one of them is late, so COLL-10's share of third-party cranks is measurable from the chain rather than from the operator's own count.",
+  },
+  {
+    name: "PoolRegistered",
+    contract: "PoolRegistry",
+    fields: [field("productLine", "bytes32", true), field("pool", "address", true)],
+    purpose:
+      "POOL-01. One book per product line, registered once. A line whose pool could be repointed would settle outstanding plans to yesterday's book while today's lenders think they own the receivable.",
+  },
+];
+
 export const EVENT_SCHEMA: readonly EventDefinition[] = Object.freeze([
   ...PLAN_EVENTS,
   ...POOL_EVENTS,
   ...MERCHANT_EVENTS,
   ...PASSPORT_EVENTS,
   ...ORIGINATION_EVENTS,
+  ...SERVICING_EVENTS,
 ]);
 
 /** Solidity event signature, e.g. `CheckCleared(bytes32,uint256,uint256,address)`. */
@@ -570,15 +767,47 @@ export const RECEIVABLE_TOKEN_ABI = [
   "event ReceivableMinted(bytes32 indexed planId, address indexed to, uint256 principal)",
 ] as const;
 
-export const CREDIT_POOL_ABI = [
+export const TRANCHED_CREDIT_POOL_ABI = [
+  "event EpochClosed(uint256 indexed epoch, uint256 seniorNav, uint256 juniorNav, uint256 liquidityFeeBps)",
+  "event EpochMarked(uint256 indexed epoch, uint256 marked, uint256 openPlans)",
+  "event Provisioned(bytes32 indexed planId, uint256 epoch, uint256 amount, uint256 total)",
+  "event ProvisionReleased(bytes32 indexed planId, uint256 epoch, uint256 amount, uint256 total)",
   "event LossAbsorbed(bytes32 indexed planId, uint256 fromReserve, uint256 fromJunior, uint256 fromSenior)",
+  "event FraudLossAbsorbed(bytes32 indexed planId, uint256 fromReserve, uint256 beyondReserve)",
   "event OriginationGated(bool open, uint256 subordinationBps, uint256 reserveBps)",
+  "event DepositRequested(uint8 indexed tranche, address indexed holder, uint256 epoch, uint256 assets)",
+  "event SharesClaimed(uint8 indexed tranche, address indexed holder, uint256 assets, uint256 shares)",
+  "event RedeemRequested(uint8 indexed tranche, address indexed holder, uint256 index, uint256 shares, uint256 position)",
+  "event QueueFilled(uint8 indexed tranche, uint256 indexed epoch, uint256 shares, uint256 assets, uint256 feeBps)",
+  "event RedemptionClaimed(uint8 indexed tranche, address indexed holder, uint256 index, uint256 assets)",
+  "event ReserveFunded(address indexed from, uint256 amount, uint256 balance)",
+  "event Seeded(uint8 indexed tranche, uint256 assets, uint256 shares)",
+  "event VenueSynced(int256 delta, uint256 deployed)",
   "event Fronted(bytes32 indexed planId, address indexed merchant, uint256 principal, uint256 mdr)",
   "event Recognised(bytes32 indexed planId, uint256 inflow, uint256 principalRecovered, uint256 incomeEarned)",
   "event UnmarkedDelinquency(bytes32 indexed planId, bool unmarked)",
-  "event Deposited(uint8 indexed tranche, address indexed holder, uint256 assets, uint256 shares)",
-  "event Redeemed(uint8 indexed tranche, address indexed holder, uint256 shares, uint256 assets)",
-  "event ReserveFunded(address indexed from, uint256 amount, uint256 balance)",
+] as const;
+
+export const PLAZO_PASSPORT_ABI = [
+  "event OutcomeNoted(bytes32 indexed subject, bool clean, uint32 completions, uint32 negativesEver)",
+  "event NegativeNoted(bytes32 indexed subject, uint64 at, uint32 negativesEver)",
+  "event CommitmentWritten(bytes32 indexed subject, uint64 version, bytes32 commitment, bytes32 schemaId)",
+  "event SaltRotated(bytes32 indexed previousSubject, bytes32 indexed subject, uint64 version)",
+  "event CorrectionRequested(bytes32 indexed subject, bytes32 indexed disputed, string reason)",
+  "event ConsentGranted(bytes32 indexed subject, address indexed reader, bytes32 indexed schemaId, uint256 validUntil)",
+  "event ConsentRevoked(bytes32 indexed subject, address indexed reader, bytes32 indexed schemaId)",
+] as const;
+
+export const ATTESTATION_SCHEMA_REGISTRY_ABI = [
+  "event SchemaPublished(bytes32 indexed schemaId, uint64 indexed version, bytes32 contentHash, string uri)",
+] as const;
+
+export const RELAYER_GATE_ABI = [
+  "event Collected(address indexed plan, uint256 indexed index, bool cleared, uint8 reason)",
+] as const;
+
+export const POOL_REGISTRY_ABI = [
+  "event PoolRegistered(bytes32 indexed productLine, address indexed pool)",
 ] as const;
 
 export const MERCHANT_REGISTRY_ABI = [
@@ -632,16 +861,22 @@ export function computeSchemaHash(): `0x${string}` {
  * the migration, then update this.
  */
 export const SCHEMA_HASH: `0x${string}` =
-  "0x4407b0ce57e557bf9f9c1232ddca2ee5edab6c4465b0d67e568a84a267f4295e";
+  "0x5805e5cae7e607b0a68c13886383207e5053bebe5de18c59be7561c1cc6212a9";
 
 /**
  * Every prior schema hash, newest first.
  *
  * Kept so a migration can be verified rather than asserted: an indexer replaying
  * history knows exactly which schema each block range was written under, and a
- * reviewer can tell a deliberate bump from an accidental one. v1 is
- * `0x84a83a60…3663d` — Phases 1 and 2.
+ * reviewer can tell a deliberate bump from an accidental one. v2 is
+ * `0x4407b0ce…4295e` — Phase 3's origination plane. v1 is `0x84a83a60…3663d` —
+ * Phases 1 and 2.
+ *
+ * v3 is the first bump that is not additive, so this list is load-bearing rather than
+ * courteous: a consumer replaying history has to decode blocks written under v2 with
+ * v2's definitions, because six of them named a contract that no longer exists.
  */
 export const PRIOR_SCHEMA_HASHES: readonly `0x${string}`[] = Object.freeze([
+  "0x4407b0ce57e557bf9f9c1232ddca2ee5edab6c4465b0d67e568a84a267f4295e",
   "0x84a83a60587bb9269844f7ec68d3ca09fd1e50a18d7dad7dad3e4e251af3663d",
 ]);

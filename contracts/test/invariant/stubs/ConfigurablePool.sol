@@ -13,6 +13,7 @@ contract ConfigurablePool is ICreditPool {
     uint256 public totalAssets;
     uint256 public reserveBalance;
     uint256 public totalProvisioned;
+    uint256 public grossReceivables;
     uint256 public currentEpoch;
     bool public originationOpen = true;
     bool public allDelinquenciesMarked = true;
@@ -24,6 +25,7 @@ contract ConfigurablePool is ICreditPool {
     /// @notice A coherent book: 12% junior, 3% reserve, no provision, nothing unmarked.
     function initHealthy(uint256 assets) external {
         totalAssets = assets;
+        grossReceivables = assets;
         reserveBalance = (assets * 300) / 10_000;
         _trancheAssets[Tranche.Junior] = (assets * 1200) / 10_000;
         _trancheAssets[Tranche.Senior] = assets - reserveBalance - _trancheAssets[Tranche.Junior];
@@ -44,6 +46,10 @@ contract ConfigurablePool is ICreditPool {
 
     function setProvision(uint256 epoch, uint256 amount) external {
         _provisionedAt[epoch] = amount;
+    }
+
+    function setGrossReceivables(uint256 amount) external {
+        grossReceivables = amount;
     }
 
     function setTotalProvisioned(uint256 amount) external {

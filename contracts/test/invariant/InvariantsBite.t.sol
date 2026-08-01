@@ -36,7 +36,7 @@ contract PlanInvariantsBiteTest is PlanInvariants {
         vm.warp(1_800_000_000);
         sut = new ConfigurablePlan();
         // Schedule starts a year out, so nothing is overdue in the baseline.
-        sut.initHealthy(COUNT, PRINCIPAL, block.timestamp + 365 days, 14 days);
+        sut.initHealthy(COUNT, PRINCIPAL, vm.getBlockTimestamp() + 365 days, 14 days);
         subject = IInstallmentPlan(address(sut));
     }
 

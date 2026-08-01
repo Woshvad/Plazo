@@ -13,7 +13,11 @@ import {
   PLAN_FACTORY_ABI,
   CHECKOUT_ROUTER_ABI,
   RECEIVABLE_TOKEN_ABI,
-  CREDIT_POOL_ABI,
+  TRANCHED_CREDIT_POOL_ABI,
+  PLAZO_PASSPORT_ABI,
+  ATTESTATION_SCHEMA_REGISTRY_ABI,
+  RELAYER_GATE_ABI,
+  POOL_REGISTRY_ABI,
   MERCHANT_REGISTRY_ABI,
   TIER0_UNDERWRITER_ABI,
   KILL_SWITCH_ABI,
@@ -79,6 +83,37 @@ describe("privacy is enforced by the schema, not by policy", () => {
     expect(offenders).toEqual([]);
   });
 
+  /**
+   * The v3 addition, and the tighter of the two rules. A credit-record stream keyed by
+   * wallet is a permanent, public, enumerable credit file — the same exposure PASS-09
+   * keys plan events by `planId` to avoid, except this one *is* the record. Every
+   * Passport event is keyed by `keccak256(prefix | salt | borrower)` instead, and the
+   * salt is readable only by the borrower and the operator.
+   *
+   * The first draft of `PlazoPassport` indexed the borrower directly. This test is what
+   * that cost.
+   */
+  it("no Passport event carries a wallet address for the subject", () => {
+    const passportEvents = EVENT_SCHEMA.filter((d) => d.contract === "PlazoPassport");
+    expect(passportEvents.length).toBeGreaterThan(0);
+
+    for (const definition of passportEvents) {
+      // `SaltRotated` names both the old and the new key, in that order, and it is
+      // the only event that may — it is the one place a borrower can prove continuity
+      // across an erasure to a counterparty they choose.
+      const subject = definition.fields[0];
+      const expected = definition.name === "SaltRotated" ? "previousSubject" : "subject";
+      expect(subject?.name, `${definition.name} is not keyed by a subject`).toBe(expected);
+      expect(subject?.type).toBe("bytes32");
+      expect(subject?.indexed).toBe(true);
+
+      const wallets = definition.fields.filter(
+        (f) => f.type === "address" && f.name !== "reader",
+      );
+      expect(wallets, `${definition.name} carries a wallet`).toEqual([]);
+    }
+  });
+
   it("every plan event is keyed by planId", () => {
     const planEvents = EVENT_SCHEMA.filter((d) => d.contract === "InstallmentPlan");
     for (const d of planEvents) {
@@ -88,18 +123,32 @@ describe("privacy is enforced by the schema, not by policy", () => {
     }
   });
 
-  it("the redemption queue does not identify holders", () => {
-    const queued = EVENT_SCHEMA.find((d) => d.name === "RedemptionQueued");
+  /**
+   * **Reversed in v3, deliberately.** v1 said the redemption queue must carry no holder
+   * address, on the reasoning that queue depth is public and queue membership is not.
+   * POOL-02 then made the tranche shares transfer-restricted ERC-20s, and an ERC-20's
+   * holder set is public in every `Transfer` — so withholding the holder here would
+   * protect nothing and would stop a lender seeing their own position without an archive
+   * query. What replaces the rule is the tighter one below: the Passport, which is the
+   * stream that would actually be worth harvesting, carries no wallet at all.
+   */
+  it("the redemption queue names its holder, because the share token already does", () => {
+    const queued = EVENT_SCHEMA.find((d) => d.name === "RedeemRequested");
     expect(queued).toBeDefined();
-    // Queue depth is public; queue membership is not.
-    expect(queued!.fields.some((f) => f.type === "address")).toBe(false);
+    expect(queued!.fields.some((f) => f.name === "holder")).toBe(true);
   });
 
-  it("Passport emits commitments, never records or subjects", () => {
-    const passport = EVENT_SCHEMA.filter((d) => d.contract === "Passport");
+  /**
+   * The only address a Passport event may name is a `reader` — a business counterparty
+   * who has been handed a consent grant and needs to enumerate the ones they hold. It is
+   * not the data subject, and it is not derived from one.
+   */
+  it("Passport emits commitments, and the only address is a reader", () => {
+    const passport = EVENT_SCHEMA.filter((d) => d.contract === "PlazoPassport");
     expect(passport.length).toBeGreaterThan(0);
     for (const d of passport) {
-      expect(d.fields.some((f) => f.type === "address")).toBe(false);
+      const addresses = d.fields.filter((f) => f.type === "address").map((f) => f.name);
+      expect(addresses.every((name) => name === "reader"), `${d.name}: ${addresses}`).toBe(true);
     }
   });
 });
@@ -245,7 +294,11 @@ describe("const-typed ABI views", () => {
     expect([...INSTALLMENT_PLAN_ABI]).toEqual(abiForContract("InstallmentPlan"));
     expect([...CHECKOUT_ROUTER_ABI]).toEqual(abiForContract("CheckoutRouter"));
     expect([...RECEIVABLE_TOKEN_ABI]).toEqual(abiForContract("ReceivableToken"));
-    expect([...CREDIT_POOL_ABI]).toEqual(abiForContract("CreditPool"));
+    expect([...TRANCHED_CREDIT_POOL_ABI]).toEqual(abiForContract("TranchedCreditPool"));
+    expect([...PLAZO_PASSPORT_ABI]).toEqual(abiForContract("PlazoPassport"));
+    expect([...ATTESTATION_SCHEMA_REGISTRY_ABI]).toEqual(abiForContract("AttestationSchemaRegistry"));
+    expect([...RELAYER_GATE_ABI]).toEqual(abiForContract("RelayerGate"));
+    expect([...POOL_REGISTRY_ABI]).toEqual(abiForContract("PoolRegistry"));
     expect([...MERCHANT_REGISTRY_ABI]).toEqual(abiForContract("MerchantRegistry"));
     expect([...TIER0_UNDERWRITER_ABI]).toEqual(abiForContract("Tier0Underwriter"));
     expect([...KILL_SWITCH_ABI]).toEqual(abiForContract("FirstPaymentDefaultSwitch"));

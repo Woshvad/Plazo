@@ -259,7 +259,7 @@ contract ArcUsdcForkTest is Test {
         (address borrower, uint256 key) = makeAddrAndKey("borrower-window");
         _fund(borrower, 100_000_000);
 
-        uint256 future = block.timestamp + 30 days;
+        uint256 future = vm.getBlockTimestamp() + 30 days;
         bytes32 notYet = keccak256("not-yet");
         vm.prank(payee);
         vm.expectRevert();
@@ -273,7 +273,7 @@ contract ArcUsdcForkTest is Test {
             _signReceive(key, borrower, payee, 1_000_000, future, type(uint256).max, notYet)
         );
 
-        uint256 past = block.timestamp - 1;
+        uint256 past = vm.getBlockTimestamp() - 1;
         bytes32 stale = keccak256("stale");
         vm.prank(payee);
         vm.expectRevert();

@@ -41,6 +41,13 @@ interface ICreditPool {
     /// @notice Total provision across all epochs.
     function totalProvisioned() external view returns (uint256);
 
+    /// @notice Receivables carried at face, before the provision is netted off.
+    /// @dev The base a provision is held against. A valuation allowance is bounded by
+    ///      the book it sits on, not by the pool's net worth — measuring it against net
+    ///      assets would impose an accidental fifty-percent ceiling on provisioning,
+    ///      because every provision reduces net assets one-for-one.
+    function grossReceivables() external view returns (uint256);
+
     /// @notice Junior assets as a fraction of total, in basis points.
     function subordinationBps() external view returns (uint256);
 

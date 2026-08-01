@@ -18,7 +18,11 @@ import {parseAbi, parseAbiItem} from "viem";
 import {ARC_TESTNET_CHAIN_ID} from "@plazo/plan-core";
 import {
   CHECKOUT_ROUTER_ABI,
-  CREDIT_POOL_ABI,
+  TRANCHED_CREDIT_POOL_ABI,
+  PLAZO_PASSPORT_ABI,
+  ATTESTATION_SCHEMA_REGISTRY_ABI,
+  RELAYER_GATE_ABI,
+  POOL_REGISTRY_ABI,
   INSTALLMENT_PLAN_ABI,
   KILL_SWITCH_ABI,
   MERCHANT_REGISTRY_ABI,
@@ -99,10 +103,34 @@ export default createConfig({
       address: at("PLAZO_CHECKOUT_ROUTER_ADDRESS"),
       startBlock,
     },
-    CreditPool: {
+    TranchedCreditPool: {
       chain: "arcTestnet",
-      abi: parseAbi(CREDIT_POOL_ABI),
+      abi: parseAbi(TRANCHED_CREDIT_POOL_ABI),
       address: at("PLAZO_CREDIT_POOL_ADDRESS"),
+      startBlock,
+    },
+    PlazoPassport: {
+      chain: "arcTestnet",
+      abi: parseAbi(PLAZO_PASSPORT_ABI),
+      address: at("PLAZO_PASSPORT_ADDRESS"),
+      startBlock,
+    },
+    AttestationSchemaRegistry: {
+      chain: "arcTestnet",
+      abi: parseAbi(ATTESTATION_SCHEMA_REGISTRY_ABI),
+      address: at("PLAZO_SCHEMAS_ADDRESS"),
+      startBlock,
+    },
+    RelayerGate: {
+      chain: "arcTestnet",
+      abi: parseAbi(RELAYER_GATE_ABI),
+      address: at("PLAZO_RELAYER_ADDRESS"),
+      startBlock,
+    },
+    PoolRegistry: {
+      chain: "arcTestnet",
+      abi: parseAbi(POOL_REGISTRY_ABI),
+      address: at("PLAZO_POOL_REGISTRY_ADDRESS"),
       startBlock,
     },
     MerchantRegistry: {

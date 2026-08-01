@@ -13,7 +13,17 @@ evm_version = "prague"
 
 optimizer = true
 optimizer_runs = 1000
-via_ir = false
+
+# Turned on in Phase 5 (DEC-30). `TranchedCreditPool` is a credit book, a tranche
+# structure, an epoch accountant and a redemption queue in one contract, because
+# splitting it would put one balance sheet in two places — and Phase 3 already shipped
+# that bug once. Through the legacy pipeline it lands ~2 kB over EIP-170.
+#
+# The IR pipeline is the standard answer to that, and it is not only a size fix: every
+# contract in the tree got smaller and cheaper, `InstallmentPlan` by about 11%. The
+# cost is a slower cold build, which is a build-time problem rather than a design one —
+# the alternative was contorting the architecture around a bytecode ceiling.
+via_ir = true
 
 bytecode_hash = "none"
 cbor_metadata = false
