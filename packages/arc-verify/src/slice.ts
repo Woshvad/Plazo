@@ -373,7 +373,7 @@ function usdc(value: bigint): string {
 }
 
 /** Deterministic sub-accounts, so one funded key is all an operator has to hold. */
-function derive(deployerKey: Hex, role: string): Account {
+export function derive(deployerKey: Hex, role: string): Account {
   return privateKeyToAccount(keccak256(toHex(`${deployerKey}/${role}`)));
 }
 
@@ -402,18 +402,6 @@ class Slice {
    */
   async nativeBalance(who: Address): Promise<bigint> {
     return shed(() => this.publicClient.getBalance({address: who}));
-  }
-
-  /** Whether the book already carries the capital `prepareBook` would deposit. */
-  async bookIsCapitalised(): Promise<boolean> {
-    return this.view<boolean>(this.deployment.creditPool, POOL_ABI, "originationOpen");
-  }
-
-  /** The merchant's standing bond, which a re-run does not have to post again. */
-  async merchantBond(): Promise<bigint> {
-    return this.view<bigint>(this.deployment.merchantRegistry, MERCHANTS_ABI, "bondOf", [
-      this.account(this.merchant),
-    ]);
   }
 
   async balance(who: Address): Promise<bigint> {
@@ -1577,6 +1565,47 @@ function deploymentPath(chainId: number): string {
   return join(here, "..", "..", "..", "contracts", "deployments", `${chainId}.json`);
 }
 
+export function loadDeployment(chainId: number): Deployment {
+  return JSON.parse(readFileSync(deploymentPath(chainId), "utf8")) as Deployment;
+}
+
+/**
+ * What the funding account still has to hold, given what the chain already carries.
+ *
+ * `REQUIRED` is the figure for a virgin book. Once the pool holds its capital and the
+ * merchant's bond is posted, that money is committed rather than missing — and a tool
+ * that keeps quoting the virgin total tells an operator they are 313 dollars short of
+ * money the protocol is currently holding on their behalf.
+ *
+ * Exported so `faucet.ts` reports the same number the slice enforces. The 406.84 drift
+ * came from two copies of one figure; so did this.
+ */
+export async function outstandingRequirement(
+  publicClient: PublicClient,
+  deployment: Deployment,
+  merchant: Address,
+): Promise<{needed: bigint; already: bigint; capitalised: boolean; bonded: boolean}> {
+  const capitalised = await shed(() =>
+    publicClient.readContract({
+      address: deployment.creditPool,
+      abi: POOL_ABI,
+      functionName: "originationOpen",
+    }),
+  );
+  const bond = await shed(() =>
+    publicClient.readContract({
+      address: deployment.merchantRegistry,
+      abi: MERCHANTS_ABI,
+      functionName: "bondOf",
+      args: [merchant],
+    }),
+  );
+
+  const bonded = bond >= MERCHANT_BOND;
+  const already = (capitalised ? CAPITALISATION : 0n) + (bonded ? MERCHANT_BOND : 0n);
+  return {needed: REQUIRED - already, already, capitalised, bonded};
+}
+
 export async function runSlice(): Promise<void> {
   const deployerKey = process.env["DEPLOYER_PRIVATE_KEY"] as Hex | undefined;
   if (!deployerKey) throw new Error("DEPLOYER_PRIVATE_KEY is required to run the slice.");
@@ -1641,10 +1670,11 @@ export async function runSlice(): Promise<void> {
   // What is still needed, not what a virgin run would need. A book that is already
   // capitalised holds that money — it is in the pool rather than the account, and
   // asking for it twice would refuse a run that has everything it requires.
-  const capitalised = await slice.bookIsCapitalised();
-  const bonded = (await slice.merchantBond()) >= MERCHANT_BOND;
-  const already = (capitalised ? CAPITALISATION : 0n) + (bonded ? MERCHANT_BOND : 0n);
-  const needed = REQUIRED - already;
+  const {needed, already, capitalised, bonded} = await outstandingRequirement(
+    publicClient,
+    deployment,
+    wallets.merchant.account.address,
+  );
 
   if (funds < needed) {
     console.log(`\n${passed} assertions passed against live chain ${chainId}.`);

@@ -37,7 +37,7 @@ import {arcTestnet} from "viem/chains";
 
 import {ARC_TESTNET_RPC_URL, ARC_USDC} from "@plazo/plan-core";
 
-import {REQUIRED} from "./slice.js";
+import {derive, loadDeployment, outstandingRequirement, REQUIRED} from "./slice.js";
 
 const TOKEN_ABI = parseAbi([
   "function transfer(address to, uint256 amount) returns (bool)",
@@ -160,10 +160,23 @@ export async function runFaucet(argv: string[] = process.argv.slice(2)): Promise
     );
   }
 
-  const shortfall = REQUIRED > onDeployer + collected ? REQUIRED - onDeployer - collected : 0n;
+  // What the slice would actually ask for right now, not the virgin-book total. A book
+  // that already holds its capital has that money committed rather than missing, and
+  // quoting the full figure tells the operator to go and collect three hundred dollars
+  // the protocol is holding on their behalf.
+  const {needed, already} = await outstandingRequirement(
+    publicClient,
+    loadDeployment(arcTestnet.id),
+    derive(deployerKey, "merchant").address,
+  );
+
+  const shortfall = needed > onDeployer + collected ? needed - onDeployer - collected : 0n;
   console.log(`\n  collected     ${usdc(collected)} across ${holdings.filter((h) => h.native > 0n).length}/${count} addresses`);
   console.log(`  on deployer   ${usdc(onDeployer)}  (${deployer.address})`);
-  console.log(`  the slice needs ${usdc(REQUIRED)}`);
+  console.log(`  the slice needs ${usdc(needed)}`);
+  if (already > 0n) {
+    console.log(`  (${usdc(already)} of the ${usdc(REQUIRED)} full requirement is already committed on chain)`);
+  }
   console.log(
     shortfall > 0n
       ? `  still short   ${usdc(shortfall)}\n`
@@ -243,8 +256,8 @@ export async function runFaucet(argv: string[] = process.argv.slice(2)): Promise
     throw new Error(`${failures.length} sweep(s) failed`);
   }
 
-  if (finalBalance < REQUIRED) {
-    console.log(`\nStill ${usdc(REQUIRED - finalBalance)} short of the slice.\n`);
+  if (finalBalance < needed) {
+    console.log(`\nStill ${usdc(needed - finalBalance)} short of the slice.\n`);
   } else {
     console.log(`\nCovered. Next: pnpm --filter @plazo/arc-verify slice\n`);
   }
