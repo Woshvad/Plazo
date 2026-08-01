@@ -6,14 +6,16 @@
   "type": "module",
   "bin": {
     "arc-verify": "./dist/cli.js",
-    "arc-slice": "./dist/slice-cli.js"
+    "arc-slice": "./dist/slice-cli.js",
+    "arc-faucet": "./dist/faucet-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify": "tsx src/cli.ts",
     "verify:mainnet": "tsx src/cli.ts --network mainnet",
-    "slice": "tsx src/slice-cli.ts"
+    "slice": "tsx src/slice-cli.ts",
+    "faucet": "tsx src/faucet-cli.ts"
   },
   "dependencies": {
     "@plazo/plan-core": "workspace:*",

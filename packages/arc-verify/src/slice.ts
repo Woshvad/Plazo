@@ -301,6 +301,31 @@ interface Deployment {
 /** POOL-12's permanent per-tranche seed. Protocol money, never redeemable. */
 const TRANCHE_SEED = 1_000_000n;
 
+/**
+ * What a full run needs on the funding account, all at once.
+ *
+ * Most of it is the book. UW-02 caps Tier-0 paper at a share of the pool and the
+ * band's ceiling is 25%, so a $75 ticket needs $300 of capital behind it before the
+ * headroom reaches the ticket — the cap working, not a nuisance. None of it is spent:
+ * deposits go in, cycle through the plan, and are redeemed at the end. The borrower's
+ * float is the part that genuinely moves, and it moves into the pool rather than back
+ * to the funding account, which is why it is counted in full.
+ *
+ * Exported because `faucet.ts` reports progress against it. Two copies of this figure
+ * is how it came to be quoted as 406.84 in five documents after the tranche seeds were
+ * added — a shortfall the operator only discovers with a funded account and a
+ * half-finished run.
+ */
+export const REQUIRED =
+  SENIOR_SEED +
+  JUNIOR_SEED +
+  RESERVE_SEED +
+  2n * TRANCHE_SEED + // POOL-12's permanent seeds, one per tranche, never redeemable
+  MERCHANT_BOND +
+  PRINCIPAL + // the borrower's four installments, drawn one at a time
+  2n * markEscrowFor(4n) +
+  4n * GAS_RESERVE;
+
 /** The one product line v1 funds. Matches `Deploy.s.sol`. */
 const PAY_IN_4 = keccak256(toHex("PLAZO.PAY_IN_4"));
 
@@ -1427,24 +1452,6 @@ export async function runSlice(): Promise<void> {
     wallets.keeper,
     wallets.merchant,
   );
-
-  // What the run needs on the funding account, all at once.
-  //
-  // Most of it is the book. UW-02 caps Tier-0 paper at a share of the pool and the
-  // band's ceiling is 25%, so a $75 ticket needs $300 of capital behind it before the
-  // headroom reaches the ticket — the cap working, not a nuisance. None of it is
-  // spent: deposits go in, cycle through the plan, and are redeemed at the end. The
-  // borrower's float is the part that genuinely moves, and it moves into the pool
-  // rather than back to the funding account, which is why it is counted in full.
-  const REQUIRED =
-    SENIOR_SEED +
-    JUNIOR_SEED +
-    RESERVE_SEED +
-    2n * TRANCHE_SEED + // POOL-12's permanent seeds, one per tranche, never redeemable
-    MERCHANT_BOND +
-    PRINCIPAL + // the borrower's four installments, drawn one at a time
-    2n * markEscrowFor(4n) +
-    4n * GAS_RESERVE;
 
   // Start from a known state. A run that fails partway leaves USDC scattered across
   // the borrower and the keeper, and the next attempt would then be short of the
