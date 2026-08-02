@@ -202,6 +202,16 @@ export const merchant = onchainTable("merchant", (t) => ({
   registeredAt: t.integer().notNull(),
   originations: t.integer().notNull().default(0),
   principalOriginated: t.bigint().notNull().default(0n),
+  /**
+   * `MerchantRegistry.SettlementCategory` ordinal — 0 instant, 1 escrowed.
+   *
+   * The current value only. A plan's settlement route was decided by the category as
+   * it read *at origination* and stamped onto the escrow row (D-06), so this column
+   * says what the next plan will do and never what a past one did.
+   */
+  settlementCategory: t.integer().notNull().default(0),
+  /** Bond taken by an adjudicated refund dispute and paid to the pool's reserve. */
+  slashedToReserve: t.bigint().notNull().default(0n),
 }));
 
 /**
@@ -337,6 +347,189 @@ export const pauseEvent = onchainTable(
   }),
   (table) => ({
     timeIdx: index().on(table.timestamp),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The merchant plane (Phase 6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One settlement, and where it got to.
+ *
+ * MERCH-08's row. `origination` already holds what a plan cost; this holds what
+ * happened to the money afterwards — the route it took, the domain it went to, and
+ * whether it has arrived. The two are kept apart for the same reason `origination` was
+ * kept out of `plan`: an origination is immutable and a settlement is not, and folding
+ * a moving value into a frozen row makes the frozen row look uncertain.
+ *
+ * **The money columns are written from `CheckoutRouter.OriginationCompleted`, not from
+ * the payout adapter.** `PayoutRouter` deliberately knows nothing about plans (DEC-36):
+ * its events carry a token, a recipient, a domain and an amount, and nothing else. A
+ * payout contract that also had to be told the `planId` and the `mdr` would be one that
+ * could misreport them. So the plan-level figures come from the contract that computed
+ * them, and `txHash` is what stitches the two together for an origination-time payout.
+ *
+ * `recipient` and `domain` are nullable because they are not always known when the row
+ * is created: an escrowed settlement announces its route only when the hold releases.
+ *
+ * No borrower column, as everywhere. `planId` is the only join key into the operator
+ * schema, and a merchant's own order id lives on that side of the line (OPS-08, D-17).
+ */
+export const payout = onchainTable(
+  "payout",
+  (t) => ({
+    planId: t.hex().primaryKey(),
+    merchant: t.hex().notNull(),
+    token: t.hex().notNull(),
+    /** The merchant's registered payout route, once it is known. */
+    recipient: t.hex(),
+    /** CCTP domain. 26 is Arc — settlement that never left. */
+    domain: t.integer(),
+    /** What the borrower is financing. 6-decimal USDC, bigint, never a float. */
+    gross: t.bigint().notNull().default(0n),
+    mdr: t.bigint().notNull().default(0n),
+    /** Diverted into the merchant's own bond while they are new (DEC-09). */
+    withheld: t.bigint().notNull().default(0n),
+    /** `gross - mdr - withheld`. The figure that actually moved. */
+    net: t.bigint().notNull().default(0n),
+    /** `settled` | `queued` | `dispatched` | `escrowed` | `returned`. */
+    status: t.text().notNull(),
+    /**
+     * The origination transaction.
+     *
+     * The join to the route-level ledger, and the join to Circle's: a CCTP v2 burn
+     * emits a zero nonce and the real `eventNonce` is assigned by Iris at attestation,
+     * so there is no on-chain identifier to key on (DEC-31, finding 28).
+     */
+    txHash: t.hex(),
+    /**
+     * The transaction that burned, when the settlement went through the queue.
+     *
+     * A **second** column rather than an overwrite of `txHash`, because a queued
+     * settlement has two transactions and a reconciliation needs both: the origination
+     * is what the merchant's own order matches on, and the burn is what Circle's
+     * ledger matches on. Folding them into one column would answer the second question
+     * by destroying the answer to the first, and the row would look correct while
+     * having lost the only key back to the sale.
+     *
+     * Null for an instant settlement, where the two are the same transaction and
+     * `txHash` already holds it.
+     */
+    dispatchTxHash: t.hex(),
+    blockNumber: t.bigint().notNull(),
+    timestamp: t.integer().notNull(),
+    cohort: t.text().notNull(),
+  }),
+  (table) => ({
+    merchantIdx: index().on(table.merchant),
+    statusIdx: index().on(table.status),
+    domainIdx: index().on(table.domain),
+    txIdx: index().on(table.txHash),
+  }),
+);
+
+/**
+ * Every movement the payout adapter made, at the route level.
+ *
+ * **This is the table the attestation poller reads**, and it is deliberately keyed by
+ * nothing but the log that produced it. A `nonce` column would be permanently null —
+ * a CCTP v2 burn's emitted nonce is all zeros and the real one comes back from Iris —
+ * and a `planId` column would be permanently null too, because `dispatch()` drains a
+ * `(token, recipient, domain)` queue that may hold several plans' settlements at once
+ * (DEC-36). Neither is here. The join is the transaction hash, off-chain by
+ * construction, and that is finding 28 stated as a schema decision.
+ *
+ * Append-only: a dispatch is a fact about a moment, and a route's history is the
+ * question the poller and the merchant both ask.
+ */
+export const payoutDispatch = onchainTable(
+  "payout_dispatch",
+  (t) => ({
+    id: t.text().primaryKey(),
+    /** `paid` on Arc, `queued` awaiting a crank, `dispatched` once the burn is out. */
+    kind: t.text().notNull(),
+    token: t.hex().notNull(),
+    recipient: t.hex().notNull(),
+    domain: t.integer().notNull(),
+    amount: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+    blockNumber: t.bigint().notNull(),
+    logIndex: t.integer().notNull(),
+    timestamp: t.integer().notNull(),
+  }),
+  (table) => ({
+    txIdx: index().on(table.txHash),
+    routeIdx: index().on(table.recipient, table.domain),
+    kindIdx: index().on(table.kind),
+  }),
+);
+
+/**
+ * A settlement held against shipment, and the timers around it.
+ *
+ * MERCH-04. The row is self-describing after `hold` stamps it, because the merchant's
+ * category was read once at origination and may have moved since (D-06) — reading the
+ * registry to interpret this row would answer a question about today with a fact about
+ * then.
+ *
+ * `carrierRef` is a `bytes32` commitment and stays one. A tracking number is a delivery
+ * address by proxy; in a queryable column it is a borrower's home address for anyone
+ * who can ask a carrier, which is precisely the exposure the whole storage split exists
+ * to prevent.
+ */
+export const settlementEscrow = onchainTable(
+  "settlement_escrow",
+  (t) => ({
+    planId: t.hex().primaryKey(),
+    merchant: t.hex().notNull(),
+    amount: t.bigint().notNull(),
+    heldAt: t.integer().notNull(),
+    attestedAt: t.integer(),
+    carrierRef: t.hex(),
+    releasedAt: t.integer(),
+    returnedAt: t.integer(),
+    /** `held` | `attested` | `released` | `returned`. */
+    state: t.text().notNull(),
+    /**
+     * Returned for **non-attestation** specifically, which is the single objective,
+     * operator-free ground for a dispute. Kept apart from `returnedAt` because a
+     * return that is a dispute ground and one that is not must not look alike.
+     */
+    nonAttested: t.boolean().notNull().default(false),
+  }),
+  (table) => ({
+    merchantIdx: index().on(table.merchant),
+    stateIdx: index().on(table.state),
+  }),
+);
+
+/**
+ * Every refund and every void, in the order they happened.
+ *
+ * Append-only rather than a running total on `payout`, because a merchant reconciling
+ * a return needs the individual credit that matches their own refund record, and a
+ * netted figure cannot be matched against anything.
+ *
+ * `merchant` is denormalised from `origination` at write time. The refund events carry
+ * only a `planId` — D-04 keeps `RefundEscrow` calling the plan rather than reimplementing
+ * it, and the plan does not know the merchant's address is what a dashboard filters by.
+ */
+export const refund = onchainTable(
+  "refund",
+  (t) => ({
+    id: t.text().primaryKey(),
+    planId: t.hex().notNull(),
+    merchant: t.hex().notNull(),
+    amount: t.bigint().notNull().default(0n),
+    /** `refund` | `void`. */
+    kind: t.text().notNull(),
+    blockNumber: t.bigint().notNull(),
+    timestamp: t.integer().notNull(),
+  }),
+  (table) => ({
+    planIdx: index().on(table.planId),
+    merchantIdx: index().on(table.merchant),
   }),
 );
 

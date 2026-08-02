@@ -11,6 +11,23 @@
  * `startBlock` is the deployment block, never genesis. Arc is past 54 million
  * blocks at roughly half a second each; a genesis backfill would sweep years of
  * unrelated history to find nothing.
+ *
+ * ## The environment this file reads
+ *
+ * Every address lives here and **not** in `.env.example`, which scopes itself to the
+ * operator database and says why: a variable listed in two places is a variable one of
+ * the two lists eventually gets wrong, and the wrong one is silent. The merchant plane
+ * (Phase 6) adds four:
+ *
+ * - `PLAZO_PAYOUT_ROUTER_ADDRESS` — the settlement adapter (plan 06-05)
+ * - `PLAZO_REFUND_ESCROW_ADDRESS` — refunds, voids and the rebate reserve (06-08)
+ * - `PLAZO_SETTLEMENT_ESCROW_ADDRESS` — settlement held against shipment (06-09)
+ * - `PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY` — the router the merchant plane replaces
+ *
+ * The last one is the one worth reading twice. It is optional, and leaving it unset is
+ * not neutral: it is the difference between an indexer that carries vintage-3
+ * origination history and one that reports those originations never happened. See
+ * `atAll`.
  */
 import {createConfig, factory} from "ponder";
 import {parseAbi, parseAbiItem} from "viem";
@@ -28,8 +45,11 @@ import {
   MERCHANT_REGISTRY_ABI,
   ORIGINATION_PAUSE_ABI,
   PARAMETER_REGISTRY_ABI,
+  PAYOUT_ROUTER_ABI,
   PLAN_FACTORY_ABI,
   RECEIVABLE_TOKEN_ABI,
+  REFUND_ESCROW_ABI,
+  SETTLEMENT_ESCROW_ABI,
   TIER0_UNDERWRITER_ABI,
 } from "@plazo/events";
 
@@ -48,6 +68,24 @@ const START_BLOCK = process.env["PLAZO_START_BLOCK"];
  */
 const at = (name: string): `0x${string}` =>
   (process.env[name] as `0x${string}` | undefined) ?? "0x0000000000000000000000000000000000000000";
+
+/**
+ * Every address a contract has ever been deployed at, newest first.
+ *
+ * A redeployment does not erase the log stream of the address it replaced. DEC-15
+ * already cost this project one forced vintage; the router is redeployed again for the
+ * merchant plane, and an indexer configured against only the new address would report
+ * that vintage-3 originations never happened rather than that it stopped watching them.
+ *
+ * The zero address is filtered out rather than passed through: an unconfigured legacy
+ * address should mean "there is no earlier deployment", not "index the null contract".
+ */
+const atAll = (...names: string[]): `0x${string}`[] => {
+  const addresses = names
+    .map((name) => process.env[name] as `0x${string}` | undefined)
+    .filter((address): address is `0x${string}` => Boolean(address) && !/^0x0+$/.test(address!));
+  return addresses.length > 0 ? addresses : ["0x0000000000000000000000000000000000000000"];
+};
 
 if (!PLAN_FACTORY) {
   console.warn(
@@ -100,7 +138,8 @@ export default createConfig({
     CheckoutRouter: {
       chain: "arcTestnet",
       abi: parseAbi(CHECKOUT_ROUTER_ABI),
-      address: at("PLAZO_CHECKOUT_ROUTER_ADDRESS"),
+      // Both the current router and the one it replaced. See `atAll`.
+      address: atAll("PLAZO_CHECKOUT_ROUTER_ADDRESS", "PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY"),
       startBlock,
     },
     TranchedCreditPool: {
@@ -167,6 +206,27 @@ export default createConfig({
       chain: "arcTestnet",
       abi: parseAbi(ORIGINATION_PAUSE_ABI),
       address: at("PLAZO_PAUSE_ADDRESS"),
+      startBlock,
+    },
+    // The merchant plane (Phase 6). All three are unconfigured until plan 06-13
+    // redeploys the stack, and an unconfigured contract indexes nothing rather than
+    // failing the process — see `at`.
+    PayoutRouter: {
+      chain: "arcTestnet",
+      abi: parseAbi(PAYOUT_ROUTER_ABI),
+      address: at("PLAZO_PAYOUT_ROUTER_ADDRESS"),
+      startBlock,
+    },
+    RefundEscrow: {
+      chain: "arcTestnet",
+      abi: parseAbi(REFUND_ESCROW_ABI),
+      address: at("PLAZO_REFUND_ESCROW_ADDRESS"),
+      startBlock,
+    },
+    SettlementEscrow: {
+      chain: "arcTestnet",
+      abi: parseAbi(SETTLEMENT_ESCROW_ABI),
+      address: at("PLAZO_SETTLEMENT_ESCROW_ADDRESS"),
       startBlock,
     },
   },

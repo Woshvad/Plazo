@@ -31,6 +31,8 @@ import {
   throttleReading,
 } from "ponder:schema";
 
+import {recordSettlement} from "./payout.js";
+
 const cohortOf = (timestamp: number): string => {
   const date = new Date(timestamp * 1000);
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -98,6 +100,23 @@ ponder.on("CheckoutRouter:OriginationCompleted", async ({event, context}) => {
       originations: row.originations + 1,
       principalOriginated: row.principalOriginated + event.args.principal,
     }));
+
+  // The settlement half of the same fact, written by `payout.ts` because that is where
+  // a reader looking for a merchant's money goes. It lives behind a call rather than
+  // its own handler because Ponder permits one handler per event and this plane owns
+  // this one — and because the money columns must come from the contract that computed
+  // them, which is this event and not the payout adapter (DEC-36).
+  await recordSettlement(context.db, {
+    planId: event.args.planId,
+    merchant: event.args.merchant,
+    principal: event.args.principal,
+    mdr: event.args.mdr,
+    withheld: event.args.withheld,
+    txHash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp,
+  });
 });
 
 // ─── The funding book ─────────────────────────────────────────────────────────

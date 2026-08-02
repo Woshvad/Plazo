@@ -21,6 +21,9 @@
   },
   "devDependencies": {
     "@types/node": "26.1.2",
+    "@types/pg": "8.15.6",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.22.0",
     "typescript": "5.9.3",
     "vitest": "3.2.4"
   }

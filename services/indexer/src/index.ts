@@ -311,3 +311,5 @@ ponder.on("InstallmentPlan:RefundCredited", async ({event, context}) => {
  */
 import "./origination.js";
 import "./capital.js";
+import "./payout.js";
+import "./merchant.js";
