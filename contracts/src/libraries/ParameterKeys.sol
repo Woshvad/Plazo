@@ -88,4 +88,46 @@ library ParameterKeys {
     bytes32 internal constant ESCROW_ATTESTATION_DEADLINE = keccak256("plazo.escrow.attestationDeadline");
     bytes32 internal constant ESCROW_RELEASE_TIMER = keccak256("plazo.escrow.releaseTimer");
     bytes32 internal constant ESCROW_DISPUTE_TIMELOCK = keccak256("plazo.escrow.disputeTimelock");
+
+    // ─── FX corridor (Phase 7) ───────────────────────────────────────────────
+    //
+    // E-01, E-05. These fifteen rows and the nine below them exist on **neither
+    // deployed registry**. `ParameterRegistry._define` is private and
+    // constructor-only, and nine contracts hold the registry `immutable` with no
+    // setter anywhere in the tree, so a row added here cannot be added to
+    // `parameterRegistry` (0x753e08a6…) or `escrowParameterRegistry` (0xe74d5ac7…)
+    // and no attempt is made to. Plan 07-12 deploys a **third** instance,
+    // `fxParameterRegistry`, and only Phase 7 contracts read it. The precedent is
+    // `escrowParameterRegistry` itself, which is a second instance for exactly this
+    // reason.
+    //
+    // The last three are read by an off-chain corridor-health poll, not by a
+    // contract. They are rows anyway: a breaker whose trigger is undefined is a
+    // breaker that never trips, and an outsider auditing the trigger has to be able
+    // to read it, exactly as `RELAYER_DELAY_FLOOR` put the relayer's delay floor
+    // somewhere it could be audited (DEC-18). No price ever crosses onto the chain.
+
+    bytes32 internal constant FX_CORRIDOR_HAIRCUT_BPS = keccak256("plazo.fx.corridorHaircutBps");
+    bytes32 internal constant FX_MAX_DEVIATION_BPS = keccak256("plazo.fx.maxDeviationBps");
+    bytes32 internal constant FX_MID_MAX_TTL = keccak256("plazo.fx.midMaxTtl");
+    bytes32 internal constant FX_QUOTE_MAX_AGE = keccak256("plazo.fx.quoteMaxAge");
+    bytes32 internal constant FX_ROUNDTRIP_MAX_BPS = keccak256("plazo.fx.roundtripMaxBps");
+    bytes32 internal constant FX_PAR_BAND_BPS = keccak256("plazo.fx.parBandBps");
+
+    // ─── Tiered underwriting (Phase 7) ───────────────────────────────────────
+    //
+    // UW-04…UW-07. The `INFLOW_*` trio is named `plazo.tier1.inflow*` because the
+    // inflow stream is Tier 1's evidence and nothing else reads it.
+
+    bytes32 internal constant TIER1_INCOME_MULTIPLE_BPS = keccak256("plazo.tier1.incomeMultipleBps");
+    bytes32 internal constant TIER1_PSEUDONYMOUS_CAP = keccak256("plazo.tier1.pseudonymousCap");
+    bytes32 internal constant TIER1_PAYROLL_BONUS_BPS = keccak256("plazo.tier1.payrollBonusBps");
+    bytes32 internal constant INFLOW_LOOKBACK = keccak256("plazo.tier1.inflowLookback");
+    bytes32 internal constant INFLOW_MIN_MONTHS = keccak256("plazo.tier1.inflowMinMonths");
+    bytes32 internal constant INFLOW_MIN_COUNTERPARTIES = keccak256("plazo.tier1.inflowMinCounterparties");
+
+    bytes32 internal constant TIER2_PLEDGE_HAIRCUT_BPS = keccak256("plazo.tier2.pledgeHaircutBps");
+
+    bytes32 internal constant TIER3_PARTNER_CAP = keccak256("plazo.tier3.partnerCap");
+    bytes32 internal constant TIER3_PARTNER_MAX_TTL = keccak256("plazo.tier3.partnerMaxTtl");
 }

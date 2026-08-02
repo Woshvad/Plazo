@@ -48,10 +48,14 @@ contract ParameterRegistryTest is Test {
     function test_everySeededKeyIsEnumerable() public view {
         bytes32[] memory keys = parameters.keys();
         assertEq(keys.length, parameters.keyCount());
-        // Raised by three in Phase 6 with the settlement-escrow rows. The floor moves
-        // with the seed set rather than being deleted, because a count assertion that
-        // nobody maintains is a count assertion that stops noticing a dropped `_define`.
-        assertGt(keys.length, 23, "the seeded set is suspiciously small");
+        // Raised by three in Phase 6 with the settlement-escrow rows and by fifteen in
+        // Phase 7 with the FX and tier rows — and tightened from a floor to an equality
+        // at the same time. Fifteen rows landing in one commit is exactly the situation
+        // where a declared-but-unseeded key hides, and a floor cannot see one. An exact
+        // count fails on the sixteenth row added by accident, which is the point; the
+        // fix when a row is added deliberately is to move this number in the same
+        // commit, not to loosen it back into a floor.
+        assertEq(keys.length, 57, "the seeded set moved without this assertion moving");
 
         for (uint256 i = 0; i < keys.length; ++i) {
             assertTrue(parameters.isDefined(keys[i]), "an enumerated key is not defined");
@@ -292,6 +296,185 @@ contract ParameterRegistryTest is Test {
         vm.prank(governance);
         vm.expectRevert();
         parameters.set(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 24 hours);
+    }
+
+    // ─── FX corridor and tiered underwriting (Phase 7) ───────────────────────
+    //
+    // Fifteen rows landed together, and they are tested together rather than one
+    // hand-written function each. A table is not laziness here: the property is
+    // *uniform* — every one of the fifteen must be seeded, must be reachable at both
+    // ends of its band and nowhere outside it, and must narrow one way — and fifteen
+    // near-identical functions is fifteen places for one of them to be quietly
+    // omitted. The table is enumerated once and every assertion runs over all of it.
+    //
+    // These rows exist on **neither deployed registry**. Plan 07-12 deploys the third
+    // instance that carries them (`fxParameterRegistry`) and the fourth that reads the
+    // same integers as euros (`eurcParameterRegistry`); nothing already deployed is
+    // repointed. The tests run against a fresh `new ParameterRegistry(...)`, which is
+    // what those instances will be.
+
+    /// @dev The seeded value each new row is expected to carry. Order matches
+    ///      `ParameterKeys`' two new sections.
+    function _phase7Keys() internal pure returns (bytes32[] memory keys, uint256[] memory values) {
+        keys = new bytes32[](15);
+        values = new uint256[](15);
+
+        keys[0] = ParameterKeys.FX_CORRIDOR_HAIRCUT_BPS;
+        values[0] = 500;
+        keys[1] = ParameterKeys.FX_MAX_DEVIATION_BPS;
+        values[1] = 100;
+        keys[2] = ParameterKeys.FX_MID_MAX_TTL;
+        values[2] = 5 minutes;
+        keys[3] = ParameterKeys.FX_QUOTE_MAX_AGE;
+        values[3] = 15 minutes;
+        keys[4] = ParameterKeys.FX_ROUNDTRIP_MAX_BPS;
+        values[4] = 200;
+        keys[5] = ParameterKeys.FX_PAR_BAND_BPS;
+        values[5] = 500;
+
+        keys[6] = ParameterKeys.TIER1_INCOME_MULTIPLE_BPS;
+        values[6] = 2500;
+        keys[7] = ParameterKeys.TIER1_PSEUDONYMOUS_CAP;
+        values[7] = 500 * PlanParams.ONE_USDC;
+        keys[8] = ParameterKeys.TIER1_PAYROLL_BONUS_BPS;
+        values[8] = 2500;
+        keys[9] = ParameterKeys.INFLOW_LOOKBACK;
+        values[9] = 90 days;
+        keys[10] = ParameterKeys.INFLOW_MIN_MONTHS;
+        values[10] = 3;
+        keys[11] = ParameterKeys.INFLOW_MIN_COUNTERPARTIES;
+        values[11] = 2;
+
+        keys[12] = ParameterKeys.TIER2_PLEDGE_HAIRCUT_BPS;
+        values[12] = 2000;
+
+        keys[13] = ParameterKeys.TIER3_PARTNER_CAP;
+        values[13] = 5000 * PlanParams.ONE_USDC;
+        keys[14] = ParameterKeys.TIER3_PARTNER_MAX_TTL;
+        values[14] = 1 hours;
+    }
+
+    /// @notice All fifteen are defined rows carrying the values the plan states.
+    /// @dev `get` on an undefined key reverts, so a row declared in `ParameterKeys`
+    ///      and forgotten in the constructor is a failed origination rather than a
+    ///      free one. This is the assertion that notices the forgetting.
+    function test_thePhaseSevenRowsAreSeeded() public view {
+        (bytes32[] memory keys, uint256[] memory values) = _phase7Keys();
+        for (uint256 i = 0; i < keys.length; ++i) {
+            assertTrue(parameters.isDefined(keys[i]), "a Phase 7 key is declared but not seeded");
+            assertEq(parameters.get(keys[i]), values[i], "a Phase 7 row is not carrying its seeded value");
+        }
+    }
+
+    /// @notice Every one of the fifteen bands is reachable at both ends and nowhere
+    ///         outside them.
+    ///
+    /// @dev T-07-02-01. A band is only a control if both of its ends are exactly
+    ///      attainable and one step past either reverts — a floor that is really a
+    ///      floor-plus-one is an off-by-one hiding a control, and a ceiling that is
+    ///      not reachable is a number nobody can use.
+    function test_everyPhaseSevenBandBindsAtBothEnds() public {
+        (bytes32[] memory keys,) = _phase7Keys();
+
+        for (uint256 i = 0; i < keys.length; ++i) {
+            ParameterRegistry.Parameter memory p = parameters.parameter(keys[i]);
+
+            vm.prank(governance);
+            parameters.set(keys[i], p.min);
+            assertEq(parameters.get(keys[i]), p.min, "the floor is not reachable");
+
+            vm.prank(governance);
+            parameters.set(keys[i], p.max);
+            assertEq(parameters.get(keys[i]), p.max, "the ceiling is not reachable");
+
+            // Two of the fifteen floor at zero on purpose — the corridor haircut and
+            // the payroll bonus are both benefits that must be switchable off without
+            // a redeployment — so there is no "one below" for them to have.
+            if (p.min > 0) {
+                vm.prank(governance);
+                vm.expectRevert(
+                    abi.encodeWithSelector(
+                        ParameterRegistry.OutOfBand.selector, keys[i], p.min - 1, p.min, p.max
+                    )
+                );
+                parameters.set(keys[i], p.min - 1);
+            }
+
+            vm.prank(governance);
+            vm.expectRevert(
+                abi.encodeWithSelector(ParameterRegistry.OutOfBand.selector, keys[i], p.max + 1, p.min, p.max)
+            );
+            parameters.set(keys[i], p.max + 1);
+        }
+    }
+
+    /// @notice And every one of them ratchets one way.
+    function test_everyPhaseSevenBandNarrowsOnlyInwards() public {
+        (bytes32[] memory keys,) = _phase7Keys();
+
+        for (uint256 i = 0; i < keys.length; ++i) {
+            ParameterRegistry.Parameter memory p = parameters.parameter(keys[i]);
+
+            vm.prank(governance);
+            parameters.narrowBand(keys[i], p.min + 1, p.max - 1);
+
+            ParameterRegistry.Parameter memory after_ = parameters.parameter(keys[i]);
+            assertEq(after_.min, p.min + 1, "the floor did not rise");
+            assertEq(after_.max, p.max - 1, "the ceiling did not fall");
+            assertEq(after_.value, p.value, "narrowing moved the value");
+
+            vm.prank(governance);
+            vm.expectRevert(
+                abi.encodeWithSelector(ParameterRegistry.BandNotNarrower.selector, keys[i], p.min, p.max)
+            );
+            parameters.narrowBand(keys[i], p.min, p.max);
+        }
+    }
+
+    /// @notice A pseudonymous Tier-1 limit can never outrank an attested Tier-0 one.
+    ///
+    /// @dev T-07-02-08, and the one cross-row relationship in the fifteen. Tier 1's
+    ///      evidence is an inflow history a wallet can manufacture; Tier 0's
+    ///      identified cap is a person the operator attested. If governance could
+    ///      raise the first past the second, the tiers would stop expressing an
+    ///      ordering — so `TIER1_PSEUDONYMOUS_CAP`'s ceiling *is*
+    ///      `TIER0_IDENTIFIED_CAP`'s seeded default, in compiled code rather than in
+    ///      an operator's discipline.
+    function test_theTierOnePseudonymousCapCannotExceedTheTierZeroIdentifiedCap() public {
+        ParameterRegistry.Parameter memory tier1 = parameters.parameter(ParameterKeys.TIER1_PSEUDONYMOUS_CAP);
+        assertEq(tier1.max, parameters.get(ParameterKeys.TIER0_IDENTIFIED_CAP), "the ceilings have drifted");
+
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.TIER1_PSEUDONYMOUS_CAP, tier1.max + 1);
+    }
+
+    /// @notice The FX mid decays faster than a credit attestation, by construction.
+    /// @dev A credit limit is stable for a quarter of an hour and an FX mid is not.
+    ///      Both are bearer credentials; asserting the ordering of their ceilings is
+    ///      what stops a later recalibration from quietly making them the same thing.
+    function test_theFxMidTtlIsTighterThanTheAttestationTtl() public view {
+        ParameterRegistry.Parameter memory mid = parameters.parameter(ParameterKeys.FX_MID_MAX_TTL);
+        ParameterRegistry.Parameter memory attestation =
+            parameters.parameter(ParameterKeys.ATTESTATION_MAX_TTL);
+
+        assertLt(mid.value, attestation.value, "the FX mid does not decay faster");
+        assertLt(mid.max, attestation.max, "the FX mid's ceiling is not tighter");
+    }
+
+    /// @notice The corridor haircut can never be set past the corridor concentration cap.
+    /// @dev The band's ceiling was chosen against a number that already exists rather
+    ///      than invented: a risk loading larger than the corridor's own concentration
+    ///      cap would make that cap unreachable, and a cap nothing can reach is not a
+    ///      cap. The haircut loads credit headroom, never the merchant's payout.
+    function test_theCorridorHaircutCeilingSitsUnderTheConcentrationCap() public view {
+        ParameterRegistry.Parameter memory haircut =
+            parameters.parameter(ParameterKeys.FX_CORRIDOR_HAIRCUT_BPS);
+        assertLe(
+            haircut.max,
+            parameters.get(ParameterKeys.CORRIDOR_CONCENTRATION_BPS),
+            "the haircut can exceed the corridor cap it loads against"
+        );
     }
 
     // ─── Bulk reads ──────────────────────────────────────────────────────────

@@ -33,6 +33,27 @@ import {PlanParams} from "./libraries/PlanParams.sol";
 ///      configured would make a typo in a deployment script into a plan originated
 ///      at a zero minimum ticket with a zero MDR. Reading is total or it fails.
 ///
+///      **One bytecode, several instances, and the figures are read in whatever
+///      currency the book that reads them keeps.** `_define` is private and
+///      constructor-only and nine contracts hold this registry `immutable`, so a row
+///      added after a deployment cannot reach that deployment — a new row is a new
+///      instance. `escrowParameterRegistry` is already the second, carrying Phase 6's
+///      rows for the contracts deployed beside it; Phase 7 adds a third
+///      (`fxParameterRegistry`, the FX and tier rows below) and a fourth
+///      (`eurcParameterRegistry`, the EURC book's parameter set). Any reconciliation
+///      between them must say **which instance it read and in which currency**.
+///
+///      **The EURC set's parity with the USD set is a launch hypothesis, not a
+///      measurement.** The fourth instance is this same bytecode with these same
+///      seeded integers, read as EUR because the only book that reads it is the EURC
+///      book — a EURC principal compared at 1:1 against a dollar-denominated
+///      `MIN_TICKET`, `MAX_TICKET` or `LIMIT_HARD_CEILING` is a money bug, and two
+///      currencies are two balance sheets (DEC-21). Nobody has measured that a
+///      75-euro floor is the right floor. The EUR figures recalibrate through `set`
+///      and `narrowBand` within their compiled bands on the standing cohort track,
+///      exactly like every other Appendix A value. Writing "EUR parity" as though it
+///      had been measured would be the same class of defect as a fabricated FX rate.
+///
 ///      Timelocking the owner is GOV-02 and Phase 9. Nothing here needs to change
 ///      for a timelock to become the owner.
 contract ParameterRegistry is Ownable {
@@ -217,6 +238,81 @@ contract ParameterRegistry is Ownable {
         // to speed up adjudication will reach for exactly this number — the band is
         // the answer, and widening it needs a redeployment.
         _define(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 72 hours, 24 hours, 30 days);
+
+        // ─── FX corridor (Phase 7) ───────────────────────────────────────────
+
+        // 5%. The FX risk loading applied to a plan whose currency is not the
+        // router's base accounting currency. **It loads the credit headroom, never
+        // the payout** — a merchant is paid what their invoice says, and shaving a
+        // settlement to buy a risk buffer would make the borrower's signed principal
+        // and the merchant's receipt disagree about the same deal. The ceiling is 25%
+        // because a loading larger than the corridor's own concentration cap
+        // (`CORRIDOR_CONCENTRATION_BPS`, seeded at 50% and floored at 1%) would make
+        // that cap unreachable, and a cap nothing can reach is not a cap.
+        _define(ParameterKeys.FX_CORRIDOR_HAIRCUT_BPS, 500, 0, 2500);
+        // 1%. How far below the attested mid a realised fill may land before the
+        // deviation guard refuses it. The floor is 1 rather than 0 because a
+        // zero-tolerance guard refuses every fill including a good one, and an outage
+        // is the thing an operator is most tempted to fix by widening.
+        _define(ParameterKeys.FX_MAX_DEVIATION_BPS, 100, 1, 1000);
+        // Deliberately tighter than `ATTESTATION_MAX_TTL` above (15 minutes, floor a
+        // minute, ceiling a day): a credit limit is stable for a quarter of an hour
+        // and an FX mid is not. Both are bearer credentials; this one decays faster.
+        _define(ParameterKeys.FX_MID_MAX_TTL, 5 minutes, 1 minutes, 1 hours);
+        // E-05 signal 1, staleness half. Beyond this age the corridor-health poll has
+        // no current quote and trips rather than assuming the last one still holds.
+        _define(ParameterKeys.FX_QUOTE_MAX_AGE, 15 minutes, 1 minutes, 24 hours);
+        // E-05 signal 2, and the strongest signal available without an oracle: the
+        // implied loss on quoting both directions for the same notional in one poll.
+        // It is drawn entirely from two quotes by the same venue and holds no belief
+        // about what a euro should be worth, which is why it can exist at all under a
+        // no-oracle rule. 2%, floored at 10bps because a roundtrip is never free.
+        _define(ParameterKeys.FX_ROUNDTRIP_MAX_BPS, 200, 10, 2000);
+        // E-05 signal 1, movement half. How far the RFQ mid may move against the last
+        // accepted mid before tripping. This is a *relative* band against a figure the
+        // protocol itself accepted, not a peg to an external truth.
+        _define(ParameterKeys.FX_PAR_BAND_BPS, 500, 10, 5000);
+
+        // ─── Tiered underwriting (Phase 7) ───────────────────────────────────
+
+        // UW-04. Tier 1's limit as a share of verified monthly inflow — 25%, banded at
+        // 5% and 50%. Half a month's income outstanding on a 0%-on-time product is the
+        // most a limit derived from inflow alone should ever reach.
+        _define(ParameterKeys.TIER1_INCOME_MULTIPLE_BPS, 2500, 500, 5000);
+        // **The ceiling is `TIER0_IDENTIFIED_CAP`'s seeded default of 1000 USDC, and
+        // that is the whole point of the band.** A pseudonymous Tier-1 cap that could
+        // exceed the identified Tier-0 cap would let a wallet with a fabricated inflow
+        // history outrank a person the operator has attested — which inverts the
+        // ordering the tiers exist to express.
+        _define(ParameterKeys.TIER1_PSEUDONYMOUS_CAP, 500 * usdc, 50 * usdc, 1000 * usdc);
+        // E-09. The uplift for a borrower who opts into salary-source deduction,
+        // expressed as a limit multiple because Pay-in-4 is 0%-on-time and there is no
+        // rate to discount. The interest-rate reading of UW-05 is unavailable on this
+        // product line and becomes available in Phase 8 when Flex ships. The floor is
+        // 0 so the benefit can be switched off without a redeployment.
+        _define(ParameterKeys.TIER1_PAYROLL_BONUS_BPS, 2500, 0, 5000);
+        // A quarter of history. Shorter than 30 days is a sample, longer than a year
+        // is a record of someone who no longer exists.
+        _define(ParameterKeys.INFLOW_LOOKBACK, 90 days, 30 days, 365 days);
+        // Cadence: a single payment is not a salary.
+        _define(ParameterKeys.INFLOW_MIN_MONTHS, 3, 1, 12);
+        // Diversity: one counterparty paying an identical amount at an irregular
+        // cadence is a wash, not income, and a wash is free to manufacture.
+        _define(ParameterKeys.INFLOW_MIN_COUNTERPARTIES, 2, 1, 20);
+        // E-07, and the row that makes C1 affordable. **A pledge is valued at par
+        // minus this haircut and never at a mark.** 20% absorbs NAV uncertainty and
+        // seizure slippage in one governed number, which is what makes reading
+        // `USYC.oracle()` unnecessary as well as forbidden — the alternative to a
+        // haircut is a price feed, and a price feed re-adds an attack surface for
+        // nothing on an all-dollar balance sheet.
+        _define(ParameterKeys.TIER2_PLEDGE_HAIRCUT_BPS, 2000, 500, 5000);
+        // UW-07's partner is not in hand, and a limit trusted without bound is the
+        // threat. The composite takes the minimum against this row, so a partner
+        // returning `type(uint256).max` buys 5000 USDC and no more.
+        _define(ParameterKeys.TIER3_PARTNER_CAP, 5000 * usdc, 100 * usdc, 25_000 * usdc);
+        // A partner-supplied limit is a bearer credential like every other
+        // attestation, and it expires like one.
+        _define(ParameterKeys.TIER3_PARTNER_MAX_TTL, 1 hours, 1 minutes, 24 hours);
     }
 
     /// @notice The current value for `key`.
