@@ -52,15 +52,56 @@ export default async function Merchant({
   const filter = {status: one("status"), from: one("from"), to: one("to")};
   const book = await settlements(filter);
 
+  /**
+   * The chain reads are keyed by the plans this book already names.
+   *
+   * There is no enumeration on any of these contracts and there should not be — a mapping
+   * keyed by `planId` is the right shape for a ledger and the wrong shape for a list. The
+   * settlements payload is the list, so the escrow rows are looked up for the plans it says
+   * are escrowed and the refund candidates for the plans that are not already terminal.
+   * A sampled settlements payload therefore samples these too, which is correct: they are
+   * derived from it.
+   */
+  const escrowed = book.settlements
+    .filter((s) => s.escrowState !== null || s.payoutStatus === "escrowed")
+    .map((s) => s.planId);
+  const refundablePlans = book.settlements
+    .filter((s) => s.payoutStatus !== "returned")
+    .map((s) => s.planId);
+
   const [attested, held, refundable, log, issued, destinations, book2] = await Promise.all([
     attestations(book.settlements.filter((s) => s.dispatchTxHash !== null).map((s) => s.planId)),
-    escrows(),
-    refunds(),
+    escrows(escrowed),
+    refunds(refundablePlans, one("amount")),
     deliveries(),
     keys(),
     endpoints(),
     treasury(),
   ]);
+
+  /**
+   * The merchant's own order id, joined back on.
+   *
+   * `externalId` lives in `merchant_external_ref` on the operator side and never on chain,
+   * so a contract read cannot carry it — it comes back `null` and is joined here from the
+   * settlements payload, which is the one source that has both. MERCH-08 says reconciliation
+   * starts from the merchant's books, and an escrow row a merchant cannot tie to an order is
+   * a row they cannot act on.
+   */
+  const externalIds = new Map(book.settlements.map((s) => [s.planId, s.externalId]));
+  const withRefs = {
+    escrows: {
+      ...held,
+      escrows: held.escrows.map((row) => ({...row, externalId: row.externalId ?? externalIds.get(row.planId) ?? null})),
+    },
+    refunds: {
+      ...refundable,
+      candidates: refundable.candidates.map((c) => ({
+        ...c,
+        externalId: c.externalId ?? externalIds.get(c.planId) ?? null,
+      })),
+    },
+  };
 
   // Consumed here and nowhere else. `takeCreatedKey` deletes as it reads, so a refresh
   // shows nothing — which is what "the secret is shown exactly once" has to mean if it is
@@ -97,8 +138,8 @@ export default async function Merchant({
           payloads={[
             {label: "Settlements", payload: book},
             {label: "Payout attestations", payload: attested},
-            {label: "Held settlements", payload: held},
-            {label: "Refund previews", payload: refundable},
+            {label: "Held settlements", payload: withRefs.escrows},
+            {label: "Refund previews", payload: withRefs.refunds},
             {label: "Webhook deliveries", payload: log},
             {label: "Webhook destinations", payload: destinations},
             {label: "API keys", payload: issued},
@@ -114,8 +155,8 @@ export default async function Merchant({
 
         <Settlements data={book} filter={filter} />
         <Payouts settlements={book} attestations={attested} />
-        <Refunds data={refundable} planId={one("plan")} amount={one("amount")} />
-        <Escrow data={held} />
+        <Refunds data={withRefs.refunds} planId={one("plan")} amount={one("amount")} />
+        <Escrow data={withRefs.escrows} />
         <Treasury data={book2} />
         <Developers
           keys={issued}

@@ -148,7 +148,22 @@ describe("confirmation", () => {
     const confirm = root.querySelector('[data-confirm="refund"]') as HTMLButtonElement;
 
     expect(confirm.hasAttribute("disabled")).toBe(true);
-    expect(root.textContent).toMatch(/RefundEscrow is not deployed here yet/);
+    // `data` is the sampled payload, so the honest reason is a missing address and not a
+    // missing deployment: 06-13 deployed RefundEscrow at 0x901BF45C…, and copy still
+    // saying it does not exist would send a merchant to chase a contract that is on chain.
+    expect(root.textContent).toMatch(/no RefundEscrow address is configured here/);
+    expect(root.textContent).not.toMatch(/not deployed/);
+  });
+
+  it("says something different when the payload is live and the amount was simply not asked about", () => {
+    const root = render({data: {...data, live: true, sampled: ""}, planId: candidate.planId, amount: "12345"});
+    const confirm = root.querySelector('[data-confirm="refund"]') as HTMLButtonElement;
+
+    expect(confirm.hasAttribute("disabled")).toBe(true);
+    expect(root.textContent).toMatch(/was not asked about/);
+    expect(root.textContent).toMatch(/Submit the amount again/);
+    // Still never a preview the merchant did not see. The confirm stays disabled either way.
+    expect(root.querySelector("[data-schedule]")).toBeNull();
   });
 
   it("is disabled before an amount is chosen at all", () => {

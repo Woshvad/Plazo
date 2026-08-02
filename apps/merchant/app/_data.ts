@@ -16,14 +16,23 @@
  * owning the store. Pointing this app's key reads at the servicing base would produce a
  * 404 on a correctly-deployed stack. A third variable is the cost of that being true.
  *
- * **The gap.** Four things this dashboard shows come from contract views that no service
- * exposes today: the merchant's registry row (bond, requirement, velocity, category), the
- * escrow rows and their timers, `RefundEscrow.refundPreview`, and `voidAmountFor`. None
- * of the three contracts behind them is deployed yet — plan 06-13 deploys them — so there
- * is no endpoint to call and nothing that could be live. Those payloads carry
- * `source: "chain"`, `live: false` and a sentence saying so, and **no fetch is attempted
- * for them**: a getter that called a route nobody has written would turn a configured
- * deployment into a 500 instead of a labelled sample.
+ * **The gap 06-13 closed.** Four things this dashboard shows come from contract views:
+ * the merchant's registry row (bond, requirement, velocity, category), the escrow rows and
+ * their timers, `RefundEscrow.refundPreview`, and `voidAmountFor`. 06-12 left all four
+ * sample-only under DEC-68, because the contracts behind them were not deployed and a
+ * getter calling a route nobody had written would have turned a configured deployment into
+ * a 500 where a labelled sample degrades.
+ *
+ * **06-13 deployed them**, so the premise is gone. Those four now read the chain directly
+ * through `_chain.ts` — not through a service route, because these are unauthenticated
+ * views of public state and a route would be a second place the ABI lives and a cache with
+ * no invalidation story in front of numbers a merchant is about to act on. They stay
+ * `source: "chain"` and become `live` when the addresses are configured.
+ *
+ * **The one payload still sampled by construction** is the webhook destination list, and
+ * only until a deployment points `PLAZO_SERVICING_URL` at a process that serves
+ * `GET /v1/webhooks/endpoints`. The banner names it with that reason rather than telling a
+ * merchant to set a variable that is already set.
  *
  * ## The rules this file follows
  *
@@ -44,9 +53,33 @@
  *   reads its base at module load; `apps/lender/app/_crosschain.ts` reads at call time and
  *   has a test asserting it. Call time is the better of the two conventions in the same
  *   app family, because a module-load read cannot be exercised by a test at all.
- * - A failing fetch throws. It never degrades to a sample, because a silent sample is the
- *   exact failure the `live` flag exists to prevent.
+ * - A failing **service** fetch throws. It never degrades to a sample, because a silent
+ *   sample is the exact failure the `live` flag exists to prevent.
+ * - A failing **chain** read does not throw — it comes back `live: false` with the failure
+ *   named in `sampled`, and the banner prints it. That divergence is deliberate and the
+ *   reason is measured: Arc's public RPC sheds roughly a quarter of requests regardless of
+ *   pacing (Phase 1, still true), so a dashboard that 500s on a shed request is not a
+ *   dashboard. It is not silent — naming the RPC in the banner is more use to the reader
+ *   than a stack trace, and it is exactly the sort of thing a per-payload reason can say
+ *   and a single stripe cannot.
  */
+
+import {
+  client,
+  CONTRACTS,
+  ESCROW_STATE,
+  INSTALLMENT_PLAN_ABI,
+  installmentStatus,
+  MERCHANT_REGISTRY_ABI,
+  PARAMETER_KEYS,
+  PARAMETER_REGISTRY_ABI,
+  PLAN_FACTORY_ABI,
+  REFUND_ESCROW_ABI,
+  rpcUrl,
+  SETTLEMENT_CATEGORY,
+  SETTLEMENT_ESCROW_ABI,
+  UINT256_MAX,
+} from "./_chain";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Provenance
@@ -73,12 +106,46 @@ export interface Sourced {
 const SAMPLED = (source: Source): string => {
   const env = SOURCE_ENV[source];
   return env === null
-    ? "no service reads this yet — the contracts behind it land in 06-13"
+    ? "set the contract addresses to read this from chain — see app/_chain.ts"
     : `set ${env} to read live`;
 };
 
 const sample = (source: Source): Sourced => ({live: false, source, sampled: SAMPLED(source)});
 const fromService = (source: Source): Sourced => ({live: true, source, sampled: ""});
+
+/**
+ * A chain read that could not be completed, named rather than thrown.
+ *
+ * The message carries the RPC's own words. A merchant reading "sheddable public endpoint"
+ * or "execution reverted" in the banner can tell an outage from a misconfiguration, and
+ * neither of those is a thing a generic "sample data" stripe could ever say.
+ */
+const fromChain = (): Sourced => ({live: true, source: "chain", sampled: ""});
+
+/**
+ * Bounds on the fan-out.
+ *
+ * Every one of these is a call per plan per field against an endpoint that sheds a quarter
+ * of its requests. Unbounded, one merchant with a long book turns a page load into several
+ * hundred RPC calls and the shed rate compounds. The caps are the page's, not the chain's,
+ * and they are here rather than inline so there is one place to move them.
+ */
+const MAX_PLAN_READS = 50;
+const MAX_REFUND_READS = 5;
+const MAX_PREVIEWS = 8;
+
+const ZERO_BYTES32 = `0x${"0".repeat(64)}` as const;
+
+/** The clock the timers are read against, so a render says which moment it is describing. */
+const nowSeconds = (): number => Math.floor(Date.now() / 1000);
+
+const chainFailed = (reason: unknown): Sourced => ({
+  live: false,
+  source: "chain",
+  sampled: `the chain read failed against ${rpcUrl()} — ${
+    reason instanceof Error ? reason.message.split("\n")[0] : String(reason)
+  }`,
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport
@@ -585,25 +652,35 @@ export interface Endpoints extends Sourced {
 }
 
 /**
- * Sample-only, and the reason is a missing route rather than a missing deployment.
+ * The reason this was sampled has moved, and the string moved with it.
  *
- * Plan 06-06 shipped `POST /v1/webhooks/endpoints` and no list route. Registration
- * returns the endpoint and its secret once; nothing reads them back. So this payload is
- * `servicing`-sourced and permanently sampled until that route exists, and the banner
- * says which of the two it is rather than implying the base URL is unset.
+ * 06-06 shipped `POST /v1/webhooks/endpoints` and no list route, so 06-12 recorded the
+ * reason as "the operator API has no endpoint-list route yet" rather than "set
+ * `PLAZO_SERVICING_URL`" — the second sentence would have sent a merchant to set a variable
+ * that was already set. **The route exists now.** What is left is a deployment pointing at
+ * a process that serves it, which is the ordinary unset-variable case, so the ordinary
+ * sentence is the true one again.
  */
 const SAMPLE_ENDPOINTS: Endpoints = {
-  live: false,
-  source: "servicing",
-  sampled: "the operator API has no endpoint-list route yet — only POST /v1/webhooks/endpoints",
+  ...sample("servicing"),
   endpoints: [
     {id: "wep_1a2b3c", url: "https://hooks.example-merchant.com/plazo", status: "active", signingSecretCount: 1},
     {id: "wep_4d5e6f", url: "https://staging.example-merchant.com/plazo", status: "degraded", signingSecretCount: 2},
   ],
 };
 
+/**
+ * The registered destinations.
+ *
+ * The route reports **how many** signing secrets verify and never which. A merchant who has
+ * lost one rotates; a route that could hand it back would be a second place it lives
+ * (T-06-12-02), and `EndpointView` on the service side has no field one could be assigned
+ * to.
+ */
 export async function endpoints(): Promise<Endpoints> {
-  return SAMPLE_ENDPOINTS;
+  if (baseFor("servicing") === undefined) return SAMPLE_ENDPOINTS;
+  const body = await read<{endpoints: Endpoint[]}>("servicing", "/v1/webhooks/endpoints");
+  return {...fromService("servicing"), endpoints: body.endpoints};
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -690,8 +767,87 @@ const SAMPLE_ESCROWS: Escrows = {
   ],
 };
 
-export async function escrows(): Promise<Escrows> {
-  return SAMPLE_ESCROWS;
+/**
+ * The held settlements, read from `SettlementEscrow` for the plans this book names.
+ *
+ * Keyed by plan id from the caller rather than enumerated, for the same reason
+ * `attestations` is: there is no list route and no on-chain enumeration, and the settlements
+ * payload already carries `escrowState`. So the escrow rows are looked up for the plans that
+ * have one, and a plan the escrow has never seen (`state === none`) is dropped rather than
+ * rendered as an empty row.
+ *
+ * The two timers come from the **escrow** `ParameterRegistry` and not from the live one.
+ * The three `plazo.escrow.*` rows cannot exist on the vintage-3 registry — `_define` is
+ * private and constructor-only, and `get()` reverts on an unset key (DEC-72) — so reading
+ * them from the wrong address is a revert, not a wrong number. That is the good failure of
+ * the two and it surfaces in the banner.
+ */
+export async function escrows(planIds: readonly string[] = []): Promise<Escrows> {
+  const escrow = CONTRACTS.settlementEscrow();
+  const parameters = CONTRACTS.escrowParameters();
+  if (escrow === undefined || parameters === undefined) return SAMPLE_ESCROWS;
+  if (planIds.length === 0) {
+    return {...fromChain(), escrows: [], attestationDeadlineSeconds: 0, releaseTimerSeconds: 0, now: nowSeconds()};
+  }
+
+  try {
+    const rpc = client();
+    const registry = {address: parameters, abi: PARAMETER_REGISTRY_ABI} as const;
+
+    const [attestationDeadline, releaseTimer] = await Promise.all([
+      rpc.readContract({...registry, functionName: "get", args: [PARAMETER_KEYS.escrowAttestationDeadline]}),
+      rpc.readContract({...registry, functionName: "get", args: [PARAMETER_KEYS.escrowReleaseTimer]}),
+    ]);
+
+    const rows = await Promise.all(
+      planIds.slice(0, MAX_PLAN_READS).map(async (planId) => {
+        const at = {address: escrow, abi: SETTLEMENT_ESCROW_ABI} as const;
+        const id = planId as `0x${string}`;
+        const [row, releasableAt, returnableAt, disputeEligible] = await Promise.all([
+          rpc.readContract({...at, functionName: "escrowOf", args: [id]}),
+          rpc.readContract({...at, functionName: "releasableAt", args: [id]}),
+          rpc.readContract({...at, functionName: "returnableAt", args: [id]}),
+          rpc.readContract({...at, functionName: "disputeEligible", args: [id]}),
+        ]);
+        return {planId, row, releasableAt, returnableAt, disputeEligible};
+      }),
+    );
+
+    return {
+      ...fromChain(),
+      attestationDeadlineSeconds: Number(attestationDeadline),
+      releaseTimerSeconds: Number(releaseTimer),
+      now: nowSeconds(),
+      escrows: rows
+        // Ordinal zero is `None` — a plan this escrow has never held. Dropped rather than
+        // rendered, because an all-zero row on a screen about money is a lie with a shape.
+        .filter(({row}) => row.state !== 0)
+        .map(({planId, row, releasableAt, returnableAt, disputeEligible}) => ({
+          planId,
+          // The merchant's own order id lives in the operator database, not on chain. The
+          // caller joins it; this read cannot.
+          externalId: null,
+          amount: row.amount.toString(),
+          state: ESCROW_STATE[row.state] ?? "held",
+          heldAt: Number(row.heldAt),
+          attestedAt: Number(row.attestedAt),
+          // `returnableAt` reads zero once the row has left `Held`, so the deadline is
+          // reconstructed from `heldAt` for a row that has already moved on. A merchant
+          // looking at a released settlement still wants to know what the deadline was.
+          returnableAt:
+            returnableAt === 0n
+              ? Number(row.heldAt) + Number(attestationDeadline)
+              : Number(returnableAt),
+          releasableAt: Number(releasableAt),
+          recipient: row.recipient,
+          domain: row.domain,
+          carrierRef: row.carrierRef === ZERO_BYTES32 ? null : row.carrierRef,
+          disputeEligible,
+        })),
+    };
+  } catch (error) {
+    return {...SAMPLE_ESCROWS, ...chainFailed(error)};
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -788,8 +944,141 @@ const SAMPLE_REFUNDS: Refunds = {
   ],
 };
 
-export async function refunds(): Promise<Refunds> {
-  return SAMPLE_REFUNDS;
+/**
+ * The refund candidates, read from `RefundEscrow` and from the plans themselves.
+ *
+ * ## `previews` is still a lookup keyed by amount, and still never arithmetic (DEC-71)
+ *
+ * A live deployment could answer for any amount, but the screen reads a bounded list — so
+ * this asks the contract for the amounts a merchant will plausibly choose: **the amount
+ * they actually typed**, the void amount, the outstanding principal, and each remaining
+ * installment. Every one of those four is a `refundPreview` call. Nothing is computed
+ * here, which is the point: `refundPreview` is itself a thin read of the plan's state
+ * through D9's waterfall, and a TypeScript reimplementation would be the fourth copy of the
+ * suppression walk and the one with no chain to disagree with it.
+ *
+ * ## A plan that cannot be voided is not a candidate
+ *
+ * `voidAmountFor` reverts with `PlanNotVoidable` on a plan that has already settled,
+ * because a "void" of a repaid plan is a merchant sending money to a schedule that owes
+ * nothing. That revert is the filter: a plan whose void amount cannot be read is dropped
+ * from the list rather than shown with a disabled button, because the merchant's question
+ * is "what can I refund" and a terminal plan is not an answer to it.
+ */
+export async function refunds(
+  planIds: readonly string[] = [],
+  requestedAmount?: string | undefined,
+): Promise<Refunds> {
+  const refundEscrow = CONTRACTS.refundEscrow();
+  const planFactory = CONTRACTS.planFactory();
+  if (refundEscrow === undefined || planFactory === undefined) return SAMPLE_REFUNDS;
+  if (planIds.length === 0) return {...fromChain(), candidates: []};
+
+  try {
+    const rpc = client();
+    const candidates = await Promise.all(
+      planIds.slice(0, MAX_REFUND_READS).map((planId) =>
+        refundCandidate(rpc, refundEscrow, planFactory, planId as `0x${string}`, requestedAmount),
+      ),
+    );
+    return {...fromChain(), candidates: candidates.filter((c): c is RefundCandidate => c !== null)};
+  } catch (error) {
+    return {...SAMPLE_REFUNDS, ...chainFailed(error)};
+  }
+}
+
+/** One plan, or `null` when the chain says it is not refundable. */
+async function refundCandidate(
+  rpc: ReturnType<typeof client>,
+  refundEscrow: `0x${string}`,
+  planFactory: `0x${string}`,
+  planId: `0x${string}`,
+  requestedAmount: string | undefined,
+): Promise<RefundCandidate | null> {
+  const escrow = {address: refundEscrow, abi: REFUND_ESCROW_ABI} as const;
+
+  const voidAmount = await rpc
+    .readContract({...escrow, functionName: "voidAmountFor", args: [planId]})
+    .catch(() => null);
+  if (voidAmount === null) return null;
+
+  const planAddress = await rpc.readContract({
+    address: planFactory,
+    abi: PLAN_FACTORY_ABI,
+    functionName: "predictAddress",
+    args: [planId],
+  });
+  const plan = {address: planAddress, abi: INSTALLMENT_PLAN_ABI} as const;
+
+  const [principal, outstanding, count] = await Promise.all([
+    rpc.readContract({...plan, functionName: "principal"}),
+    rpc.readContract({...plan, functionName: "outstandingPrincipal"}),
+    rpc.readContract({...plan, functionName: "installmentCount"}),
+  ]);
+
+  const schedule = await Promise.all(
+    Array.from({length: Number(count)}, async (_, index) => {
+      const at = [BigInt(index)] as const;
+      const [amount, dueAt, status] = await Promise.all([
+        rpc.readContract({...plan, functionName: "installmentAmount", args: at}),
+        rpc.readContract({...plan, functionName: "dueDate", args: at}),
+        rpc.readContract({...plan, functionName: "installmentStatus", args: at}),
+      ]);
+      return {
+        index,
+        dueAt: Number(dueAt),
+        amount: amount.toString(),
+        status: installmentStatus(status),
+      };
+    }),
+  );
+
+  /**
+   * The amounts worth asking about, deduplicated and bounded.
+   *
+   * The merchant's own typed amount is first, so a live deployment answers the question
+   * they actually asked rather than the ones this file guessed at. Zero is excluded — a
+   * zero refund does nothing and `Refunds.tsx` says so without needing a preview for it.
+   */
+  const amounts = [
+    requestedAmount,
+    voidAmount.toString(),
+    outstanding.toString(),
+    ...schedule.filter((row) => row.status === "due").map((row) => row.amount),
+  ]
+    .filter((value): value is string => value !== undefined && /^\d+$/.test(value) && BigInt(value) > 0n)
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .slice(0, MAX_PREVIEWS);
+
+  const previews = await Promise.all(
+    amounts.map(async (amount) => {
+      const [appliedPrincipal, toBorrower, firstSuppressedIndex, mdrRebate] = await rpc.readContract({
+        ...escrow,
+        functionName: "refundPreview",
+        args: [planId, BigInt(amount)],
+      });
+      return {
+        amount,
+        appliedPrincipal: appliedPrincipal.toString(),
+        toBorrower: toBorrower.toString(),
+        // The contract returns `type(uint256).max` for "suppresses nothing"; the screen
+        // renders `null` as a sentence rather than a number nobody can read.
+        firstSuppressedIndex: firstSuppressedIndex === UINT256_MAX ? null : Number(firstSuppressedIndex),
+        mdrRebate: mdrRebate.toString(),
+        isVoid: BigInt(amount) === voidAmount,
+      };
+    }),
+  );
+
+  return {
+    planId,
+    externalId: null,
+    principal: principal.toString(),
+    outstandingPrincipal: outstanding.toString(),
+    voidAmount: voidAmount.toString(),
+    schedule,
+    previews,
+  };
 }
 
 /** The preview for `amount`, or null when this deployment cannot answer for it. */
@@ -854,8 +1143,62 @@ const SAMPLE_TREASURY: Treasury = {
   registeredAt: 1_751_500_000,
 };
 
+/**
+ * The merchant's registry row, read from `MerchantRegistry`.
+ *
+ * Everything on this screen is one address's row plus four derived views. `merchantOf`
+ * returns the struct whole — DEC-33's named-struct form, so the field names travel through
+ * the ABI rather than being positional — and `requiredBond`, `velocityCapFor`,
+ * `velocityUsed` and `vestingBpsFor` are the four the struct cannot answer because each is
+ * a function of registry parameters as they stand right now.
+ *
+ * **`categoryOf` is read rather than taken from the struct.** The struct's `category` is
+ * the stored value; `categoryOf` is what the router will actually act on, and 06-13 found
+ * out the hard way that the two can be different contracts' ideas (finding 30, DEC-73). The
+ * screen shows the one that decides.
+ *
+ * An unregistered merchant is not an error. `registered: false` renders as a screen saying
+ * so, which is the true state of a merchant who has not called `register` yet.
+ */
 export async function treasury(): Promise<Treasury> {
-  return SAMPLE_TREASURY;
+  const registry = CONTRACTS.merchantRegistry();
+  const merchant = merchantAddress();
+  if (registry === undefined || merchant === undefined) return SAMPLE_TREASURY;
+
+  try {
+    const rpc = client();
+    const at = {address: registry, abi: MERCHANT_REGISTRY_ABI} as const;
+    const args = [merchant as `0x${string}`] as const;
+
+    const [row, requiredBond, vestingBps, velocityCap, velocityUsed, category] = await Promise.all([
+      rpc.readContract({...at, functionName: "merchantOf", args}),
+      rpc.readContract({...at, functionName: "requiredBond", args}),
+      rpc.readContract({...at, functionName: "vestingBpsFor", args}),
+      rpc.readContract({...at, functionName: "velocityCapFor", args}),
+      rpc.readContract({...at, functionName: "velocityUsed", args}),
+      rpc.readContract({...at, functionName: "categoryOf", args}),
+    ]);
+
+    return {
+      ...fromChain(),
+      recipient: row.payoutRecipient,
+      domain: row.payoutDomain,
+      bond: row.bond.toString(),
+      bondFromWithholding: row.withheld.toString(),
+      requiredBond: requiredBond.toString(),
+      outstandingFronted: row.outstandingFronted.toString(),
+      vestingBps: Number(vestingBps),
+      // `type(uint256).max` means "no cap". Printing the number would be worse than
+      // printing nothing, so it becomes null and the screen says "no cap".
+      velocityCap: velocityCap === UINT256_MAX ? null : velocityCap.toString(),
+      velocityUsed: velocityUsed.toString(),
+      settlementCategory: SETTLEMENT_CATEGORY[category] ?? "Escrowed",
+      kybVerified: row.kybVerified,
+      registeredAt: Number(row.registeredAt),
+    };
+  } catch (error) {
+    return {...SAMPLE_TREASURY, ...chainFailed(error)};
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

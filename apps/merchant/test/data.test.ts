@@ -122,8 +122,12 @@ describe("with nothing configured", () => {
   it("does not pretend a chain-sourced payload has an env var behind it", async () => {
     const book = await treasury();
     expect(book.source).toBe("chain");
+    // There is no single `PLAZO_*_URL` that turns these on: they are contract reads and
+    // what they need is an address per contract. The reason says so and points at the file
+    // that lists them, rather than naming a variable that does not exist.
     expect(SOURCE_ENV[book.source]).toBeNull();
-    expect(book.sampled).toMatch(/no service reads this yet/);
+    expect(book.sampled).toMatch(/contract addresses/);
+    expect(book.sampled).toContain("_chain.ts");
   });
 
   it("reaches no network at all", async () => {

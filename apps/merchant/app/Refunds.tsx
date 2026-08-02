@@ -60,19 +60,29 @@ export function Refunds({
 
       {selected === undefined ? (
         <p className="font-body text-[length:var(--text-sm)] text-muted">
-          No plan on this book is refundable.
+          No plan on this book is refundable. `voidAmountFor` reverts on a plan that has
+          already settled, and a plan that cannot be voided cannot be refunded — so a book of
+          finished plans is an empty screen rather than a list of disabled buttons.
         </p>
       ) : (
-        <Candidate candidate={selected} amount={amount} />
+        <Candidate candidate={selected} amount={amount} live={data.live} />
       )}
     </section>
   );
 }
 
-function Candidate({candidate, amount}: {candidate: RefundCandidate; amount: string | undefined}) {
+function Candidate({
+  candidate,
+  amount,
+  live,
+}: {
+  candidate: RefundCandidate;
+  amount: string | undefined;
+  live: boolean;
+}) {
   const chosen = amount ?? "";
   const preview = previewFor(candidate, chosen);
-  const zero = chosen !== "" && BigInt(chosen) === 0n;
+  const zero = chosen !== "" && /^\d+$/.test(chosen) && BigInt(chosen) === 0n;
 
   return (
     <div data-plan={candidate.planId}>
@@ -119,7 +129,7 @@ function Candidate({candidate, amount}: {candidate: RefundCandidate; amount: str
       </form>
 
       {preview === null ? (
-        <NoPreview zero={zero} chosen={chosen} candidate={candidate} />
+        <NoPreview zero={zero} chosen={chosen} candidate={candidate} live={live} />
       ) : (
         <Preview candidate={candidate} preview={preview} />
       )}
@@ -127,22 +137,36 @@ function Candidate({candidate, amount}: {candidate: RefundCandidate; amount: str
   );
 }
 
+/**
+ * Why there is nothing to show, said precisely enough to act on.
+ *
+ * The three reasons are different and a merchant needs to be able to tell them apart. "You
+ * typed nothing" is a prompt; "zero does nothing" is arithmetic; and "this deployment
+ * cannot answer for that amount" is a **configuration** statement that used to say
+ * `RefundEscrow` was undeployed and no longer can — 06-13 deployed it. On a live
+ * deployment the only way to reach the third branch is an amount the chain was not asked
+ * about, which happens when the read failed, so the copy says which of the two worlds the
+ * reader is in.
+ */
 function NoPreview({
   zero,
   chosen,
   candidate,
+  live,
 }: {
   zero: boolean;
   chosen: string;
   candidate: RefundCandidate;
+  live: boolean;
 }) {
+  const answerable = candidate.previews.map((p) => usd(p.amount)).join(", ");
   const reason = zero
     ? "A zero refund does nothing. There is nothing to preview and nothing to confirm."
     : chosen === ""
       ? "Enter an amount, or preview the void, to see what it would do."
-      : `This deployment cannot preview ${usd(chosen)}. RefundEscrow.refundPreview is a contract read and RefundEscrow is not deployed here yet, so only the amounts this fixture already carries can be answered — ${candidate.previews
-          .map((p) => usd(p.amount))
-          .join(" and ")}.`;
+      : live
+        ? `RefundEscrow was not asked about ${usd(chosen)} for this plan on this page load. Previews are contract reads and this page requested ${answerable}. Submit the amount again to ask for it.`
+        : `This deployment cannot preview ${usd(chosen)}. refundPreview is a contract read and no RefundEscrow address is configured here, so only the amounts the sample carries can be answered — ${answerable}.`;
 
   return (
     <div className="border-2 border-rule-strong bg-paper-raised p-3">
