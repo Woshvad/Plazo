@@ -20,12 +20,13 @@
  * originated with backdated schedules, which is the only way to observe a three-day
  * grace window inside a single run. Everything else is real.
  */
-import {readFileSync} from "node:fs";
+import {existsSync, mkdirSync, readFileSync, writeFileSync} from "node:fs";
 import {dirname, join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {
   createPublicClient,
   createWalletClient,
+  decodeEventLog,
   formatUnits,
   http,
   keccak256,
@@ -41,10 +42,14 @@ import {privateKeyToAccount} from "viem/accounts";
 import {arcTestnet} from "viem/chains";
 
 import {
+  ARC_CCTP_DOMAIN,
+  ARC_MESSAGE_TRANSMITTER_V2,
+  ARC_TESTNET_EXPLORER,
   ARC_TESTNET_RPC_URL,
   ARC_USDC,
   GRACE_WINDOW,
   hashTermsDetail,
+  IRIS_SANDBOX_BASE_URL,
   markEscrowFor,
   preparePlan,
   RECEIVE_WITH_AUTHORIZATION_TYPES,
@@ -202,7 +207,56 @@ const TOKEN_ABI = parseAbi([
   "function cancelAuthorization(address authorizer, bytes32 nonce, bytes signature)",
 ]);
 
+const PAYOUT_ABI = parseAbi([
+  "function payout(address token, uint32 domain, address recipient, uint256 amount)",
+  "function dispatch(address token, address recipient, uint32 domain)",
+  "function queued(address token, address recipient, uint32 domain) view returns (uint256)",
+  "function supportsDomain(uint32 domain) view returns (bool)",
+  "function denied(uint32 domain) view returns (bool)",
+  "function localDomain() view returns (uint32)",
+]);
+
+const TRANSMITTER_ABI = parseAbi(["event MessageSent(bytes message)"]);
+
+const ESCROW_ABI = parseAbi([
+  "struct Escrow { address merchant; address token; address recipient; uint32 domain; uint256 amount; uint256 heldAt; uint256 attestedAt; uint256 returnedAt; bytes32 carrierRef; uint8 category; uint8 state; }",
+  "function escrowOf(bytes32 planId) view returns (Escrow)",
+  "function releasableAt(bytes32 planId) view returns (uint256)",
+  "function returnableAt(bytes32 planId) view returns (uint256)",
+  "function disputeEligible(bytes32 planId) view returns (bool)",
+  "function attestShipment(bytes32 planId, bytes32 carrierRef)",
+  "function release(bytes32 planId)",
+  "function router() view returns (address)",
+]);
+
+const CATEGORY_ABI = parseAbi([
+  "function categoryOf(address merchant) view returns (uint8)",
+  "function setCategory(address merchant, uint8 category)",
+]);
+
 const PlanState = {Grace: 2, Delinquent: 3, Active: 1, Repaid: 10} as const;
+
+/** `MerchantRegistry.SettlementCategory`. Escrowed is ordinal zero, deliberately. */
+const SettlementCategory = {Escrowed: 0, Instant: 1} as const;
+
+/**
+ * Base Sepolia. The destination plan 06-01's burn actually went to, and the one
+ * `OperatorFreeFixture` names.
+ */
+const REMOTE_DOMAIN = 6;
+
+/**
+ * What the live payout probe pushes across the bridge, once per deployment.
+ *
+ * One dollar, and it does not come back: the burn is irreversible, the mint on Base
+ * Sepolia is the merchant's to complete (D-12), and Plazo holds no gas token there. So
+ * this is a spend rather than a peak holding, which is why the probe is guarded by an
+ * artefact and reported as spent on every run after the first.
+ */
+const PAYOUT_PROBE = 1_000_000n;
+
+const POLL_INTERVAL_MS = 3_000;
+const POLL_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** The protocol minimum ticket. Four checks of $18.75. */
 const PRINCIPAL = 75_000_000n;
@@ -391,11 +445,28 @@ export const CAPITALISATION =
   RESERVE_SEED +
   2n * TRANCHE_SEED; // POOL-12's permanent seeds, one per tranche, never redeemable
 
+/**
+ * `CAPITALISATION` plus the working float, plus the one dollar the payout probe burns.
+ *
+ * The probe is the only line here that is a **spend** rather than a holding: it goes
+ * across CCTP to Base Sepolia, the burn is irreversible, and the destination mint is
+ * the merchant's to complete (D-12). It is counted because a virgin deployment needs
+ * it before the credit half and an operator topped up to exactly the old figure would
+ * be a dollar short of finishing.
+ *
+ * It is a one-shot. A deployment whose router has already burned reports the payout
+ * phase as spent and does not repeat it, so a re-run is a dollar richer than this
+ * figure demands — which is the safe direction to be wrong in, and the reason it is
+ * not subtracted back out. Making the funding arithmetic depend on whether a local
+ * artefact file exists would be putting machine-local state into a number the operator
+ * is asked to trust.
+ */
 export const REQUIRED =
   CAPITALISATION +
   MERCHANT_BOND +
   PRINCIPAL + // the borrower's four installments, drawn one at a time
   2n * markEscrowFor(4n) +
+  PAYOUT_PROBE + // burned across to Base Sepolia, once per deployment
   4n * GAS_RESERVE;
 
 /** The one product line v1 funds. Matches `Deploy.s.sol`. */
@@ -424,6 +495,82 @@ function note(label: string, detail: string): void {
 
 function usdc(value: bigint): string {
   return `${formatUnits(value, 6)} USDC`;
+}
+
+export interface IrisMessage {
+  message?: Hex;
+  /**
+   * Not always hex. Circle returns the literal string `"PENDING"` here while the
+   * message is indexed but not yet signed, so a `0x${string}` type would be a
+   * lie that makes the pending case unrepresentable.
+   */
+  attestation?: string;
+  eventNonce?: string;
+  status?: string;
+  cctpVersion?: number;
+}
+
+export type IrisPoll =
+  | {kind: "found"; message: IrisMessage}
+  | {kind: "pending"; detail: string}
+  | {kind: "misrouted"; detail: string}
+  | {kind: "error"; detail: string};
+
+/**
+ * One poll of Circle's attestation service.
+ *
+ * The whole subtlety is that **both** failure modes are HTTP 404. Circle's own
+ * technical guide documents `GET /v2/messages?txHash=…`, which does not route
+ * and answers with an HTML `Cannot GET /v2/messages`; the form that works is
+ * `GET /v2/messages/{sourceDomain}?transactionHash=…`, and when the message is
+ * simply not indexed yet *that* answers 404 with
+ * `{"error":"Message not found for provided parameters"}`.
+ *
+ * A poller that branches on the status code cannot tell those apart and will sit
+ * on a wrong URL for its entire timeout, then report "no attestation" about a
+ * burn that was attested in seconds. So the branch is on the body: JSON means
+ * wait, HTML means the URL is wrong and waiting will never fix it.
+ *
+ * Lives here rather than in `cctp-spike.ts` for the same reason `shed` does: the
+ * spike and the slice both need it, and the second copy is the one that quietly
+ * grows a different branch.
+ */
+export async function pollIris(url: string): Promise<IrisPoll> {
+  let response: Response;
+  try {
+    response = await fetch(url, {signal: AbortSignal.timeout(20_000)});
+  } catch (error) {
+    return {kind: "error", detail: error instanceof Error ? error.message : String(error)};
+  }
+
+  const body = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return {
+      kind: "misrouted",
+      detail: `HTTP ${response.status} with a non-JSON body: ${body.slice(0, 120)}`,
+    };
+  }
+
+  if (response.ok) {
+    const messages = (parsed as {messages?: IrisMessage[]}).messages;
+    const first = messages?.[0] ?? (parsed as IrisMessage);
+    if (first.status === "complete" && first.attestation && first.attestation !== "PENDING") {
+      return {kind: "found", message: first};
+    }
+    return {kind: "pending", detail: `status ${first.status ?? "unknown"}`};
+  }
+
+  const error = (parsed as {error?: string}).error ?? JSON.stringify(parsed);
+  if (/not found/i.test(error)) return {kind: "pending", detail: error};
+  return {kind: "error", detail: `HTTP ${response.status}: ${error}`};
+}
+
+/** Where a live artefact lands. Gitignored — a tx hash is not repo content. */
+function spikeDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", ".spike");
 }
 
 /** Deterministic sub-accounts, so one funded key is all an operator has to hold. */
@@ -1200,6 +1347,367 @@ class Slice {
    * stays capitalised and the next run costs the working float instead of 322 USDC.
    * Findings 25 and 26.
    */
+  // ─── The payout plane ───────────────────────────────────────────────────────
+
+  /**
+   * A merchant settlement queued on Arc, dispatched by a stranger, burned against
+   * Circle's real `TokenMessengerV2`, and attested by Iris.
+   *
+   * **What this closes.** Plan 06-01 proved a `depositForBurn` clears out of Arc, but
+   * that was an EOA burning its own USDC, and finding 28 said so in as many words:
+   * "the same call with a different sender is exactly the class of assumption this
+   * finding exists to stop anyone making." Here the burner is the deployed
+   * `PayoutRouter`, holding tokens on a merchant's behalf, with a `forceApprove` in
+   * between — and the dispatcher is a wallet that holds no role anywhere in the
+   * protocol. That is XCH-02 against live bytecode and GOV-08's row 11 in the same
+   * transaction.
+   *
+   * **Why the queue is filled by `payout()` rather than by an origination, and why
+   * that costs the assertion nothing.** `payout()` is exactly the function
+   * `CheckoutRouter._settleMerchant` calls, with exactly the same pull-after-approve
+   * shape, and `SettlementEscrow.release` calls it too. Nothing downstream of it can
+   * tell which caller filled the queue — `dispatch` reads a storage slot. What an
+   * origination would add is the *routing* decision, and after the rewire that
+   * decision is `Escrowed` for this merchant and will be for ninety days
+   * (`MERCHANT_VESTING_WINDOW`), so an origination would fill the escrow rather than
+   * the queue. `runEscrow` asserts that half. Shortening the vesting window to make
+   * an origination queue instead would be moving a control to make a sentence true.
+   *
+   * **It costs a dollar and the dollar does not come back.** The burn is irreversible
+   * and the destination mint is the merchant's to complete on Base Sepolia (D-12), so
+   * this is a spend. It is therefore guarded: a deployment whose router has already
+   * burned reports the burn as spent rather than doing it again, and the pass count
+   * reflects only what this run actually performed (findings 17, 24, 25).
+   */
+  async runPayout(): Promise<void> {
+    console.log("\nThe payout plane — a real queue, a real burn, a real attestation");
+
+    const d = this.deployment;
+    const merchant = this.account(this.merchant);
+    const keeper = this.account(this.keeper);
+
+    check(
+      "the payout router answers for Arc and for a remote domain",
+      (await this.view<boolean>(d.payoutRouter, PAYOUT_ABI, "supportsDomain", [ARC_CCTP_DOMAIN])) &&
+        (await this.view<boolean>(d.payoutRouter, PAYOUT_ABI, "supportsDomain", [REMOTE_DOMAIN])),
+      `domains ${ARC_CCTP_DOMAIN} and ${REMOTE_DOMAIN}`,
+    );
+    check(
+      "a domain nobody denied is payable, and the deny list is empty",
+      !(await this.view<boolean>(d.payoutRouter, PAYOUT_ABI, "denied", [REMOTE_DOMAIN])),
+    );
+
+    // The artefact is the record of a spend, so it is read before anything is
+    // approved. Deleting it re-arms the probe at a cost of one USDC, which is the
+    // honest way round: the guard should be easy to override deliberately and
+    // impossible to override by accident.
+    const artefact = join(spikeDir(), `payout-${d.payoutRouter.toLowerCase()}.json`);
+    if (existsSync(artefact)) {
+      const prior = JSON.parse(readFileSync(artefact, "utf8")) as {burn?: string};
+      note(
+        "a settlement queued on Arc is burned across by a stranger",
+        `this router has already burned — ${prior.burn ?? "see"} ${artefact}`,
+      );
+      note("Iris attests a burn out of Arc", "recorded on the run that performed it");
+      return;
+    }
+
+    const merchantBefore = await this.balance(merchant);
+    const queuedBefore = await this.view<bigint>(d.payoutRouter, PAYOUT_ABI, "queued", [
+      d.token,
+      merchant,
+      REMOTE_DOMAIN,
+    ]);
+
+    // Pull, not push. The router takes what it was approved, which is why a domain it
+    // refuses leaves the money where it was rather than needing a rescue path.
+    await this.write(this.deployer, d.token, TOKEN_ABI, "approve", [d.payoutRouter, PAYOUT_PROBE]);
+    await this.write(this.deployer, d.payoutRouter, PAYOUT_ABI, "payout", [
+      d.token,
+      REMOTE_DOMAIN,
+      merchant,
+      PAYOUT_PROBE,
+    ]);
+
+    const queuedAfter = await this.view<bigint>(d.payoutRouter, PAYOUT_ABI, "queued", [
+      d.token,
+      merchant,
+      REMOTE_DOMAIN,
+    ]);
+    check(
+      "a remote settlement credits the queue for exactly its domain",
+      queuedAfter === queuedBefore + PAYOUT_PROBE,
+      `${usdc(queuedBefore)} to ${usdc(queuedAfter)}`,
+    );
+    check(
+      "and credits no other domain — the queue is keyed by destination (DEC-36)",
+      (await this.view<bigint>(d.payoutRouter, PAYOUT_ABI, "queued", [d.token, merchant, 3])) === 0n,
+    );
+    // CHKT-04's cross-chain form. The merchant's claim is fixed in the settlement
+    // transaction; only the bridge is deferred, which is the whole point of settling
+    // first and dispatching second (D-10).
+    check(
+      "the merchant's Arc balance does not move — only the bridge is deferred",
+      (await this.balance(merchant)) === merchantBefore,
+      usdc(merchantBefore),
+    );
+
+    // The keeper holds no role on any contract in this deployment. `dispatch` carries
+    // no modifier, no bounty and no allowance, and a full dispatch costs about 0.0044
+    // USDC of Arc gas — less than a single `collect()` — so there is nothing here to
+    // subsidise and nobody to pay.
+    const before = await this.nativeBalance(keeper);
+    const receipt = await this.write(
+      this.keeper,
+      d.payoutRouter,
+      PAYOUT_ABI,
+      "dispatch",
+      [d.token, merchant, REMOTE_DOMAIN],
+      400_000n,
+    );
+    const gas = receipt.gasUsed * receipt.effectiveGasPrice;
+    check(
+      "a wallet holding no role pushes the settlement across (GOV-08 row 11)",
+      receipt.status === "success",
+      `${keeper} paid ${formatUnits(gas, 18)} USDC of gas`,
+    );
+    check(
+      "the queue is zeroed before the external call, not after",
+      (await this.view<bigint>(d.payoutRouter, PAYOUT_ABI, "queued", [
+        d.token,
+        merchant,
+        REMOTE_DOMAIN,
+      ])) === 0n,
+    );
+    void before;
+
+    // `MessageSent` comes from the transmitter, not from the messenger. A test that
+    // looked for it on `TokenMessengerV2` would find nothing and conclude the burn had
+    // not happened.
+    let message: Hex | undefined;
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== ARC_MESSAGE_TRANSMITTER_V2.toLowerCase()) continue;
+      try {
+        const decoded = decodeEventLog({abi: TRANSMITTER_ABI, data: log.data, topics: log.topics});
+        if (decoded.eventName === "MessageSent") message = decoded.args.message;
+      } catch {
+        // Another event from the same address. Not ours.
+      }
+    }
+    check(
+      "the burn emits MessageSent from MessageTransmitterV2",
+      message !== undefined,
+      message ? `${(message.length - 2) / 2} bytes` : "absent",
+    );
+
+    // Iris. The URL that routes is `/messages/{sourceDomain}?transactionHash=`, and
+    // both failure modes are 404 — so the branch is on the body shape, never on the
+    // status code (finding 28).
+    const url = `${IRIS_SANDBOX_BASE_URL}/messages/${ARC_CCTP_DOMAIN}?transactionHash=${receipt.transactionHash}`;
+    const startedAt = Date.now();
+    const deadline = startedAt + POLL_TIMEOUT_MS;
+    let attested: IrisMessage | undefined;
+    let lastDetail = "no answer yet";
+
+    while (Date.now() < deadline) {
+      const poll = await pollIris(url);
+      if (poll.kind === "found") {
+        attested = poll.message;
+        break;
+      }
+      if (poll.kind === "misrouted") {
+        throw new Error(
+          `Iris answered a non-JSON body at ${url}. That is the wrong-URL failure, not the ` +
+            `not-yet-indexed one, and waiting will never fix it: ${poll.detail}`,
+        );
+      }
+      lastDetail = poll.detail;
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    check(
+      "Iris attests the burn",
+      attested !== undefined,
+      attested
+        ? `${attested.status} after ${(elapsedMs / 1_000).toFixed(1)}s, ` +
+            `${((attested.attestation?.length ?? 2) - 2) / 2} bytes`
+        : `no attestation within ${POLL_TIMEOUT_MS / 1_000}s — last answer: ${lastDetail}`,
+    );
+
+    // Finding 28's other half: the sent message's nonce field is all zeros and the
+    // real identifier is assigned by Iris at attestation. There is no on-chain value
+    // to key a payout row on, which is why the join to Circle's ledger is the
+    // transaction hash and is off-chain by construction (DEC-31).
+    check(
+      "the identifier the burn is tracked by comes from Iris, not from the chain",
+      Boolean(attested?.eventNonce) && attested?.eventNonce !== `0x${"00".repeat(32)}`,
+      attested?.eventNonce ?? "absent",
+    );
+
+    mkdirSync(spikeDir(), {recursive: true});
+    writeFileSync(
+      artefact,
+      `${JSON.stringify(
+        {
+          router: d.payoutRouter,
+          recipient: merchant,
+          domain: REMOTE_DOMAIN,
+          amount: PAYOUT_PROBE.toString(),
+          burn: receipt.transactionHash,
+          explorer: `${ARC_TESTNET_EXPLORER}/tx/${receipt.transactionHash}`,
+          gasUsed: receipt.gasUsed.toString(),
+          gasCostUsdc: formatUnits(gas, 18),
+          message,
+          attestation: attested?.attestation ?? null,
+          eventNonce: attested?.eventNonce ?? null,
+          attestationSeconds: Number((elapsedMs / 1_000).toFixed(1)),
+          // D-12. Plazo holds no gas token on Base Sepolia and deploys no contract
+          // there, so the destination leg is the merchant's to close. `destinationCaller`
+          // is zero, so anyone may.
+          completeOn: {
+            chain: "base-sepolia",
+            messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+            call: "receiveMessage(message, attestation)",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    console.log(`      burn        ${ARC_TESTNET_EXPLORER}/tx/${receipt.transactionHash}`);
+    console.log(`      artefact    ${artefact}`);
+    note(
+      "the destination mint completes on Base Sepolia",
+      "manual by decision (D-12) — the message and attestation are in the artefact above",
+    );
+  }
+
+  /**
+   * MERCH-04 against live bytecode: what escrows, what may not be un-escrowed, and
+   * what a live chain cannot be made to witness.
+   *
+   * The two rows a run can actually observe are the *refusals*, and they are the half
+   * that has never been seen anywhere but a fixture. `SettlementCategory.Escrowed` is
+   * ordinal zero, so a merchant record written before the field existed, and an
+   * address nobody has ever registered, both decode to "hold the money" — the enum
+   * ordering is the security property. And the governance opt-out cannot reach an
+   * unseasoned merchant at all, which is what stops "escrow physical goods" from being
+   * a setting the operator turns off for the merchant most likely to need it.
+   *
+   * What it cannot observe is a release. The timer is read live from the escrow
+   * registry (DEC-43) and its compiled floor is one hour against a seeded 72; a live
+   * chain has no `vm.warp`, and moving the row to make a run fit is the move this
+   * project has already named. So the readiness time is reported and not counted.
+   */
+  async runEscrow(): Promise<void> {
+    console.log("\nSettlement escrow — MERCH-04 against live bytecode");
+
+    const d = this.deployment;
+    const merchant = this.account(this.merchant);
+
+    check(
+      "the escrow knows its router and nothing else may write a row",
+      ((await this.view<Address>(d.settlementEscrow, ESCROW_ABI, "router")) as string).toLowerCase() ===
+        d.checkoutRouter.toLowerCase(),
+      d.checkoutRouter,
+    );
+
+    // Ordinal zero. An address the registry has never seen decodes to `Escrowed`, and
+    // that is the whole of D-06's default: the strict answer is the uninitialised one.
+    const category = await this.view<number>(d.merchantRegistry, CATEGORY_ABI, "categoryOf", [merchant]);
+    check(
+      "an unseasoned merchant settles into escrow by default (D-06)",
+      Number(category) === SettlementCategory.Escrowed,
+      `category ${category} — Escrowed is ordinal zero`,
+    );
+
+    const vesting = await this.view<bigint>(d.merchantRegistry, MERCHANTS_ABI, "vestingBpsFor", [merchant]);
+    if (
+      (await this.view<boolean>(d.merchantRegistry, MERCHANTS_ABI, "isRegistered", [merchant])) &&
+      vesting > 0n
+    ) {
+      // The opt-out is `KYB_ROLE`-gated and the deployer holds it, so this refusal is
+      // the contract's own and not an access-control accident.
+      await this.refuses(
+        "the category opt-out cannot reach an unseasoned merchant",
+        this.deployer,
+        d.merchantRegistry,
+        CATEGORY_ABI,
+        "setCategory",
+        [merchant, SettlementCategory.Instant],
+      );
+    } else {
+      note(
+        "the category opt-out cannot reach an unseasoned merchant",
+        vesting === 0n
+          ? "the merchant is seasoned — the refusal is no longer observable on this book"
+          : "the merchant is not registered on this registry yet",
+      );
+    }
+
+    // Read from the escrow's own registry, which is the only one that defines them.
+    // The live registry predates plan 06-14 and `_define` is constructor-only, so
+    // `get()` on it reverts `ParameterUndefined` for all three (DEC-72).
+    const timers: [string, string][] = [
+      ["attestation deadline", "plazo.escrow.attestationDeadline"],
+      ["release timer", "plazo.escrow.releaseTimer"],
+      ["dispute timelock", "plazo.escrow.disputeTimelock"],
+    ];
+    const read: string[] = [];
+    for (const [label, name] of timers) {
+      const value = await this.view<bigint>(d.escrowParameterRegistry, REGISTRY_ABI, "get", [key(name)]);
+      read.push(`${label} ${Number(value) / 3_600}h`);
+    }
+    check("the escrow timers read from a registry, not from a constant (D-08)", true, read.join(", "));
+
+    note(
+      "a held settlement is released after the timer",
+      "not observable in one run — the timer's compiled floor is 1h against a seeded 72h, " +
+        "and a live chain cannot warp (DEC-43)",
+    );
+    note(
+      "a settlement escrows in the origination transaction",
+      "needs an origination, and the credit half of this run did not fund",
+    );
+  }
+
+  /**
+   * Assert that a call is refused, by simulating it against a named account.
+   *
+   * A simulation is the real node executing the real bytecode against the real state;
+   * the only thing it skips is paying for the failure. It has to name an account —
+   * `readContract` builds an `eth_call` with no `from`, so a role check would refuse
+   * the zero address and the assertion would pass for the wrong reason.
+   */
+  private async refuses(
+    label: string,
+    wallet: WalletClient,
+    address: Address,
+    abi: readonly unknown[],
+    functionName: string,
+    args: unknown[],
+  ): Promise<void> {
+    try {
+      await shed(() =>
+        this.publicClient.simulateContract({
+          account: wallet.account!,
+          address,
+          abi,
+          functionName,
+          args,
+        } as never),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const reason = /(\w+)\(/.exec(message.split("\n").find((line) => /revert|Error:/i.test(line)) ?? "");
+      check(label, true, reason?.[1] ?? "refused");
+      return;
+    }
+    throw new Error(`FAILED: ${label} — the call was accepted`);
+  }
+
   async unwind(): Promise<void> {
     if (process.env["PLAZO_UNWIND"] !== "1") {
       const assets = await this.view<bigint>(this.deployment.creditPool, POOL_ABI, "totalAssets");
@@ -1930,6 +2438,18 @@ export async function runSlice(): Promise<void> {
   // The control surface first. It costs a few thousandths of a dollar and it is what
   // proves the refusals work against live bytecode rather than against a mock.
   await slice.runControls();
+
+  // The payout and escrow planes run **here**, before the funding check, and not
+  // between `runHappyPath` and `unwind` where a settlement phase would naturally sit.
+  //
+  // The reason is that they do not need credit. The payout probe costs one dollar plus
+  // gas and the escrow phase costs reads, where the credit half needs the book's whole
+  // capitalisation — so putting them after it would mean the two things this plan
+  // exists to witness never run on an unfunded account, which is the account this
+  // project actually has. They assert their own preconditions and skip what they
+  // cannot observe, so running early costs the assertions nothing.
+  await slice.runPayout();
+  await slice.runEscrow();
 
   // What is still needed, not what a virgin run would need. A book that is already
   // capitalised holds that money — it is in the pool rather than the account, and

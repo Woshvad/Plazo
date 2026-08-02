@@ -57,7 +57,12 @@ import {
   mintRecipient,
 } from "@plazo/plan-core";
 
-import {shed} from "./slice.js";
+// `shed` and `pollIris` both live in `slice.ts` and are imported here rather than
+// duplicated. Two retry wrappers is how one of them ends up with a subtly different
+// pattern and starts swallowing a genuine revert; two Iris pollers is how one of them
+// ends up branching on the status code and sitting on a dead URL for its whole
+// timeout. The dependency runs one way — the spike reads the slice, never the reverse.
+import {pollIris, shed, type IrisMessage} from "./slice.js";
 
 const TOKEN_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
@@ -130,73 +135,6 @@ function usdc6(value: bigint): string {
 /** Gas on Arc is USDC out of the native balance, which is the same balance at 18 decimals. */
 function usdc18(value: bigint): string {
   return `${formatUnits(value, 18)} USDC`;
-}
-
-interface IrisMessage {
-  message?: Hex;
-  /**
-   * Not always hex. Circle returns the literal string `"PENDING"` here while the
-   * message is indexed but not yet signed, so a `0x${string}` type would be a
-   * lie that makes the pending case unrepresentable.
-   */
-  attestation?: string;
-  eventNonce?: string;
-  status?: string;
-  cctpVersion?: number;
-}
-
-type IrisPoll =
-  | {kind: "found"; message: IrisMessage}
-  | {kind: "pending"; detail: string}
-  | {kind: "misrouted"; detail: string}
-  | {kind: "error"; detail: string};
-
-/**
- * One poll of Circle's attestation service.
- *
- * The whole subtlety is that **both** failure modes are HTTP 404. Circle's own
- * technical guide documents `GET /v2/messages?txHash=…`, which does not route
- * and answers with an HTML `Cannot GET /v2/messages`; the form that works is
- * `GET /v2/messages/{sourceDomain}?transactionHash=…`, and when the message is
- * simply not indexed yet *that* answers 404 with
- * `{"error":"Message not found for provided parameters"}`.
- *
- * A poller that branches on the status code cannot tell those apart and will sit
- * on a wrong URL for its entire timeout, then report "no attestation" about a
- * burn that was attested in seconds. So the branch is on the body: JSON means
- * wait, HTML means the URL is wrong and waiting will never fix it.
- */
-async function pollIris(url: string): Promise<IrisPoll> {
-  let response: Response;
-  try {
-    response = await fetch(url, {signal: AbortSignal.timeout(20_000)});
-  } catch (error) {
-    return {kind: "error", detail: error instanceof Error ? error.message : String(error)};
-  }
-
-  const body = await response.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body) as unknown;
-  } catch {
-    return {
-      kind: "misrouted",
-      detail: `HTTP ${response.status} with a non-JSON body: ${body.slice(0, 120)}`,
-    };
-  }
-
-  if (response.ok) {
-    const messages = (parsed as {messages?: IrisMessage[]}).messages;
-    const first = messages?.[0] ?? (parsed as IrisMessage);
-    if (first.status === "complete" && first.attestation && first.attestation !== "PENDING") {
-      return {kind: "found", message: first};
-    }
-    return {kind: "pending", detail: `status ${first.status ?? "unknown"}`};
-  }
-
-  const error = (parsed as {error?: string}).error ?? JSON.stringify(parsed);
-  if (/not found/i.test(error)) return {kind: "pending", detail: error};
-  return {kind: "error", detail: `HTTP ${response.status}: ${error}`};
 }
 
 /** Where the spike's artefacts land. Gitignored — a tx hash is not repo content. */
