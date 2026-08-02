@@ -19,8 +19,9 @@ import {InMemoryAuditLog, type AuditLog} from "./console.js";
 import {InMemoryDeliveryLog, type DeliveryLog} from "./ladder.js";
 import {PgAuditLog} from "./store/pg-audit.js";
 import {PgDeliveryLog} from "./store/pg-deliveries.js";
+import {attestationFor} from "./cctp.js";
 import {getDelivery, listDeliveries, registerEndpoint, replay} from "./webhooks.js";
-import type {WebhookConsole} from "./api.js";
+import type {AttestationConsole, WebhookConsole} from "./api.js";
 
 export * from "./balance.js";
 export * from "./cctp.js";
@@ -124,5 +125,39 @@ export function resolveWebhookConsole(
     deliveries: (merchantId, limit) => listDeliveries(handle, merchantId, limit),
     delivery: (merchantId, deliveryId) => getDelivery(handle, merchantId, deliveryId),
     replay: (merchantId, deliveryId) => replay(deps, deliveryId, merchantId),
+  };
+}
+
+/** Whether this plan is this merchant's. See below for why it is a parameter. */
+export type PlanOwnership = (merchantId: string, planId: string) => Promise<boolean>;
+
+/**
+ * The merchant-facing attestation read.
+ *
+ * `owns` has **no default and is required**, which is the whole design of this function.
+ * The `planId → merchant` join lives in `merchant_external_ref`, a table `@plazo/origination`
+ * owns, and this service cannot read it without either a cross-service dependency or a
+ * second declaration of somebody else's table. So the composition root — the process that
+ * holds both halves — passes the predicate, and it has to think about it to call this at
+ * all. A default would have been either "allow", which leaks one merchant's payout status
+ * to another, or "deny", which is a route that silently always 404s.
+ *
+ * Nothing behind this is secret: the burn hash is public and Circle's attestation is
+ * served to anyone who asks. The scoping is about not confirming which plans belong to
+ * whom, which is worth doing and is not worth a leaky default.
+ */
+export function resolveAttestationConsole(
+  owns: PlanOwnership,
+  url: string | undefined = process.env["DATABASE_URL"],
+): AttestationConsole {
+  if (!url) {
+    throw new Error("DATABASE_URL is not set; the attestation store cannot be constructed without it");
+  }
+
+  const handle = db(url);
+
+  return {
+    for: async (merchantId, planId) =>
+      (await owns(merchantId, planId)) ? attestationFor(handle, planId) : null,
   };
 }

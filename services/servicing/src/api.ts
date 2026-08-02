@@ -92,6 +92,32 @@ export interface ServicingDeps {
   readonly merchants?: MerchantAuth | undefined;
   /** Webhook registration, the delivery log, and replay. Absent means the routes 503. */
   readonly webhooks?: WebhookConsole | undefined;
+  /** What the Iris poller has heard back, per plan. Absent means the route 503s. */
+  readonly attestations?: AttestationConsole | undefined;
+}
+
+/**
+ * The merchant-facing attestation read.
+ *
+ * Takes the merchant, not just the plan, because the `planId → merchant` join lives in
+ * `merchant_external_ref` on the origination side and this service cannot reach it. The
+ * wiring that owns both halves supplies the scoped read; the route only ever asks for
+ * "this merchant's plan".
+ */
+export interface AttestationConsole {
+  for(
+    merchantId: string,
+    planId: string,
+  ): Promise<{
+    planId: string;
+    destinationDomain: number;
+    txHash: string;
+    message: string | null;
+    attestation: string | null;
+    status: string;
+    attempts: number;
+    polledAt: Date | null;
+  } | null>;
 }
 
 /**
@@ -505,6 +531,38 @@ export function createServicingApi(deps: ServicingDeps) {
       if (error instanceof SsrfError) return c.json({error: error.code, message: error.message}, 400);
       return c.json({error: "not-found", message: (error as Error).message}, 404);
     }
+  });
+
+  /**
+   * The attestation for a dispatched payout. XCH-02 and D-12.
+   *
+   * Returns the message and the attestation so the merchant can call `receiveMessage` on
+   * the destination chain themselves. Plazo holds no gas token on any chain but Arc, so
+   * the last mile is theirs by design rather than by omission — and it is permissionless,
+   * so anybody holding these two values can complete the mint, including a merchant who
+   * never asks this service anything and reads Iris directly from the public burn hash.
+   */
+  app.get("/v1/payouts/:planId/attestation", async (c) => {
+    const merchant = await merchantOf(c);
+    if (isRefusal(merchant)) return c.json({error: merchant.error}, merchant.status);
+
+    const attestations = deps.attestations;
+    if (!attestations) return c.json({error: "attestations-not-configured"}, 503);
+
+    const row = await attestations.for(merchant.merchantId, c.req.param("planId"));
+    if (!row) return c.json({error: "not-found"}, 404);
+
+    return c.json({
+      planId: row.planId,
+      domain: row.destinationDomain,
+      txHash: row.txHash,
+      status: row.status,
+      message: row.message,
+      attestation: row.attestation,
+      /** Polls so far. A large number on a pending row is a stuck settlement, not a slow one. */
+      attempts: row.attempts,
+      polledAt: row.polledAt?.toISOString() ?? null,
+    });
   });
 
   app.get("/ops/keeper-share", async (c) => {
