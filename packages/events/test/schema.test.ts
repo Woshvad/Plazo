@@ -9,6 +9,7 @@ import {
   eventSignature,
   eventTopic,
   humanReadableAbi,
+  type EventDefinition,
   INSTALLMENT_PLAN_ABI,
   PLAN_FACTORY_ABI,
   CHECKOUT_ROUTER_ABI,
@@ -19,10 +20,14 @@ import {
   RELAYER_GATE_ABI,
   POOL_REGISTRY_ABI,
   MERCHANT_REGISTRY_ABI,
+  PAYOUT_ROUTER_ABI,
+  REFUND_ESCROW_ABI,
+  SETTLEMENT_ESCROW_ABI,
   TIER0_UNDERWRITER_ABI,
   KILL_SWITCH_ABI,
   PARAMETER_REGISTRY_ABI,
   ORIGINATION_PAUSE_ABI,
+  PRIOR_SCHEMA_HASHES,
   SCHEMA_HASH,
   SCHEMA_VERSION,
 } from "../src/schema.js";
@@ -49,6 +54,35 @@ describe("the schema is frozen", () => {
 
   it("is a real hash, not a placeholder", () => {
     expect(SCHEMA_HASH).not.toBe(`0x${"00".repeat(32)}`);
+  });
+
+  /**
+   * The replay contract, asserted by value rather than by count.
+   *
+   * Neither v3 nor v4 was additive: v3 rewrote six pool entries that named contracts
+   * nobody built, and v4 retired two merchant entries that nothing ever emitted. A
+   * consumer replaying history therefore has to decode each block range with the
+   * definitions that range was written under, and these three hashes are how it knows
+   * which is which.
+   *
+   * Dropping one would not break a build. It would break a replay, silently, on a
+   * range nobody is currently looking at — which is precisely the class of failure a
+   * committed hash exists to convert into a red test.
+   */
+  it("retains every prior hash, newest first", () => {
+    expect(PRIOR_SCHEMA_HASHES).toEqual([
+      // v3 — Phases 4 and 5: the capital plane and the Passport.
+      "0x5805e5cae7e607b0a68c13886383207e5053bebe5de18c59be7561c1cc6212a9",
+      // v2 — Phase 3: the origination plane.
+      "0x4407b0ce57e557bf9f9c1232ddca2ee5edab6c4465b0d67e568a84a267f4295e",
+      // v1 — Phases 1 and 2: the plan and the check strip.
+      "0x84a83a60587bb9269844f7ec68d3ca09fd1e50a18d7dad7dad3e4e251af3663d",
+    ]);
+    expect(PRIOR_SCHEMA_HASHES).toHaveLength(SCHEMA_VERSION - 1);
+  });
+
+  it("does not carry the current hash in the prior list", () => {
+    expect(PRIOR_SCHEMA_HASHES).not.toContain(SCHEMA_HASH);
   });
 });
 
@@ -143,6 +177,56 @@ describe("privacy is enforced by the schema, not by policy", () => {
    * who has been handed a consent grant and needs to enumerate the ones they hold. It is
    * not the data subject, and it is not derived from one.
    */
+  /**
+   * The v4 addition. The merchant plane sits one hop from a purchase — a settlement is
+   * an order, a refund is a return, a shipment attestation is a delivery — so a wallet
+   * here would rebuild the same diary the plan events are keyed by `planId` to avoid,
+   * on the side where the counterparty is the one who would harvest it.
+   *
+   * `merchant`, `recipient`, `by` and `from` are the four addresses permitted, and all
+   * four are business counterparties: the merchant, their registered payout route, the
+   * governance account that denied a domain, and whoever funded the rebate reserve.
+   */
+  it("no merchant-plane event carries a borrower", () => {
+    const merchantPlane = EVENT_SCHEMA.filter((d) =>
+      ["PayoutRouter", "RefundEscrow", "SettlementEscrow", "MerchantRegistry"].includes(d.contract),
+    );
+    expect(merchantPlane.length).toBeGreaterThan(0);
+
+    const permitted = new Set(["merchant", "recipient", "by", "from", "attestor", "token"]);
+    for (const d of merchantPlane) {
+      const addresses = d.fields.filter((f) => f.type === "address").map((f) => f.name);
+      for (const name of addresses) {
+        expect(permitted.has(name), `${d.contract}.${d.name} carries an address named ${name}`).toBe(
+          true,
+        );
+      }
+      expect(
+        d.fields.filter((f) => /borrower|buyer|payer|consumer|customer|wallet/i.test(f.name)),
+        `${d.contract}.${d.name} names a borrower`,
+      ).toEqual([]);
+    }
+  });
+
+  /**
+   * A tracking number is a delivery address by proxy, and a dispute reference
+   * dereferences to a borrower's file. Both are `bytes32` commitments for that reason
+   * and not for gas — the same salted-subject discipline the Passport events set,
+   * applied to the two fields on this plane that would otherwise carry a pointer into
+   * somebody's life.
+   */
+  it.each([
+    ["ShipmentAttested", "carrierRef"],
+    ["DisputeOpened", "evidenceRef"],
+  ])("keeps %s.%s a commitment, never a string", (event, fieldName) => {
+    const definition = EVENT_SCHEMA.find((d) => d.name === event);
+    expect(definition, `${event} is missing from the schema`).toBeDefined();
+    const found = definition!.fields.find((f) => f.name === fieldName);
+    expect(found?.type).toBe("bytes32");
+    // Unindexed as well: a commitment nobody can invert is still a correlation key.
+    expect(found?.indexed).toBe(false);
+  });
+
   it("Passport emits commitments, and the only address is a reader", () => {
     const passport = EVENT_SCHEMA.filter((d) => d.contract === "PlazoPassport");
     expect(passport.length).toBeGreaterThan(0);
@@ -163,9 +247,43 @@ describe("the schema is well formed", () => {
     }
   });
 
-  it("has no colliding topics", () => {
-    const topics = EVENT_SCHEMA.map(eventTopic);
-    expect(new Set(topics).size).toBe(topics.length);
+  /**
+   * **Relaxed in v4, and the relaxation is the tighter rule.**
+   *
+   * Two contracts may now emit one topic: `RefundEscrow.RefundCredited` deliberately
+   * carries `InstallmentPlan.RefundCredited`'s signature, because D-04 forbids the
+   * escrow reimplementing the credit and the only honest thing it can announce is the
+   * delta the plan booked — from its own address, for a merchant's refund history.
+   *
+   * A shared topic is only dangerous if the two definitions disagree about the fields
+   * behind it, because that is what makes a decoder produce a wrong answer instead of
+   * no answer. So the rule is no longer "no duplicates"; it is "a shared topic implies
+   * an identical field list", which is what a decoder actually needs and what the old
+   * rule was a blunt proxy for.
+   */
+  it("never gives one topic two different field lists", () => {
+    const byTopic = new Map<string, EventDefinition[]>();
+    for (const d of EVENT_SCHEMA) {
+      const topic = eventTopic(d);
+      byTopic.set(topic, [...(byTopic.get(topic) ?? []), d]);
+    }
+
+    for (const [topic, definitions] of byTopic) {
+      const shapes = new Set(definitions.map((d) => humanReadableAbi(d)));
+      expect(
+        shapes.size,
+        `${topic} is emitted as ${[...shapes].join(" and ")}`,
+      ).toBe(1);
+    }
+  });
+
+  it("gives no single contract two events with one topic", () => {
+    const seen = new Set<string>();
+    for (const d of EVENT_SCHEMA) {
+      const key = `${d.contract}:${eventTopic(d)}`;
+      expect(seen.has(key), `${d.contract} emits two events on ${eventTopic(d)}`).toBe(false);
+      seen.add(key);
+    }
   });
 
   it("respects the EVM's three-indexed-field limit", () => {
@@ -200,6 +318,85 @@ describe("the schema is well formed", () => {
     // opposite Passport and provisioning treatments.
     const bounced = EVENT_SCHEMA.find((d) => d.name === "CheckBounced")!;
     expect(bounced.fields.some((f) => f.name === "reason")).toBe(true);
+  });
+});
+
+/**
+ * v4 reconciled two placeholders rather than appending beside them.
+ *
+ * Both were written before their contracts existed and neither was ever emitted, which
+ * is exactly what made them safe to correct. The risk a bump like this carries is that
+ * somebody later "restores" the old entry to fix a broken import — so the absence is
+ * asserted, not merely achieved.
+ */
+describe("the v4 reconciliation", () => {
+  it("retired MerchantSettled rather than renaming it", () => {
+    expect(EVENT_SCHEMA.find((d) => d.name === "MerchantSettled")).toBeUndefined();
+  });
+
+  it("retired RefundEscrowed", () => {
+    expect(EVENT_SCHEMA.find((d) => d.name === "RefundEscrowed")).toBeUndefined();
+  });
+
+  /**
+   * What replaces `MerchantSettled`: the settlement fact stayed on the contract that
+   * computed it, and the payout adapter reports money movement without naming a plan.
+   */
+  it("leaves the plan-level settlement fact on CheckoutRouter", () => {
+    const completed = EVENT_SCHEMA.find(
+      (d) => d.contract === "CheckoutRouter" && d.name === "OriginationCompleted",
+    );
+    expect(completed).toBeDefined();
+    expect(completed!.fields.map((f) => f.name)).toEqual([
+      "planId",
+      "merchant",
+      "principal",
+      "mdr",
+      "withheld",
+    ]);
+  });
+
+  it("keeps the payout adapter ignorant of plans", () => {
+    for (const d of EVENT_SCHEMA.filter((x) => x.contract === "PayoutRouter")) {
+      expect(d.fields.some((f) => f.name === "planId"), `${d.name} names a plan`).toBe(false);
+    }
+  });
+
+  /**
+   * DEC-36. `dispatch()` is permissionless, so the queue key decides where a stranger
+   * can send a merchant's money. Two keys would let them choose the chain; the burn is
+   * irreversible and an address a merchant controls on Arc is not necessarily one they
+   * control on Arbitrum.
+   */
+  it("carries the destination domain on both queue events", () => {
+    for (const name of ["PayoutQueued", "PayoutDispatched"]) {
+      const d = EVENT_SCHEMA.find((x) => x.name === name)!;
+      expect(d.fields.map((f) => f.name)).toEqual(["token", "recipient", "domain", "amount"]);
+    }
+  });
+
+  /**
+   * DEC-31 / finding 28. A CCTP v2 burn emits a zero nonce; the real `eventNonce` comes
+   * back from Iris at attestation. A `nonce` field here would be permanently zero and
+   * an indexed column built on it would be permanently null, so the join to Circle's
+   * ledger is the transaction hash and is off-chain by construction.
+   */
+  it("gives PayoutDispatched no nonce to be wrong about", () => {
+    const dispatched = EVENT_SCHEMA.find((d) => d.name === "PayoutDispatched")!;
+    expect(dispatched.fields.some((f) => /nonce/i.test(f.name))).toBe(false);
+  });
+
+  /**
+   * The non-attestation return is the one objective, operator-free ground for a
+   * dispute. Folded into the generic `EscrowReturned` it would be indistinguishable
+   * from a cancellation, and `RefundEscrow.disputeEligible` would have nothing to read.
+   */
+  it("keeps the non-attestation return distinguishable from any other return", () => {
+    const generic = EVENT_SCHEMA.find((d) => d.name === "EscrowReturned");
+    const narrow = EVENT_SCHEMA.find((d) => d.name === "SettlementReturnedForNonAttestation");
+    expect(generic).toBeDefined();
+    expect(narrow).toBeDefined();
+    expect(eventTopic(generic!)).not.toBe(eventTopic(narrow!));
   });
 });
 
@@ -300,10 +497,19 @@ describe("const-typed ABI views", () => {
     expect([...RELAYER_GATE_ABI]).toEqual(abiForContract("RelayerGate"));
     expect([...POOL_REGISTRY_ABI]).toEqual(abiForContract("PoolRegistry"));
     expect([...MERCHANT_REGISTRY_ABI]).toEqual(abiForContract("MerchantRegistry"));
+    expect([...PAYOUT_ROUTER_ABI]).toEqual(abiForContract("PayoutRouter"));
+    expect([...REFUND_ESCROW_ABI]).toEqual(abiForContract("RefundEscrow"));
+    expect([...SETTLEMENT_ESCROW_ABI]).toEqual(abiForContract("SettlementEscrow"));
     expect([...TIER0_UNDERWRITER_ABI]).toEqual(abiForContract("Tier0Underwriter"));
     expect([...KILL_SWITCH_ABI]).toEqual(abiForContract("FirstPaymentDefaultSwitch"));
     expect([...PARAMETER_REGISTRY_ABI]).toEqual(abiForContract("ParameterRegistry"));
     expect([...ORIGINATION_PAUSE_ABI]).toEqual(abiForContract("OriginationPause"));
+  });
+
+  it("cover every merchant-plane contract Phase 6 built", () => {
+    expect(abiForContract("PayoutRouter")).toHaveLength(4);
+    expect(abiForContract("RefundEscrow")).toHaveLength(8);
+    expect(abiForContract("SettlementEscrow")).toHaveLength(5);
   });
 
   it("cover every contract the indexer subscribes to", () => {

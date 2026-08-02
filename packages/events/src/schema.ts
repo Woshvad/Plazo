@@ -1,5 +1,5 @@
 /**
- * The Plazo event schema, version 3.
+ * The Plazo event schema, version 4.
  *
  * The schema is the API. Four surfaces, an indexer, a merchant SDK and every LP
  * report read it, so changing it after they exist is a full-stack refactor rather
@@ -72,10 +72,67 @@
  * salt orphans the entire prior stream. The first draft of `PlazoPassport` indexed the
  * borrower directly, which would have made the credit record itself a permanent public
  * file — the same leak Phase 3 caught in `Tier0Underwriter`'s `personId`, one layer up.
+ *
+ * ## What changed in v4, and what it reconciles
+ *
+ * The merchant plane. Phase 6 built the payout router, the refund escrow, the
+ * settlement escrow and the settlement-category row on the merchant registry, and
+ * seventeen events describe them.
+ *
+ * Two of those entries were already here, written before the contracts existed, and
+ * they are **corrected rather than carried** — the same situation v3 handled for the
+ * pool, for the same reason. A schema describing contracts that do not exist is worse
+ * than one that is out of date: an indexer configured against it silently receives
+ * nothing, and nobody finds out until a merchant asks why their statement is empty.
+ *
+ * **`PayoutRouter.MerchantSettled` is retired, not renamed.** Nothing emits it and
+ * nothing ever will. The event guessed that settlement would be announced by whatever
+ * moved the money; what plan 06-05 actually shipped is a payout adapter that knows a
+ * token, a recipient, a domain and an amount and deliberately knows nothing about a
+ * plan — `PayoutRouter.payout` is called by the router with `forceApprove` immediately
+ * before it, and a router that also had to be told the `planId` and the `mdr` would be
+ * a router that could lie about them. The settlement fact a merchant reconciles against
+ * is `CheckoutRouter.OriginationCompleted`, which has carried `planId`, `merchant`,
+ * `principal`, `mdr` and `withheld` since v2 and is emitted by the one contract that
+ * computed them. The money movement is `PaidOut` when it settles on Arc, `PayoutQueued`
+ * then `PayoutDispatched` when it crosses a domain, and `SettlementEscrow.SettlementHeld`
+ * when the merchant's category holds it against shipment. Four events where the
+ * placeholder guessed one, and none of them names a plan.
+ *
+ * **`RefundEscrow.RefundEscrowed` becomes `RefundCredited`.** The placeholder assumed
+ * the escrow would take custody of a refund and announce holding it; D-04 forbade that.
+ * `RefundEscrow` calls `InstallmentPlan.creditRefund` and never reimplements it, so what
+ * it can honestly announce is what the plan's own accounting moved — and it announces it
+ * with the plan's own signature, `RefundCredited(bytes32 indexed planId, uint256 amount)`.
+ *
+ * That duplicate signature is deliberate and is the one structural change in v4: two
+ * contracts now emit the same topic. `InstallmentPlan.RefundCredited` and
+ * `RefundEscrow.RefundCredited` are the same fact seen from the two addresses that
+ * matter — the plan's stream, which a borrower's servicing view reads, and the escrow's
+ * stream, which a merchant's refund history reads. The well-formedness test therefore no
+ * longer forbids a shared topic outright; it requires that anything sharing one shares an
+ * identical field list, which is the property that actually protects a decoder.
+ *
+ * **No event that was ever emitted has changed.** Both rewritten entries had no
+ * emitters — that is exactly what made them safe to fix — so the migration for a v3
+ * consumer is still "ignore what you do not know".
+ *
+ * Two rules bind every addition here and are worth naming because they pull in opposite
+ * directions. `merchant` **is** indexed throughout: a merchant is a business
+ * counterparty, not a data subject with an erasure right, and their address is already
+ * public in `MerchantRegistry`. And no borrower address appears anywhere, indexed or
+ * not — `carrierRef` and `evidenceRef` are `bytes32` commitments for that reason and not
+ * for brevity. A tracking number in cleartext is a delivery address by proxy, and an
+ * indexed one would put a borrower's shipping history in the same permanent public file
+ * the plan events are keyed by `planId` to avoid.
+ *
+ * `SettlementEscrow.RouterSet` is deliberately not listed. It is the one-way wiring call
+ * of DEC-42, it fires once per deployment, and the deployment artefact already records
+ * the answer; an indexer that subscribed to it would be storing a constant.
  */
 import {keccak256, toHex} from "viem";
 
-export const SCHEMA_VERSION = 3 as const;
+export const SCHEMA_VERSION = 4 as const;
 
 export interface EventField {
   name: string;
@@ -387,20 +444,19 @@ const POOL_EVENTS: EventDefinition[] = [
 
 /**
  * Merchant plane. Phase 3 and Phase 6.
+ *
+ * `merchant` is indexed on every event that carries one. That is the deliberate
+ * asymmetry with the plan and Passport planes: a merchant is a business counterparty
+ * whose address is already public in `MerchantRegistry`, not a data subject with an
+ * erasure right, and a merchant reconciling their own settlements needs the stream to
+ * be queryable by the key they own.
+ *
+ * No event here carries a borrower, and none may. The settlement plane sits one hop
+ * from a purchase, so a wallet in an indexed position would rebuild the same diary the
+ * plan events are keyed by `planId` to avoid — one layer out, on the side where the
+ * counterparty is the one who would harvest it.
  */
 const MERCHANT_EVENTS: EventDefinition[] = [
-  {
-    name: "MerchantSettled",
-    contract: "PayoutRouter",
-    fields: [
-      field("planId", "bytes32", true),
-      field("merchant", "address", true),
-      field("net", "uint256"),
-      field("mdr", "uint256"),
-    ],
-    purpose:
-      "Settlement within one block of checkout. `merchant` is indexed because a merchant is a business counterparty, not a data subject with an erasure right.",
-  },
   {
     name: "MerchantRegistered",
     contract: "MerchantRegistry",
@@ -408,10 +464,190 @@ const MERCHANT_EVENTS: EventDefinition[] = [
     purpose: "The bond scales with outstanding fronted exposure — refund arbitrage is the highest-yield attack on this book.",
   },
   {
-    name: "RefundEscrowed",
+    name: "SettlementCategoryChanged",
+    contract: "MerchantRegistry",
+    fields: [
+      field("merchant", "address", true),
+      field("category", "uint8"),
+      field("by", "address", true),
+    ],
+    purpose:
+      "Whether this merchant settles immediately or into escrow against shipment. Read once at origination and stamped on the escrow row (D-06), so this log is the only place the change itself is visible — a category read live would let a recategorisation move settlements already open.",
+  },
+
+  // ─── PayoutRouter (06-05) ───────────────────────────────────────────────────
+  //
+  // None of these names a plan, and that is the design. The adapter knows a token, a
+  // recipient, a domain and an amount; a payout contract that also had to be told the
+  // `planId` and the `mdr` would be one that could misreport them. The plan-level
+  // settlement fact is `CheckoutRouter.OriginationCompleted`.
+  {
+    name: "PaidOut",
+    contract: "PayoutRouter",
+    fields: [
+      field("token", "address", true),
+      field("recipient", "address", true),
+      field("domain", "uint32"),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "Settlement that stayed on Arc — the identity case, and the same signature `ArcLocalPayout` shipped in Phase 3 so no indexer needed a second migration when the adapter was replaced.",
+  },
+  {
+    name: "PayoutQueued",
+    contract: "PayoutRouter",
+    fields: [
+      field("token", "address", true),
+      field("recipient", "address", true),
+      field("domain", "uint32"),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "A cross-domain settlement accrued but not yet burned. Queued by `(token, recipient, domain)` and never by the pair (DEC-36): `dispatch()` is permissionless, and a two-key queue would let a stranger choose the chain a merchant's money lands on.",
+  },
+  {
+    name: "PayoutDispatched",
+    contract: "PayoutRouter",
+    fields: [
+      field("token", "address", true),
+      field("recipient", "address", true),
+      field("domain", "uint32"),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "The burn went out. It carries no nonce because there is none to carry: a CCTP v2 burn emits a zero nonce and the real `eventNonce` is assigned by Iris at attestation, so the join to Circle's ledger is the transaction hash and is off-chain by construction (DEC-31, finding 28).",
+  },
+  {
+    name: "DomainDenied",
+    contract: "PayoutRouter",
+    fields: [field("domain", "uint32", true), field("by", "address", true)],
+    purpose:
+      "A destination taken out of service. Worth a log rather than a state read because a merchant whose settlement stopped needs to know when it stopped and who did it, and a current-value getter cannot answer either.",
+  },
+
+  // ─── RefundEscrow (06-08) ───────────────────────────────────────────────────
+  {
+    name: "RefundCredited",
     contract: "RefundEscrow",
     fields: [field("planId", "bytes32", true), field("amount", "uint256")],
-    purpose: "A merchant refund before it reaches the plan.",
+    purpose:
+      "What the plan's own accounting moved, announced from the escrow's address as well as the plan's. Deliberately the same signature as `InstallmentPlan.RefundCredited`: D-04 forbids the escrow reimplementing the credit, so the only honest thing it can report is the delta the plan booked.",
+  },
+  {
+    name: "PlanVoided",
+    contract: "RefundEscrow",
+    fields: [field("planId", "bytes32", true)],
+    purpose:
+      "A refund large enough, early enough, that the plan is over rather than reduced. Carries no borrower and no amount — the amount is the `RefundCredited` immediately before it, and a void is a state fact, not a money fact.",
+  },
+  {
+    name: "RebateAccrued",
+    contract: "RefundEscrow",
+    fields: [field("merchant", "address", true), field("amount", "uint256")],
+    purpose:
+      "The MDR a merchant is owed back on a void or a partial refund. An accrual, not a reversal: the MDR is already the pool's income and there is no source on chain to reverse it from (DEC-41).",
+  },
+  {
+    name: "RebateClaimed",
+    contract: "RefundEscrow",
+    fields: [
+      field("merchant", "address", true),
+      field("amount", "uint256"),
+      field("remaining", "uint256"),
+    ],
+    purpose:
+      "A rebate paid to the registered payout route, with what is still owed. `remaining` is the honest part — the rebate is a funded promise against a permissionless reserve, and a claim that paid less than it owed must say so rather than settle silently.",
+  },
+  {
+    name: "RebatesFunded",
+    contract: "RefundEscrow",
+    fields: [
+      field("from", "address", true),
+      field("amount", "uint256"),
+      field("balance", "uint256"),
+    ],
+    purpose:
+      "Permissionless, like the pool's reserve and for the same reason: a promise anyone may fund is one nobody has to be trusted to fund.",
+  },
+  {
+    name: "DisputeOpened",
+    contract: "RefundEscrow",
+    fields: [
+      field("planId", "bytes32", true),
+      field("merchant", "address", true),
+      field("amount", "uint256"),
+      field("evidenceRef", "bytes32"),
+    ],
+    purpose:
+      "A timelocked claim against a merchant's bond, on the one objective ground the chain can check. `evidenceRef` is a commitment and never a document: a cleartext reference would put a borrower's dispute file in a public log.",
+  },
+  {
+    name: "DisputeCancelled",
+    contract: "RefundEscrow",
+    fields: [field("planId", "bytes32", true)],
+    purpose:
+      "The timelock is what makes the slash contestable, and this is the contest landing. Without the log a cancelled dispute is indistinguishable from one that was never opened.",
+  },
+  {
+    name: "BondSlashedToReserve",
+    contract: "RefundEscrow",
+    fields: [
+      field("planId", "bytes32", true),
+      field("merchant", "address", true),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "Merchant skin reaching the first-loss reserve rather than the operator. Where it lands is the whole claim, and this event is what makes it checkable rather than stated.",
+  },
+
+  // ─── SettlementEscrow (06-09) ───────────────────────────────────────────────
+  {
+    name: "SettlementHeld",
+    contract: "SettlementEscrow",
+    fields: [
+      field("planId", "bytes32", true),
+      field("merchant", "address", true),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "Settlement withheld against shipment for a merchant whose category says so. The category was read once at origination and stamped on the row, so this event is the state, not a hint about it.",
+  },
+  {
+    name: "ShipmentAttested",
+    contract: "SettlementEscrow",
+    fields: [field("planId", "bytes32", true), field("carrierRef", "bytes32")],
+    purpose:
+      "The merchant's shipment claim. `carrierRef` is a `bytes32` commitment and never a tracking number: a tracking number is a delivery address by proxy, and one in a public log is a borrower's home address for anyone who asks the carrier.",
+  },
+  {
+    name: "EscrowReleased",
+    contract: "SettlementEscrow",
+    fields: [
+      field("planId", "bytes32", true),
+      field("recipient", "address", true),
+      field("domain", "uint32"),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "The hold ended and the money went to the merchant's route. Permissionless, so the release is a timer anyone can crank rather than a favour the operator grants.",
+  },
+  {
+    name: "EscrowReturned",
+    contract: "SettlementEscrow",
+    fields: [field("planId", "bytes32", true), field("amount", "uint256")],
+    purpose:
+      "The hold ended and the money went back to the pool. Emitted on every return, whatever the cause, so a ledger can be reconciled without knowing why.",
+  },
+  {
+    name: "SettlementReturnedForNonAttestation",
+    contract: "SettlementEscrow",
+    fields: [
+      field("planId", "bytes32", true),
+      field("merchant", "address", true),
+      field("amount", "uint256"),
+    ],
+    purpose:
+      "The narrow reason, emitted beside `EscrowReturned` rather than folded into it. It is the single objective ground `RefundEscrow.disputeEligible` reads — the merchant provably failed to attest before a deadline they could read in advance — and collapsing it into the generic return would make a dispute ground indistinguishable from a cancellation.",
   },
 ];
 
@@ -812,10 +1048,37 @@ export const POOL_REGISTRY_ABI = [
 
 export const MERCHANT_REGISTRY_ABI = [
   "event MerchantRegistered(address indexed merchant, uint256 bond)",
+  "event SettlementCategoryChanged(address indexed merchant, uint8 category, address indexed by)",
   "event KybAttested(address indexed merchant, bool verified, address indexed attestor)",
   "event BondPosted(address indexed merchant, address indexed from, uint256 amount, uint256 total)",
   "event BondWithheld(address indexed merchant, bytes32 indexed planId, uint256 amount, uint256 total)",
   "event ExposureChanged(address indexed merchant, uint256 outstanding, uint256 requiredBond)",
+] as const;
+
+export const PAYOUT_ROUTER_ABI = [
+  "event PaidOut(address indexed token, address indexed recipient, uint32 domain, uint256 amount)",
+  "event PayoutQueued(address indexed token, address indexed recipient, uint32 domain, uint256 amount)",
+  "event PayoutDispatched(address indexed token, address indexed recipient, uint32 domain, uint256 amount)",
+  "event DomainDenied(uint32 indexed domain, address indexed by)",
+] as const;
+
+export const REFUND_ESCROW_ABI = [
+  "event RefundCredited(bytes32 indexed planId, uint256 amount)",
+  "event PlanVoided(bytes32 indexed planId)",
+  "event RebateAccrued(address indexed merchant, uint256 amount)",
+  "event RebateClaimed(address indexed merchant, uint256 amount, uint256 remaining)",
+  "event RebatesFunded(address indexed from, uint256 amount, uint256 balance)",
+  "event DisputeOpened(bytes32 indexed planId, address indexed merchant, uint256 amount, bytes32 evidenceRef)",
+  "event DisputeCancelled(bytes32 indexed planId)",
+  "event BondSlashedToReserve(bytes32 indexed planId, address indexed merchant, uint256 amount)",
+] as const;
+
+export const SETTLEMENT_ESCROW_ABI = [
+  "event SettlementHeld(bytes32 indexed planId, address indexed merchant, uint256 amount)",
+  "event ShipmentAttested(bytes32 indexed planId, bytes32 carrierRef)",
+  "event EscrowReleased(bytes32 indexed planId, address indexed recipient, uint32 domain, uint256 amount)",
+  "event EscrowReturned(bytes32 indexed planId, uint256 amount)",
+  "event SettlementReturnedForNonAttestation(bytes32 indexed planId, address indexed merchant, uint256 amount)",
 ] as const;
 
 export const TIER0_UNDERWRITER_ABI = [
@@ -861,22 +1124,28 @@ export function computeSchemaHash(): `0x${string}` {
  * the migration, then update this.
  */
 export const SCHEMA_HASH: `0x${string}` =
-  "0x5805e5cae7e607b0a68c13886383207e5053bebe5de18c59be7561c1cc6212a9";
+  "0x732d16a75801f32d51c3f8b0e2f76b427a599da63d1efee9e8cf23df32e10a42";
 
 /**
  * Every prior schema hash, newest first.
  *
  * Kept so a migration can be verified rather than asserted: an indexer replaying
  * history knows exactly which schema each block range was written under, and a
- * reviewer can tell a deliberate bump from an accidental one. v2 is
+ * reviewer can tell a deliberate bump from an accidental one. v3 is
+ * `0x5805e5ca…212a9` — Phases 4 and 5's capital plane and the Passport. v2 is
  * `0x4407b0ce…4295e` — Phase 3's origination plane. v1 is `0x84a83a60…3663d` —
  * Phases 1 and 2.
  *
- * v3 is the first bump that is not additive, so this list is load-bearing rather than
- * courteous: a consumer replaying history has to decode blocks written under v2 with
- * v2's definitions, because six of them named a contract that no longer exists.
+ * Neither v3 nor v4 is additive, so this list is load-bearing rather than courteous. A
+ * consumer replaying history has to decode blocks written under v2 with v2's
+ * definitions, because six of them named a contract that no longer exists; and blocks
+ * written under v3 with v3's, because two of those named events no contract ever
+ * emitted. Dropping an entry here would not break a build — it would break a replay,
+ * quietly, on a range nobody is looking at. `test/schema.test.ts` asserts all three by
+ * value for that reason.
  */
 export const PRIOR_SCHEMA_HASHES: readonly `0x${string}`[] = Object.freeze([
+  "0x5805e5cae7e607b0a68c13886383207e5053bebe5de18c59be7561c1cc6212a9",
   "0x4407b0ce57e557bf9f9c1232ddca2ee5edab6c4465b0d67e568a84a267f4295e",
   "0x84a83a60587bb9269844f7ec68d3ca09fd1e50a18d7dad7dad3e4e251af3663d",
 ]);
