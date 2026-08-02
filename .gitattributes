@@ -1,0 +1,16 @@
+# Solidity is checked by `forge fmt --check` in CI (.github/workflows/ci.yml), and
+# forge fmt treats CRLF as a diff. On Windows an editor or a tool can hand a file
+# back with CRLF and turn the CI formatter red on a file nobody meaningfully
+# changed — which is how RefundEscrow.sol failed after 06-08. Pin the working-tree
+# ending so the formatter and the checkout agree.
+*.sol text eol=lf
+
+# Everything else the toolchain reads in-place. Same reasoning, less urgency.
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
