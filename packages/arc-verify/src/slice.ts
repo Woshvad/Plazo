@@ -260,10 +260,14 @@ const MERCHANT_BOND = 10_000_000n;
  * Retrying a send is safe rather than merely convenient: a shed request was rejected
  * before it reached the txpool, and if one somehow did land, the retry re-derives the
  * same nonce and fails as "nonce too low" instead of sending twice.
+ *
+ * Exported so the CCTP spike uses this one rather than growing a second copy. Two
+ * retry wrappers is how one of them ends up with a subtly different pattern and
+ * starts swallowing a genuine revert as a shed response.
  */
 const SHED = /request limit reached|-32011|too many requests|rate limit/i;
 
-async function shed<T>(fn: () => Promise<T>, attempts = 8): Promise<T> {
+export async function shed<T>(fn: () => Promise<T>, attempts = 8): Promise<T> {
   let last: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {

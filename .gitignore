@@ -23,6 +23,10 @@ dist/
 contracts/corpus/
 packages/abi/generated/
 
+# Live-spike artefacts. Message bytes, attestations and tx hashes from a run
+# against real testnet money — evidence for a finding, not repo content.
+packages/arc-verify/.spike/
+
 # Local
 *.log
 .DS_Store

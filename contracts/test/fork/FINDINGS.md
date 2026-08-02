@@ -559,3 +559,89 @@ its cut of whatever does leave. Budget a run as a spend, not a loan.
 Both runs together also settle the re-measurement finding 5 asked for: a third-party
 keeper `collect()` cost **0.00580395 USDC** of gas, identical across both runs, against a
 0.46875 USDC bounty. The keeper market clears with roughly an 80× margin.
+
+## 28. A `depositForBurn` out of Arc clears, and the nonce is not knowable at burn time
+
+**`pnpm --filter @plazo/arc-verify spike:cctp`**, 2026-08-02, chain 5042002.
+
+Nobody had ever executed this call from Arc. Every view around it read correctly and the
+seven-argument selector was in the deployed implementation, but a selector is a claim about
+what a contract could do — and Arc USDC's movement runs through a native precompile that
+Foundry cannot execute (finding 3), so no local test could tell us whether a third-party
+Circle contract can pull that token at all. `PayoutRouter` is designed around the answer,
+so the answer was bought for a dollar before it was designed around.
+
+**It clears.**
+
+| | |
+|---|---|
+| Burn | [`0x693f8632…51a13c44`](https://testnet.arcscan.app/tx/0x693f8632dfc950224cc18ce69c010b13d12b9660f6e10e605c817e8b51a13c44) |
+| Approve | `0x0e18d813…2cd44845` |
+| Route | domain 26 (Arc) → domain 6 (Base Sepolia), `mintRecipient` = the depositor |
+| `depositForBurn` gas | 120,252 → **0.0030063 USDC** at 25 gwei |
+| `approve` gas | 55,438 → **0.00138595 USDC** |
+| **Full dispatch** | **0.00439225 USDC** |
+| CCTP protocol fee | **0**, and not merely quoted as 0 — see the balance arithmetic below |
+| `MessageSent` | 376 bytes, from `MessageTransmitterV2`, not from the messenger |
+| Attestation | `status: "complete"`, **8.6 s** end to end including the burn's own receipt wait |
+| Attestation size | 130 bytes — two 65-byte signatures, matching `signatureThreshold() == 2` |
+
+The deployer went 82.77205 → 81.767658 USDC. That is 1.004392 out for a 1.000000 burn and
+0.00439225 of gas, to the last unit. **The zero fee is a measurement, not a quote from the
+fee oracle.** Nothing was skimmed in between.
+
+A full cross-chain dispatch therefore costs less than a single `collect()` (0.0058 USDC,
+finding 5's re-measurement). Whatever makes cross-chain payout expensive, it is not Arc.
+
+### The thing that was not in any document: the sent nonce is zero
+
+The emitted message's 32-byte `nonce` field is **all zeros**. The real nonce —
+`0x7104071acc10559a41bbe8141f59bfab22ede5657e1c257043ab230990289b18` — comes back from
+Iris as `eventNonce`, assigned at attestation, not at burn.
+
+This is load-bearing for `PayoutRouter` and it would have been easy to assume the opposite.
+**A dispatching contract cannot know, derive, or emit the identifier its own burn will be
+tracked by.** There is no onchain value to key a payout row on, no way for the indexer to
+join a `PayoutDispatched` event to an attestation without going through the transaction
+hash, and no way for a contract to assert "this burn has been attested". The join key
+between Plazo's ledger and Circle's is the **transaction hash**, and that is an off-chain
+join by construction. Build the dispatch record around the tx hash; do not add a nonce
+column and expect the chain to fill it.
+
+The message decodes exactly as specified otherwise: version 1, source 26, destination 6,
+sender and recipient both `TokenMessengerV2`, `destinationCaller` zero,
+`minFinalityThreshold` 2000, `finalityThresholdExecuted` 0 (nothing has executed yet),
+then a v1 burn body carrying `burnToken` = Arc USDC, `mintRecipient` left-padded,
+`amount` 1,000,000, `maxFee` 0, `feeExecuted` 0, `expirationBlock` 0, and no hook data.
+
+### Circle's documented Iris endpoint is still wrong, and the spike now proves it every run
+
+`GET /v2/messages?txHash=…` — the form in Circle's own technical guide — returns an HTML
+`Cannot GET /v2/messages` with status **404**. The form that works,
+`GET /v2/messages/{sourceDomain}?transactionHash=…`, returns status **404** as well when
+the message is merely not indexed yet, with a JSON body of
+`{"error":"Message not found for provided parameters"}`.
+
+Both are 404. A poller that branches on the status code cannot distinguish "wait" from "you
+are asking the wrong URL", and will sit on a dead endpoint for its whole timeout before
+reporting a burn as unattested that was attested in eight seconds. **Branch on the body
+shape.** The spike asserts both forms before it spends anything, so the day Circle fixes
+their routing, that shows up as a failed assertion rather than as a silent behaviour change.
+
+### What this did not settle
+
+- **The destination mint was not attempted**, by decision (D-12). `destinationCaller` is
+  `bytes32(0)`, so anyone may call `receiveMessage(message, attestation)` on Base Sepolia —
+  but Plazo holds no gas token on any chain but Arc, and acquiring one to close a leg the
+  merchant closes for themselves would be building the thing the decision says not to build.
+  The message and attestation are in `packages/arc-verify/.spike/` and the mint is a
+  documented manual verification.
+- **This was an EOA burning its own USDC.** A `PayoutRouter` burning tokens it holds on a
+  merchant's behalf is the same call with a different `msg.sender`, but "the same call with
+  a different sender" is exactly the class of assumption this finding exists to stop
+  anyone making. Plan 06-05 re-measures it from the deployed router.
+- **8.6 s is one sample on a quiet testnet.** It is not an SLA and it is not Circle's
+  either. The dispatch is asynchronous by design precisely so that this number does not
+  have to be trusted.
+- **One dollar is not a ceiling test.** `burnLimitsPerMessage(USDC)` reads 1e13 and the gate
+  asserts it, but nothing here exercised a burn anywhere near it.
