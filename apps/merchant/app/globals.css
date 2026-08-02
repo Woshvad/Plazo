@@ -1,0 +1,9 @@
+/*
+ * The only stylesheet this surface owns.
+ *
+ * It imports the design system and adds nothing. If a surface needs a value the
+ * system does not have, the value goes into `@plazo/ui` — not here.
+ */
+@import "@plazo/ui/theme.css";
+
+@source "../app";
