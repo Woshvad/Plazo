@@ -3,6 +3,7 @@
 import {useEffect, useMemo, useState} from "react";
 
 import {allowedOrigins, send, STEPS, type Step} from "./_bridge";
+import {CreditorDisclosure} from "./_CreditorDisclosure";
 
 /**
  * The hosted checkout. APP-05 and CHKT-07.
@@ -22,6 +23,21 @@ import {allowedOrigins, send, STEPS, type Step} from "./_bridge";
  * dates; the funds stay in the borrower's wallet until each one comes round. That
  * sentence is on the screen because it is the product, and because a buyer who does not
  * believe it will not sign four things at once.
+ *
+ * **The creditor disclosure is non-suppressible by construction, and that is a
+ * property of `_CreditorDisclosure.tsx` rather than of this file.** A PSP may repaint
+ * this page — accent, corner radius, logo, prose face — through the four tokens
+ * `_theme.ts` allows, and none of them reaches that component: it takes no props, reads
+ * no custom property, sets its own colours from the fixed palette and checks its own
+ * contrast floor. It renders here unconditionally and on every step, because a buyer
+ * who scrolled past a disclosure on step one is signing on step three. Before adding a
+ * theme feature, read that file. Adding a token that could move it is the one change
+ * this design exists to prevent.
+ *
+ * The schedule stays in the design system's mono face whatever theme is applied. A
+ * partner may choose the face the prose is set in; they may not choose one whose
+ * figures do not align, because a schedule a borrower cannot scan column-wise is a
+ * schedule they cannot check.
  */
 export default function Checkout() {
   const [step, setStep] = useState<Step>("quote");
@@ -40,7 +56,7 @@ export default function Checkout() {
   }, [host, step, index]);
 
   return (
-    <main className="mx-auto max-w-md px-5 py-6">
+    <main className="mx-auto max-w-md px-5 py-6 font-[family-name:var(--plazo-font-sans)]">
       <div className="mb-5 flex items-baseline justify-between">
         <div className="font-display text-[length:var(--text-2xl)] font-bold tracking-tight">
           PLAZO<span className="text-green">.</span>
@@ -57,7 +73,7 @@ export default function Checkout() {
         <div className="font-display text-[length:var(--text-5xl)] leading-none font-bold text-ink">
           $100.00
         </div>
-        <div className="mt-1 font-body text-[length:var(--text-base)] text-ink-soft">
+        <div className="mt-1 text-[length:var(--text-base)] text-ink-soft">
           4 payments of $25.00, every 2 weeks
         </div>
 
@@ -67,7 +83,7 @@ export default function Checkout() {
               key={i}
               className="flex items-baseline justify-between border-b border-rule py-2 last:border-b-0"
             >
-              <span className="font-body text-[length:var(--text-sm)] text-ink-soft">
+              <span className="text-[length:var(--text-sm)] text-ink-soft">
                 {i === 0 ? "Today" : `In ${i * 2} weeks`}
               </span>
               <span className="flex items-baseline gap-3">
@@ -85,7 +101,7 @@ export default function Checkout() {
         </ol>
 
         <div className="mt-4 flex items-baseline justify-between border-t-2 border-ink pt-3">
-          <span className="font-body text-[length:var(--text-sm)] text-ink-soft">Interest</span>
+          <span className="text-[length:var(--text-sm)] text-ink-soft">Interest</span>
           <span className="font-mono text-[length:var(--text-base)] text-green">$0.00</span>
         </div>
       </section>
@@ -96,7 +112,7 @@ export default function Checkout() {
 
       {step === "identity" ? (
         <section className="mb-5 border-2 border-ink bg-white p-5 shadow-[var(--shadow-card)]">
-          <p className="mb-4 font-body text-[length:var(--text-base)] text-ink">
+          <p className="mb-4 text-[length:var(--text-base)] text-ink">
             Connect the wallet you will pay from. It must hold USDC on Arc when each payment
             falls due — we will remind you before each one.
           </p>
@@ -106,7 +122,7 @@ export default function Checkout() {
 
       {step === "signing" ? (
         <section className="mb-5 border-2 border-ink bg-white p-5 shadow-[var(--shadow-card)]">
-          <p className="mb-4 font-body text-[length:var(--text-base)] text-ink">
+          <p className="mb-4 text-[length:var(--text-base)] text-ink">
             You are signing {4 - signed} dated {4 - signed === 1 ? "authorization" : "authorizations"}.
             Each one is payable only to this plan, only for its own amount, and only on or
             after its own date. Your wallet will show you all four fields.
@@ -119,7 +135,7 @@ export default function Checkout() {
               if (next === 4) setStep("settling");
             }}
           />
-          <p className="mt-3 font-body text-[length:var(--text-xs)] text-muted">
+          <p className="mt-3 text-[length:var(--text-xs)] text-muted">
             Leaving now loses nothing. Come back and you resume at the payment you stopped on,
             not at the beginning.
           </p>
@@ -128,7 +144,7 @@ export default function Checkout() {
 
       {step === "settling" ? (
         <section className="mb-5 border-2 border-ink bg-white p-5 shadow-[var(--shadow-card)]">
-          <p className="font-body text-[length:var(--text-base)] text-ink">
+          <p className="text-[length:var(--text-base)] text-ink">
             Paying the merchant and creating your plan…
           </p>
           <Action label="Finish" onClick={() => setStep("done")} />
@@ -137,27 +153,37 @@ export default function Checkout() {
 
       {step === "done" ? (
         <section className="mb-5 border-2 border-green bg-white p-5 shadow-[var(--shadow-card)]">
-          <p className="font-body text-[length:var(--text-base)] text-ink">
+          <p className="text-[length:var(--text-base)] text-ink">
             Done. The merchant has been paid in full and your first payment has cleared.
           </p>
         </section>
       ) : null}
 
-      <p className="font-body text-[length:var(--text-xs)] text-faint">
+      <p className="text-[length:var(--text-xs)] text-faint">
         Your money stays in your wallet until each due date. Plazo never holds it, and cannot
-        take a payment early or take one you did not sign for. Plazo is the creditor on this
-        agreement.
+        take a payment early or take one you did not sign for.
       </p>
+
+      <CreditorDisclosure />
     </main>
   );
 }
 
+/**
+ * The primary control, and the only element a partner's accent actually paints.
+ *
+ * `--plazo-accent` and `--plazo-on-accent` travel as a pair because they are only
+ * meaningful as one: `_theme.ts` refuses to ship a theme whose ink does not clear the
+ * AA floor against its own accent, so a partner cannot arrive at an invisible button by
+ * choosing a colour. The radius is theirs too — it is the one geometry choice that
+ * reads as "whose product is this" without touching legibility.
+ */
 function Action({label, onClick}: {label: string; onClick: () => void}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="w-full border-2 border-ink bg-accent px-4 py-3 font-display text-[length:var(--text-md)] font-semibold text-ink shadow-[var(--shadow-raised)]"
+      className="w-full rounded-[var(--plazo-radius)] border-2 border-ink bg-[var(--plazo-accent)] px-4 py-3 font-display text-[length:var(--text-md)] font-semibold text-[color:var(--plazo-on-accent)] shadow-[var(--shadow-raised)]"
     >
       {label}
     </button>
