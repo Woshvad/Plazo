@@ -1,3 +1,5 @@
+import {CrossChain} from "./CrossChain";
+import {gatewayDomains} from "./_crosschain";
 import {book, pct, price, queue, receivables, shortId, usd} from "./_data";
 
 /**
@@ -20,11 +22,26 @@ import {book, pct, price, queue, receivables, shortId, usd} from "./_data";
  * is what causes the run it is meant to survive. That argument only works if the terms
  * are visible in the calm — a fee discovered at the moment of redemption is a gate with
  * better manners.
+ *
+ * XCH-01 hangs off the bottom of the same screen rather than a separate route, because
+ * "how do I get out" and "how long does getting out take" are the same question, and the
+ * fourteen-day Gateway withdrawal only reads as a warning when it sits next to the
+ * seconds-long CCTP route it is not.
+ *
+ * **The signer class is assumed to be a multisig until told otherwise.** DEC-01 keeps the
+ * tranche shares as transfer-restricted Reg-D securities held by institutions, and an
+ * institution holding through a plain private key is the exception. Defaulting the other
+ * way would show the Gateway route as available to the lender most likely to be reading.
  */
 export const dynamic = "force-dynamic";
 
 export default async function Yield() {
-  const [state, loans, tickets] = await Promise.all([book(), receivables(), queue()]);
+  const [state, loans, tickets, gateway] = await Promise.all([
+    book(),
+    receivables(),
+    queue(),
+    gatewayDomains(),
+  ]);
 
   const deployed = BigInt(state.buffer.deployed);
   const cash = BigInt(state.buffer.cash);
@@ -188,6 +205,8 @@ export default async function Yield() {
             </tbody>
           </table>
         </Panel>
+
+        <CrossChain info={gateway} signer="safe" />
 
         <p className="mt-8 max-w-2xl font-body text-[length:var(--text-xs)] text-faint">
           Junior is first-loss and is expected to reach zero against a large enough loss. That

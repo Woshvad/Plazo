@@ -12,6 +12,10 @@
  * 3. **A multisig lender is told, before they try, that Gateway will not serve them.**
  */
 
+import {readFileSync} from "node:fs";
+
+import {createElement} from "react";
+import {renderToStaticMarkup} from "react-dom/server";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 
 import {ARC_CCTP_DOMAIN, GATEWAY_API_TESTNET_BASE_URL, usdc6} from "@plazo/plan-core";
@@ -35,6 +39,7 @@ import {
   signerClassAdvice,
   unifiedBalance,
 } from "../app/_crosschain";
+import {CrossChain} from "../app/CrossChain";
 
 const LENDER = "0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2" as const;
 const SALT = `0x${"ab".repeat(32)}` as `0x${string}`;
@@ -321,5 +326,102 @@ describe("signerClassAdvice", () => {
     for (const kind of SIGNER_KINDS) {
       expect(signerClassAdvice(kind).routes.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The surface
+//
+// Rendered with `renderToStaticMarkup` rather than into a DOM. Every component here is
+// a server component with no handler, no effect and no client state, so the markup that
+// reaches the browser *is* the behaviour — and a jsdom environment would add a document
+// nothing in this surface reads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("CrossChain", () => {
+  const render = (props: Parameters<typeof CrossChain>[0]): string =>
+    renderToStaticMarkup(createElement(CrossChain, props));
+
+  it("renders the sample banner when the payload is not live", async () => {
+    const info = await gatewayDomains();
+    const html = render({info, signer: "safe"});
+    expect(html).toContain("SAMPLE DATA");
+    expect(html).toContain("PLAZO_GATEWAY_API_URL");
+  });
+
+  it("drops the banner when the payload is live", async () => {
+    stubFetch(INFO_BODY);
+    const info = await gatewayDomains({baseUrl: GATEWAY_API_TESTNET_BASE_URL});
+    const html = render({info, signer: "safe"});
+    expect(html).not.toContain("SAMPLE DATA");
+  });
+
+  it("names CCTP as the route off Arc and renders the fourteen days from the constant", async () => {
+    const info = await gatewayDomains();
+    const html = render({info, signer: "eoa"});
+    expect(html).toContain("CCTP");
+    expect(html).toContain("14 days");
+    expect(html).toMatch(/escape hatch/i);
+  });
+
+  it("derives the fourteen days rather than carrying it as copy", () => {
+    const source = readFileSync(new URL("../app/CrossChain.tsx", import.meta.url), "utf8");
+    expect(source).toContain("GATEWAY_WITHDRAWAL_DELAY_SECONDS");
+    expect(source).not.toMatch(/"14 days"/);
+    expect(source).not.toMatch(/>14 days</);
+  });
+
+  it("renders the multisig advice when the signer class is not an EOA", async () => {
+    const info = await gatewayDomains();
+    const html = render({info, signer: "safe"});
+    expect(html).toMatch(/EOA signatures only/);
+    expect(html).toMatch(/Unavailable to you/);
+  });
+
+  it("does not tell an EOA that Gateway is unavailable to them", async () => {
+    const info = await gatewayDomains();
+    const html = render({info, signer: "eoa"});
+    expect(html).toMatch(/Available to you/);
+    expect(html).not.toMatch(/Unavailable to you/);
+  });
+
+  it("offers both deposit routes side by side rather than behind a toggle", async () => {
+    const info = await gatewayDomains();
+    const html = render({info, signer: "eoa"});
+    expect(html).toMatch(/Circle Gateway/);
+    expect(html).toMatch(/CCTP two-step/);
+    expect(html).toMatch(/epoch closes/);
+  });
+
+  it("lists Arc as the destination among the Gateway domains", async () => {
+    const info = await gatewayDomains();
+    const html = render({info, signer: "eoa"});
+    expect(html).toContain("ARC");
+    expect(html).toMatch(/destination/i);
+  });
+
+  it("shows no call arguments until an address is supplied", async () => {
+    const info = await gatewayDomains();
+    expect(render({info, signer: "eoa"})).toMatch(/Connect an address/);
+    const withAccount = render({info, signer: "eoa", account: LENDER});
+    expect(withAccount).not.toMatch(/Connect an address/);
+    expect(withAccount).toContain(`0x${"0".repeat(24)}${LENDER.slice(2)}`);
+  });
+
+  it("renders a unified balance without routing it through a float", async () => {
+    const info = await gatewayDomains();
+    const html = render({
+      info,
+      signer: "eoa",
+      balances: {
+        live: true,
+        token: "USDC",
+        total: usdc6(368_700n),
+        balances: [
+          {domain: 6, depositor: LENDER, balance: usdc6(368_700n), pendingBatch: usdc6(60_300n)},
+        ],
+      },
+    });
+    expect(html).toContain("0.3687 USDC");
   });
 });
