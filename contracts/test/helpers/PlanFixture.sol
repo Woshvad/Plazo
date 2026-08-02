@@ -30,6 +30,15 @@ abstract contract PlanFixture is Test {
 
     uint256 internal constant BORROWER_KEY = 0xB0BB0;
     address internal borrower;
+
+    /// @dev The key `borrower` signs with. A field rather than the constant, because
+    ///      Tier-0's one-active-plan rule (UW-01) means a test that needs two plans
+    ///      open at once needs two people, and a person is an address that can sign.
+    ///      `SignerMutationTest` already reassigns `borrower` alone — it points at a
+    ///      contract wallet validating with the same key — so the two seams compose:
+    ///      swap `borrower` for a different validator, swap both for a different person.
+    ///      Defaults to `BORROWER_KEY`, so every existing test is unchanged.
+    uint256 internal borrowerKey = BORROWER_KEY;
     address internal merchant = address(0xACCED);
     address internal pool = address(0x9001);
     address internal keeper = address(0xBEEF);
@@ -188,7 +197,7 @@ abstract contract PlanFixture is Test {
         address planAddress
     ) internal view returns (bytes memory) {
         bytes32 digest = PlanAcceptance.digest(acceptance, block.chainid, planAddress);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(BORROWER_KEY, digest);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(borrowerKey, digest);
         return abi.encodePacked(r, s, v);
     }
 
@@ -199,7 +208,7 @@ abstract contract PlanFixture is Test {
     ) internal view returns (bytes[] memory strip) {
         strip = new bytes[](terms.installmentCount);
         for (uint256 i = 0; i < terms.installmentCount; ++i) {
-            strip[i] = _signCheck(terms, id, payee, i, BORROWER_KEY);
+            strip[i] = _signCheck(terms, id, payee, i, borrowerKey);
         }
     }
 
@@ -233,7 +242,7 @@ abstract contract PlanFixture is Test {
             abi.encode(usdc.CANCEL_AUTHORIZATION_TYPEHASH(), borrower, PlanId.checkNonce(planId, index))
         );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", usdc.DOMAIN_SEPARATOR(), structHash));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(BORROWER_KEY, digest);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(borrowerKey, digest);
         return abi.encodePacked(r, s, v);
     }
 

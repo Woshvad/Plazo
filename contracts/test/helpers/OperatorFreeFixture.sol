@@ -54,6 +54,15 @@ abstract contract OperatorFreeFixture is OriginationFixture {
     address internal stranger4;
     address internal stranger5;
 
+    /// @notice A second person, because Tier 0 allows one active plan each.
+    ///
+    /// @dev `Tier0Underwriter.capFor` returns zero while `activePlans > 0` (UW-01), so
+    ///      two plans open at the same time is two people, and a person here is an
+    ///      address that can sign a strip. Everything else about them is identical to
+    ///      the first borrower — same identity class, same curve, same band.
+    uint256 internal constant SECOND_BORROWER_KEY = 0xB0BB1;
+    address internal secondBorrower;
+
     /// @notice Base Sepolia. The destination the live 06-01 burn actually went to.
     uint32 internal constant REMOTE_DOMAIN = 6;
 
@@ -78,6 +87,7 @@ abstract contract OperatorFreeFixture is OriginationFixture {
         super._deployStack();
 
         operator = address(this);
+        secondBorrower = vm.addr(SECOND_BORROWER_KEY);
 
         stranger1 = makeAddr("gov08-stranger-collect");
         stranger2 = makeAddr("gov08-stranger-mark");
@@ -240,6 +250,20 @@ abstract contract OperatorFreeFixture is OriginationFixture {
 
     function _warpTo(uint256 when) internal {
         if (when > vm.getBlockTimestamp()) vm.warp(when);
+    }
+
+    /// @notice Point the fixture's signing seam at a person, and screen them.
+    ///
+    /// @dev `borrower` and `borrowerKey` move together: the first is who the terms name
+    ///      and the second is who signs the acceptance and the strip, and a plan whose
+    ///      two disagreed would be refused by `_verifyAcceptance` rather than
+    ///      originated wrongly. Screening happens here because it is what an operator
+    ///      would have done before the zeroing, not a convenience afterwards — after
+    ///      `_goOperatorFree()` `SCREENER_ROLE` is gone and this call would revert.
+    function _becomeBorrower(address who, uint256 key) internal {
+        borrower = who;
+        borrowerKey = key;
+        _screenClear(who);
     }
 
     /// @notice Close an epoch from an address that holds no role. DEC-27.
