@@ -32,7 +32,7 @@
 import {createConfig, factory} from "ponder";
 import {parseAbi, parseAbiItem} from "viem";
 
-import {ARC_TESTNET_CHAIN_ID} from "@plazo/plan-core";
+import {ARC_MAX_LOG_RANGE, ARC_TESTNET_CHAIN_ID} from "@plazo/plan-core";
 import {
   CHECKOUT_ROUTER_ABI,
   TRANCHED_CREDIT_POOL_ABI,
@@ -98,6 +98,35 @@ const ADDRESS = PLAN_FACTORY ?? "0x0000000000000000000000000000000000000000";
 const startBlock = START_BLOCK ? Number(START_BLOCK) : ("latest" as const);
 
 /**
+ * An address **and** the block to start watching it from, because the two are one
+ * decision.
+ *
+ * `at` alone was not enough, and a live run is what showed it. An unconfigured contract
+ * gets the zero address, which never emits — but Ponder does not know that, so it
+ * backfills the zero address exactly as diligently as a real one. A measured run against
+ * the Arc testnet deployment on 2026-08-02 spent **486 of its logged `eth_getLogs`
+ * calls, around 30%, on `0x0000…0000`**, over a 192,786-block range, on a public
+ * endpoint that sheds a quarter of what it is asked and then rate-limits. The
+ * `at` docstring's claim that an unset contract "indexes nothing" was true about not
+ * crashing and false about not costing anything, and this plan made it three contracts
+ * worse.
+ *
+ * So an unconfigured contract starts at `latest`: no history to sweep, nothing to
+ * decode, and the process still comes up and still serves. That is what "indexes
+ * nothing" was always supposed to mean.
+ */
+const watch = (name: string) => ({
+  address: at(name),
+  startBlock: process.env[name] ? startBlock : ("latest" as const),
+});
+
+/** The same, for a contract that has been deployed more than once. See `atAll`. */
+const watchAll = (...names: string[]) => ({
+  address: atAll(...names),
+  startBlock: names.some((name) => process.env[name]) ? startBlock : ("latest" as const),
+});
+
+/**
  * Plans are discovered from the factory's own event stream rather than configured.
  *
  * Every plan is a CREATE2 clone deployed by `PlanFactory`, and there will be one per
@@ -116,6 +145,31 @@ export default createConfig({
       rpc: arcTransport(),
       // The public endpoint sheds under load, so ask for less than it will take.
       maxRequestsPerSecond: 5,
+      /**
+       * Arc's measured `eth_getLogs` ceiling, told to Ponder rather than discovered.
+       *
+       * This is a **cap, not a target**, and saying so is the point — it was added
+       * expecting it to fix a slow backfill and it did not, so the comment says what
+       * was measured rather than what was hoped.
+       *
+       * What it buys: Ponder never issues a request Arc will reject with `-32614`,
+       * which is otherwise discovered by having one fail. `ARC_MAX_LOG_RANGE` is the
+       * limit `@plazo/arc-verify` asserts on every CI run, so if Arc widens or narrows
+       * it this number follows the gate rather than a comment. One less than the limit,
+       * for the same reason `chunkBlockRange` is: the boundary was measured as "rejects
+       * above", never read from documentation.
+       *
+       * What it does **not** buy: throughput. Ponder ramps up from a small range and
+       * backs off on any error, and on Arc almost every error is `-32011` — the
+       * endpoint shedding load, which it does to roughly a quarter of requests
+       * regardless of pacing. So the range never grows towards this cap. Measured on
+       * 2026-08-02 against the live deployment: 641 shed responses escaped the
+       * transport's retries in nine minutes, requests stayed at **26 blocks**, and the
+       * sweep covered 390 blocks of a 194,092-block range. The binding constraint is
+       * the shed rate against a 45-fragment fan-out, not the range, and the fix for it
+       * is a better endpoint rather than a better guess. See the SUMMARY for 06-11.
+       */
+      ethGetLogsBlockRange: ARC_MAX_LOG_RANGE - 1,
     },
   },
   contracts: {
@@ -139,74 +193,62 @@ export default createConfig({
       chain: "arcTestnet",
       abi: parseAbi(CHECKOUT_ROUTER_ABI),
       // Both the current router and the one it replaced. See `atAll`.
-      address: atAll("PLAZO_CHECKOUT_ROUTER_ADDRESS", "PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY"),
-      startBlock,
+      ...watchAll("PLAZO_CHECKOUT_ROUTER_ADDRESS", "PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY"),
     },
     TranchedCreditPool: {
       chain: "arcTestnet",
       abi: parseAbi(TRANCHED_CREDIT_POOL_ABI),
-      address: at("PLAZO_CREDIT_POOL_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_CREDIT_POOL_ADDRESS"),
     },
     PlazoPassport: {
       chain: "arcTestnet",
       abi: parseAbi(PLAZO_PASSPORT_ABI),
-      address: at("PLAZO_PASSPORT_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_PASSPORT_ADDRESS"),
     },
     AttestationSchemaRegistry: {
       chain: "arcTestnet",
       abi: parseAbi(ATTESTATION_SCHEMA_REGISTRY_ABI),
-      address: at("PLAZO_SCHEMAS_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_SCHEMAS_ADDRESS"),
     },
     RelayerGate: {
       chain: "arcTestnet",
       abi: parseAbi(RELAYER_GATE_ABI),
-      address: at("PLAZO_RELAYER_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_RELAYER_ADDRESS"),
     },
     PoolRegistry: {
       chain: "arcTestnet",
       abi: parseAbi(POOL_REGISTRY_ABI),
-      address: at("PLAZO_POOL_REGISTRY_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_POOL_REGISTRY_ADDRESS"),
     },
     MerchantRegistry: {
       chain: "arcTestnet",
       abi: parseAbi(MERCHANT_REGISTRY_ABI),
-      address: at("PLAZO_MERCHANT_REGISTRY_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_MERCHANT_REGISTRY_ADDRESS"),
     },
     ReceivableToken: {
       chain: "arcTestnet",
       abi: parseAbi(RECEIVABLE_TOKEN_ABI),
-      address: at("PLAZO_RECEIVABLE_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_RECEIVABLE_ADDRESS"),
     },
     Tier0Underwriter: {
       chain: "arcTestnet",
       abi: parseAbi(TIER0_UNDERWRITER_ABI),
-      address: at("PLAZO_TIER0_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_TIER0_ADDRESS"),
     },
     FirstPaymentDefaultSwitch: {
       chain: "arcTestnet",
       abi: parseAbi(KILL_SWITCH_ABI),
-      address: at("PLAZO_KILL_SWITCH_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_KILL_SWITCH_ADDRESS"),
     },
     ParameterRegistry: {
       chain: "arcTestnet",
       abi: parseAbi(PARAMETER_REGISTRY_ABI),
-      address: at("PLAZO_PARAMETERS_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_PARAMETERS_ADDRESS"),
     },
     OriginationPause: {
       chain: "arcTestnet",
       abi: parseAbi(ORIGINATION_PAUSE_ABI),
-      address: at("PLAZO_PAUSE_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_PAUSE_ADDRESS"),
     },
     // The merchant plane (Phase 6). All three are unconfigured until plan 06-13
     // redeploys the stack, and an unconfigured contract indexes nothing rather than
@@ -214,20 +256,17 @@ export default createConfig({
     PayoutRouter: {
       chain: "arcTestnet",
       abi: parseAbi(PAYOUT_ROUTER_ABI),
-      address: at("PLAZO_PAYOUT_ROUTER_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_PAYOUT_ROUTER_ADDRESS"),
     },
     RefundEscrow: {
       chain: "arcTestnet",
       abi: parseAbi(REFUND_ESCROW_ABI),
-      address: at("PLAZO_REFUND_ESCROW_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_REFUND_ESCROW_ADDRESS"),
     },
     SettlementEscrow: {
       chain: "arcTestnet",
       abi: parseAbi(SETTLEMENT_ESCROW_ABI),
-      address: at("PLAZO_SETTLEMENT_ESCROW_ADDRESS"),
-      startBlock,
+      ...watch("PLAZO_SETTLEMENT_ESCROW_ADDRESS"),
     },
   },
 });
