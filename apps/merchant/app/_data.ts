@@ -138,6 +138,27 @@ async function read<T>(source: Source, path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * One write. The same credential rules, and the same refusal to guess.
+ *
+ * Separate from `read` rather than a flag on it, because the two failure modes are not
+ * alike: a read that fails can be retried by reloading, and a write that fails may or may
+ * not have happened. The error carries the status so the caller can say which.
+ */
+export async function post<T>(source: Source, path: string, body?: unknown): Promise<T> {
+  const base = baseFor(source);
+  if (base === undefined) throw new Error(`${source} is not configured`);
+
+  const response = await fetch(`${base}${path}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {...authorization(base), "content-type": "application/json"},
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+  return (await response.json()) as T;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Settlements — MERCH-08
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,6 +450,56 @@ export async function deliveries(limit = 100): Promise<Deliveries> {
   if (baseFor("servicing") === undefined) return SAMPLE_DELIVERIES;
   const body = await read<{deliveries: Delivery[]}>("servicing", `/v1/webhooks/deliveries?limit=${limit}`);
   return {...fromService("servicing"), deliveries: body.deliveries};
+}
+
+/**
+ * One delivery, with the bodies.
+ *
+ * **The list omits bodies and the single read includes them, and that split is
+ * deliberate** (plan 06-06). A log view that shipped every request and every truncated
+ * response would be megabytes on a screen where the reader is looking for one row. So a
+ * body is fetched only for the row a merchant actually opened — which is a search
+ * parameter and a server round trip, not a client bundle.
+ */
+export interface DeliveryDetail extends Delivery {
+  readonly requestBody: string | null;
+  readonly responseBodyTruncated: string | null;
+}
+
+const SAMPLE_DELIVERY_BODIES: Record<string, {requestBody: string; responseBodyTruncated: string | null}> = {
+  dlv_7f21c1: {
+    requestBody: JSON.stringify(
+      {
+        event: "payout.dispatched",
+        planId: "0x3a71c8e02f9d465b1e7a04c93f28d6b5079e14a3c8b60d92f5e37a1b48c609dd",
+        blockNumber: "54714388",
+        logIndex: 4,
+        data: {domain: 6, amount: "791040000", txHash: "0xb90e14a3…"},
+      },
+      null,
+      2,
+    ),
+    responseBodyTruncated: "<html><head><title>502 Bad Gateway</title></head><body>…",
+  },
+};
+
+export async function deliveryDetail(id: string): Promise<DeliveryDetail | null> {
+  if (baseFor("servicing") === undefined) {
+    const row = SAMPLE_DELIVERIES.deliveries.find((delivery) => delivery.id === id);
+    if (row === undefined) return null;
+    const bodies = SAMPLE_DELIVERY_BODIES[id];
+    return {
+      ...row,
+      requestBody: bodies?.requestBody ?? null,
+      responseBodyTruncated: bodies?.responseBodyTruncated ?? null,
+    };
+  }
+  try {
+    return await read<DeliveryDetail>("servicing", `/v1/webhooks/deliveries/${id}`);
+  } catch (error) {
+    if (/returned 404$/.test((error as Error).message)) return null;
+    throw error;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
