@@ -23,6 +23,7 @@ import {ParkedYieldVenue} from "../src/ParkedYieldVenue.sol";
 import {FirstPaymentDefaultSwitch} from "../src/FirstPaymentDefaultSwitch.sol";
 import {Tier0Underwriter} from "../src/Tier0Underwriter.sol";
 import {OriginationPause} from "../src/OriginationPause.sol";
+import {SettlementEscrow} from "../src/SettlementEscrow.sol";
 import {CheckoutRouter} from "../src/CheckoutRouter.sol";
 
 /// @title Deploy
@@ -89,6 +90,7 @@ contract Deploy is Script {
         OriginationPause pauses;
         InstallmentPlan implementation;
         PlanFactory factory;
+        SettlementEscrow settlementEscrow;
         CheckoutRouter router;
     }
 
@@ -147,6 +149,11 @@ contract Deploy is Script {
         s.implementation = new InstallmentPlan();
         s.factory = new PlanFactory(address(s.implementation), address(s.jurisdictions), deployer);
 
+        // MERCH-04. Deployed before the router, because the router takes it as a
+        // constructor immutable; the reference back is installed in `_wire`.
+        s.settlementEscrow =
+            new SettlementEscrow(deployer, address(s.merchants), address(s.payout), address(s.parameters));
+
         s.router = new CheckoutRouter(
             deployer,
             CheckoutRouter.Wiring({
@@ -161,6 +168,7 @@ contract Deploy is Script {
                 parameters: address(s.parameters),
                 compliance: address(s.compliance),
                 payout: address(s.payout),
+                settlementEscrow: address(s.settlementEscrow),
                 fxRouter: address(s.fx)
             })
         );
@@ -172,6 +180,7 @@ contract Deploy is Script {
     function _wire(Stack memory s, address deployer) private {
         // The router is the only address that can create a plan or move the book.
         s.factory.setOriginator(address(s.router));
+        s.settlementEscrow.setRouter(address(s.router));
         s.pools.register(PAY_IN_4, address(s.pool));
         s.pool.setOriginator(address(s.router));
         s.receivable.grantRole(s.receivable.ISSUER_ROLE(), address(s.router));
@@ -232,6 +241,7 @@ contract Deploy is Script {
         console.log("OriginationPause      ", address(s.pauses));
         console.log("InstallmentPlan (impl)", address(s.implementation));
         console.log("PlanFactory           ", address(s.factory));
+        console.log("SettlementEscrow      ", address(s.settlementEscrow));
         console.log("CheckoutRouter        ", address(s.router));
     }
 }

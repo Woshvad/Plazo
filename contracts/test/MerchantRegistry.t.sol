@@ -166,7 +166,17 @@ contract MerchantRegistryTest is OriginationFixture {
 
         assertEq(merchants.bondOf(merchant) - bondBefore, expected, "nothing was withheld into the bond");
         assertEq(merchants.merchantOf(merchant).withheld, expected, "the withholding was not tracked");
-        assertEq(usdc.balanceOf(merchantPayout), net - expected, "the merchant was paid the withheld part");
+
+        // MERCH-04 and D-06. An unseasoned merchant is `Escrowed` and the opt-out
+        // cannot reach them, so the settlement that survives the withholding is held
+        // rather than paid — the two controls compose on exactly the merchant both were
+        // written for. The withholding is still taken first and in full.
+        assertEq(usdc.balanceOf(merchantPayout), 0, "an unseasoned merchant was paid instantly");
+        assertEq(
+            usdc.balanceOf(address(settlementEscrow)),
+            net - expected,
+            "the settlement left over after the withholding did not reach the escrow"
+        );
     }
 
     /// @notice A seasoned merchant is paid in full.
@@ -177,6 +187,17 @@ contract MerchantRegistryTest is OriginationFixture {
 
         assertEq(merchants.vestingBpsFor(merchant), 0, "the merchant is still vesting");
         assertTrue(merchants.isSeasoned(merchant), "the merchant is not seasoned");
+
+        // Seasoning alone does not un-escrow anybody. MERCH-04's opt-out is a
+        // deliberate governance act, and a merchant who simply waited ninety days has
+        // not had one — which is the difference between a default that expires and a
+        // control that is lifted.
+        assertEq(
+            uint8(merchants.categoryOf(merchant)),
+            uint8(MerchantRegistry.SettlementCategory.Escrowed),
+            "seasoning silently un-escrowed the merchant"
+        );
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Instant);
 
         uint256 net = PRINCIPAL - checkout.mdrFor(PRINCIPAL);
         _checkoutDefault();

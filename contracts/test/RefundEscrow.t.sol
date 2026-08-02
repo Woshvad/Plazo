@@ -71,7 +71,7 @@ contract StubSettlementEscrow is ISettlementEscrow {
 ///      - and nothing anywhere takes an address that refunded value could reach.
 contract RefundEscrowTest is OriginationFixture {
     RefundEscrow internal escrow;
-    StubSettlementEscrow internal settlementEscrow;
+    StubSettlementEscrow internal stubEscrow;
 
     address internal arbiter = address(0xA9B17E);
     address internal funder = address(0xF00DED);
@@ -90,14 +90,14 @@ contract RefundEscrowTest is OriginationFixture {
         _deployStack();
         _prepareOrigination();
 
-        settlementEscrow = new StubSettlementEscrow();
+        stubEscrow = new StubSettlementEscrow();
         escrow = new RefundEscrow(
             address(this),
             address(usdc),
             address(checkout),
             address(merchants),
             address(parameters),
-            address(settlementEscrow)
+            address(stubEscrow)
         );
 
         // The role's first and only holder. `MerchantRegistry`'s docstring says Phase
@@ -554,8 +554,17 @@ contract RefundEscrowTest is OriginationFixture {
     /// @dev Everything the merchant could walk away with, in one number. The bond counts
     ///      because withdrawing it is worth-neutral, and the payout address counts
     ///      because that is where settlement lands.
+    ///
+    ///      The settlement escrow counts for the same reason, since MERCH-04. This
+    ///      fixture's merchant is unseasoned, so they are `Escrowed` and their
+    ///      settlement is held rather than paid — and it is still money one attestation
+    ///      away from being theirs. Counting it is the conservative direction: it makes
+    ///      the number below **larger**, so the identity it has to satisfy is harder to
+    ///      meet rather than easier, and a contract that leaked into the escrow would
+    ///      still be caught.
     function _merchantWorth() internal view returns (uint256) {
-        return usdc.balanceOf(merchant) + usdc.balanceOf(merchantPayout) + merchants.bondOf(merchant);
+        return usdc.balanceOf(merchant) + usdc.balanceOf(merchantPayout)
+            + usdc.balanceOf(address(settlementEscrow)) + merchants.bondOf(merchant);
     }
 
     /// @notice The attack `MerchantRegistry` was written against, run three times.
@@ -773,7 +782,7 @@ contract RefundEscrowTest is OriginationFixture {
         escrow.executeSlash(planId);
 
         // And the same for one nobody with a role opened at all.
-        settlementEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
         vm.prank(stranger);
         escrow.openNonAttestationDispute(planId);
 
@@ -884,7 +893,7 @@ contract RefundEscrowTest is OriginationFixture {
     ///      holds no role at the moment it does.
     function test_nonAttestationDisputeNeedsNoOperator() public {
         _originatePlan();
-        settlementEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
 
         address nobody = address(0xB0BB1E);
         assertFalse(escrow.hasRole(escrow.ARBITER_ROLE(), nobody), "the caller held the arbiter role");
@@ -904,7 +913,7 @@ contract RefundEscrowTest is OriginationFixture {
     ///      needs no role and checks no fact is a path that manufactures slashes.
     function test_nonAttestationDisputeRefusedWhenNotEligible() public {
         _originatePlan();
-        settlementEscrow.setRow(planId, false, merchant, 60e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, false, merchant, 60e6, vm.getBlockTimestamp());
 
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(RefundEscrow.NotDisputeEligible.selector, planId));
@@ -922,17 +931,17 @@ contract RefundEscrowTest is OriginationFixture {
         address merchantTwo = address(0xACCED2);
         _onboardMerchant(merchantTwo, 300e6);
 
-        settlementEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
         vm.prank(stranger);
         escrow.openNonAttestationDispute(planId);
 
-        ISettlementEscrow.ReturnedSettlement memory row = settlementEscrow.returnedSettlementOf(planId);
+        ISettlementEscrow.ReturnedSettlement memory row = stubEscrow.returnedSettlementOf(planId);
         RefundEscrow.Dispute memory first = escrow.disputeOf(planId);
         assertEq(first.merchant, row.merchant, "the recorded merchant is not the escrow's");
         assertEq(first.amount, row.amount, "the recorded amount is not the escrow's");
 
         bytes32 other = keccak256("a second returned settlement");
-        settlementEscrow.setRow(other, true, merchantTwo, 30e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(other, true, merchantTwo, 30e6, vm.getBlockTimestamp());
         vm.prank(keeper);
         escrow.openNonAttestationDispute(other);
 
@@ -946,7 +955,7 @@ contract RefundEscrowTest is OriginationFixture {
     ///      timelock.
     function test_nonAttestationSlashStillWaitsForTheTimelock() public {
         _originatePlan();
-        settlementEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, true, merchant, 60e6, vm.getBlockTimestamp());
 
         vm.prank(stranger);
         escrow.openNonAttestationDispute(planId);
@@ -972,7 +981,7 @@ contract RefundEscrowTest is OriginationFixture {
     function test_aNonAttestationDisputeSaturatesAtTheBondRatherThanReverting() public {
         _originatePlan();
         uint256 bond = merchants.bondOf(merchant);
-        settlementEscrow.setRow(planId, true, merchant, bond + 1e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, true, merchant, bond + 1e6, vm.getBlockTimestamp());
 
         vm.prank(stranger);
         escrow.openNonAttestationDispute(planId);
@@ -985,7 +994,7 @@ contract RefundEscrowTest is OriginationFixture {
         _openArbiterDispute(100e6);
         uint256 openedAt = escrow.disputeOf(planId).openedAt;
 
-        settlementEscrow.setRow(planId, true, merchant, 400e6, vm.getBlockTimestamp());
+        stubEscrow.setRow(planId, true, merchant, 400e6, vm.getBlockTimestamp());
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(RefundEscrow.DisputeAlreadyOpen.selector, planId, openedAt));
         escrow.openNonAttestationDispute(planId);

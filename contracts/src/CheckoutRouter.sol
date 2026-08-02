@@ -17,6 +17,7 @@ import {Tier0Underwriter} from "./Tier0Underwriter.sol";
 import {FirstPaymentDefaultSwitch} from "./FirstPaymentDefaultSwitch.sol";
 import {OriginationPause} from "./OriginationPause.sol";
 import {ParameterRegistry} from "./ParameterRegistry.sol";
+import {SettlementEscrow} from "./SettlementEscrow.sol";
 import {IComplianceOracle} from "./interfaces/IComplianceOracle.sol";
 import {ICrossChainPayout} from "./interfaces/ICrossChainPayout.sol";
 import {IUnderwritingPartner} from "./interfaces/IUnderwritingPartner.sol";
@@ -46,6 +47,14 @@ import {TermsDetail} from "./libraries/TermsDetail.sol";
 ///      reorgs, so "settled" means settled; there is no pending state for a merchant
 ///      to reconcile and no window in which the goods have gone and the money has
 ///      not.
+///
+///      **MERCH-04 carves physical goods out of that, and does not contradict it.**
+///      A merchant in the `Escrowed` category has their settlement moved out of the
+///      pool and into `SettlementEscrow` in this same transaction, and released to
+///      them once they attest shipment. The claim CHKT-04 makes — full amount less
+///      MDR, decided with sub-second finality, no reconciliation — is unchanged for
+///      the digital and low-risk categories it was written about. See
+///      `_settleMerchant`.
 ///
 ///      **The plan still verifies everything itself.** This router being the only
 ///      authorized originator is a denial-of-service control, not a trust
@@ -107,6 +116,8 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ParameterRegistry public immutable parameters;
     IComplianceOracle public immutable compliance;
     ICrossChainPayout public immutable payout;
+    /// @notice Where a physical-goods merchant's settlement is held (MERCH-04).
+    SettlementEscrow public immutable settlementEscrow;
     address public immutable fxRouter;
 
     /// @notice Sessions already originated. CHKT-02's replay boundary.
@@ -156,6 +167,7 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         address parameters;
         address compliance;
         address payout;
+        address settlementEscrow;
         address fxRouter;
     }
 
@@ -172,6 +184,7 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         parameters = ParameterRegistry(wiring.parameters);
         compliance = IComplianceOracle(wiring.compliance);
         payout = ICrossChainPayout(wiring.payout);
+        settlementEscrow = SettlementEscrow(wiring.settlementEscrow);
         fxRouter = wiring.fxRouter;
     }
 
@@ -365,8 +378,27 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         merchants.noteOrigination(ctx.merchant, ctx.principal);
 
         uint256 payable_ = ctx.net - ctx.withholding;
-        asset.forceApprove(address(payout), payable_);
-        payout.payout(ctx.token, domain, recipient, payable_);
+
+        // MERCH-04, and **this is not a CHKT-04 regression (D-09)**. CHKT-04 is closed
+        // and reads "the merchant is credited in full minus MDR with sub-second
+        // finality"; MERCH-04 explicitly carves physical goods out of it. The money
+        // leaves the pool in this transaction either way and the merchant's claim on it
+        // is fixed in this transaction either way — what differs is whose custody it
+        // sits in until shipment is attested. The `Instant` branch below is byte-for-
+        // byte the Phase 3 path.
+        //
+        // The category is read **once, here, at origination**, and that is what closes
+        // D-06's mutability objection: the routing decision is immediate and
+        // irreversible, so a later `setCategory` cannot reach back and un-escrow a plan
+        // that has already settled. `SettlementEscrow.hold` stamps what it read onto the
+        // row so the escrow is self-describing afterwards.
+        if (merchants.categoryOf(ctx.merchant) == MerchantRegistry.SettlementCategory.Instant) {
+            asset.forceApprove(address(payout), payable_);
+            payout.payout(ctx.token, domain, recipient, payable_);
+        } else {
+            asset.forceApprove(address(settlementEscrow), payable_);
+            settlementEscrow.hold(ctx.planId, ctx.merchant, ctx.token, domain, recipient, payable_);
+        }
     }
 
     function _register(Context memory ctx, bytes32 sessionId) private {

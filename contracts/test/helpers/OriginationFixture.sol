@@ -22,6 +22,7 @@ import {FirstPaymentDefaultSwitch} from "../../src/FirstPaymentDefaultSwitch.sol
 import {Tier0Underwriter} from "../../src/Tier0Underwriter.sol";
 import {OriginationPause} from "../../src/OriginationPause.sol";
 import {CheckoutRouter} from "../../src/CheckoutRouter.sol";
+import {SettlementEscrow} from "../../src/SettlementEscrow.sol";
 import {IComplianceOracle} from "../../src/interfaces/IComplianceOracle.sol";
 import {ICreditPool} from "../../src/interfaces/ICreditPool.sol";
 import {IUnderwritingPartner} from "../../src/interfaces/IUnderwritingPartner.sol";
@@ -60,6 +61,7 @@ abstract contract OriginationFixture is PlanFixture {
     FirstPaymentDefaultSwitch internal killSwitch;
     Tier0Underwriter internal tier0;
     OriginationPause internal pauses;
+    SettlementEscrow internal settlementEscrow;
     CheckoutRouter internal checkout;
 
     uint256 internal constant UNDERWRITER_KEY = 0x0DDE511;
@@ -124,6 +126,12 @@ abstract contract OriginationFixture is PlanFixture {
         implementation = address(new InstallmentPlan());
         factory = new PlanFactory(implementation, address(jurisdictions), address(this));
 
+        // Before the router, because the router takes it as a constructor immutable.
+        // The reference back is installed by `setRouter` below, the same handshake
+        // `setOriginator` performs for the factory and the pool.
+        settlementEscrow =
+            new SettlementEscrow(address(this), address(merchants), address(payout), address(parameters));
+
         checkout = new CheckoutRouter(
             address(this),
             CheckoutRouter.Wiring({
@@ -138,11 +146,13 @@ abstract contract OriginationFixture is PlanFixture {
                 parameters: address(parameters),
                 compliance: address(compliance),
                 payout: address(payout),
+                settlementEscrow: address(settlementEscrow),
                 fxRouter: address(router)
             })
         );
 
         factory.setOriginator(address(checkout));
+        settlementEscrow.setRouter(address(checkout));
         creditPool.setOriginator(address(checkout));
         receivable.grantRole(receivable.ISSUER_ROLE(), address(checkout));
         tier0.grantRole(tier0.ORIGINATOR_ROLE(), address(checkout));

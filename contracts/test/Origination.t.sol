@@ -42,7 +42,21 @@ contract OriginationTest is OriginationFixture {
     ///      half a second with no reorgs, so there is no pending state for a merchant
     ///      to reconcile and no window in which the goods have gone and the money has
     ///      not. Every incumbent's T+2 exists because their rail cannot do this.
+    ///
+    ///      **The merchant here is `Instant`, and that is the claim, not a workaround
+    ///      (D-09).** CHKT-04 was written about digital and low-risk categories, and
+    ///      MERCH-04 explicitly carves physical goods out of it rather than regressing
+    ///      it. Reaching `Instant` needs both halves of D-06 — a seasoned merchant and
+    ///      a governance opt-out — so the setup below is the only route there is, and
+    ///      running it here is what keeps this test a statement about the path CHKT-04
+    ///      describes. The escrowed path's own settlement timing is
+    ///      `SettlementEscrow.t.sol`'s to assert.
     function test_theMerchantIsPaidInFullMinusMdrInTheSameTransaction() public {
+        vm.warp(vm.getBlockTimestamp() + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Instant);
+        _screenClear(borrower);
+        _screenClear(merchant);
+
         uint256 mdr = checkout.mdrFor(PRINCIPAL);
         uint256 net = PRINCIPAL - mdr;
         uint256 withheld = (net * merchants.vestingBpsFor(merchant)) / PlanParams.BPS;
