@@ -7,7 +7,8 @@
   "bin": {
     "arc-verify": "./dist/cli.js",
     "arc-slice": "./dist/slice-cli.js",
-    "arc-faucet": "./dist/faucet-cli.js"
+    "arc-faucet": "./dist/faucet-cli.js",
+    "arc-fx-spike": "./dist/fx-spike-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -17,6 +18,7 @@
     "slice": "tsx src/slice-cli.ts",
     "faucet": "tsx src/faucet-cli.ts",
     "spike:cctp": "tsx src/spike-cli.ts",
+    "spike:fx": "tsx src/fx-spike-cli.ts",
     "gov08": "tsx src/gov08-cli.ts"
   },
   "dependencies": {
