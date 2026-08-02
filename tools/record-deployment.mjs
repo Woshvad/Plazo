@@ -25,48 +25,82 @@ if (!chainId) {
 }
 
 const ROOT = join(import.meta.dirname, "..");
-const broadcastPath = join(ROOT, "contracts", "broadcast", "Deploy.s.sol", chainId, "run-latest.json");
 
-let run;
-try {
-  run = JSON.parse(readFileSync(broadcastPath, "utf8"));
-} catch {
-  console.error(`No broadcast for chain ${chainId} at ${broadcastPath}.`);
-  console.error("Run the deploy with --broadcast first.");
-  process.exit(1);
+function broadcastPathFor(script) {
+  return join(ROOT, "contracts", "broadcast", script, chainId, "run-latest.json");
 }
 
-const receipts = new Map((run.receipts ?? []).map((r) => [r.transactionHash, r]));
-const deployed = {};
-
-for (const tx of run.transactions ?? []) {
-  if (tx.transactionType !== "CREATE") continue;
-  const receipt = receipts.get(tx.hash);
-  if (!receipt) {
-    console.error(`No receipt for ${tx.contractName} (${tx.hash}). The broadcast did not complete.`);
+function readBroadcast(script, {required}) {
+  const path = broadcastPathFor(script);
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    if (!required) return null;
+    console.error(`No broadcast for chain ${chainId} at ${path}.`);
+    console.error("Run the deploy with --broadcast first.");
     process.exit(1);
   }
-  // Foundry writes status as "0x1"/"0x0" or 1/0 depending on the version.
-  const status = String(receipt.status);
-  if (status !== "0x1" && status !== "1") {
-    console.error(`${tx.contractName} reverted (${tx.hash}).`);
-    process.exit(1);
-  }
-  // The address comes from the transaction, never from the receipt.
-  //
-  // In Foundry's artefact the receipts array is written with `transactionHash` in
-  // mining order and `contractAddress` in submission order, so a receipt row can
-  // carry one transaction's hash beside another's deployed address. With four
-  // contracts the two orders happened to coincide and Phase 2's record was right by
-  // luck; with fifteen they did not, and preferring `receipt.contractAddress`
-  // produced a record in which the receivable token and the FX router shared an
-  // address. Every consumer of that file — the indexer, the keeper, the slice runner
-  // — would have believed it.
-  //
-  // The receipt is still what proves the deployment happened; it is just not what
-  // says where.
-  deployed[tx.contractName] = tx.contractAddress;
 }
+
+const run = readBroadcast("Deploy.s.sol", {required: true});
+
+/**
+ * Plan 06-13's rewire, if it has run.
+ *
+ * Optional on purpose: a chain that has only ever seen `Deploy.s.sol` produces
+ * exactly the record it produced before this file learned about the rewire, and a
+ * chain that has seen both produces one record naming the live addresses and the
+ * superseded ones side by side. The rewire replaces four contracts and adds three,
+ * and the ones it replaces have to stay named — the indexer decodes vintage-3
+ * origination history off the old `CheckoutRouter`, and the variable being unset is
+ * not neutral, it is silent loss of that history.
+ */
+const rewire = readBroadcast("Rewire.s.sol", {required: false});
+
+/**
+ * Every `CREATE` in a broadcast, keyed by contract name.
+ *
+ * One function rather than two loops, because the rewire's broadcast has to be read
+ * exactly the way the deploy's is — including the receipt check. A second copy of
+ * this loop is how one of them ends up trusting `receipt.contractAddress`.
+ */
+function createdIn(broadcast, label) {
+  const byHash = new Map((broadcast.receipts ?? []).map((r) => [r.transactionHash, r]));
+  const created = {};
+
+  for (const tx of broadcast.transactions ?? []) {
+    if (tx.transactionType !== "CREATE") continue;
+    const receipt = byHash.get(tx.hash);
+    if (!receipt) {
+      console.error(`No receipt for ${tx.contractName} (${tx.hash}) in ${label}. The broadcast did not complete.`);
+      process.exit(1);
+    }
+    // Foundry writes status as "0x1"/"0x0" or 1/0 depending on the version.
+    const status = String(receipt.status);
+    if (status !== "0x1" && status !== "1") {
+      console.error(`${tx.contractName} reverted (${tx.hash}) in ${label}.`);
+      process.exit(1);
+    }
+    // The address comes from the transaction, never from the receipt.
+    //
+    // In Foundry's artefact the receipts array is written with `transactionHash` in
+    // mining order and `contractAddress` in submission order, so a receipt row can
+    // carry one transaction's hash beside another's deployed address. With four
+    // contracts the two orders happened to coincide and Phase 2's record was right by
+    // luck; with fifteen they did not, and preferring `receipt.contractAddress`
+    // produced a record in which the receivable token and the FX router shared an
+    // address. Every consumer of that file — the indexer, the keeper, the slice runner
+    // — would have believed it.
+    //
+    // The receipt is still what proves the deployment happened; it is just not what
+    // says where.
+    created[tx.contractName] = tx.contractAddress;
+  }
+
+  return created;
+}
+
+const deployed = createdIn(run, "Deploy.s.sol");
 
 /**
  * Every contract the record must name.
@@ -125,6 +159,49 @@ const record = {
   ...Object.fromEntries(Object.entries(CONTRACTS).map(([key, name]) => [key, deployed[name]])),
 };
 
+/**
+ * The rewire overlay: what plan 06-13 replaced, and what it superseded.
+ *
+ * `to` is where the new address lands; `legacy` is where the address it replaced is
+ * kept. A replaced contract is renamed rather than dropped, because the ones this
+ * rewire supersedes are still callable and still hold state somebody needs —
+ * `poolOf[planId]` for every vintage-3 plan lives on the old `CheckoutRouter`, and the
+ * old `MerchantRegistry` still holds a merchant's standing bond. Nothing is revoked
+ * from any of them (D-24).
+ *
+ * `payout` becomes `payoutLegacy` and the live seam is `payoutRouter`, so there is one
+ * name for one thing. Two keys carrying the same address is how they later disagree.
+ */
+const REWIRED = {
+  MerchantRegistry: {to: "merchantRegistry", legacy: "merchantRegistryLegacy"},
+  PayoutRouter: {to: "payoutRouter", legacy: null, replaces: "payout", as: "payoutLegacy"},
+  ParameterRegistry: {to: "escrowParameterRegistry", legacy: null},
+  SettlementEscrow: {to: "settlementEscrow", legacy: null},
+  CheckoutRouter: {to: "checkoutRouter", legacy: "checkoutRouterLegacy"},
+  RefundEscrow: {to: "refundEscrow", legacy: null},
+};
+
+if (rewire) {
+  const created = createdIn(rewire, "Rewire.s.sol");
+
+  const absent = Object.keys(REWIRED).filter((name) => !created[name]);
+  if (absent.length > 0) {
+    console.error(`The rewire broadcast is missing: ${absent.join(", ")}`);
+    process.exit(1);
+  }
+
+  for (const [name, {to, legacy, replaces, as}] of Object.entries(REWIRED)) {
+    if (legacy) record[legacy] = record[to];
+    if (replaces) {
+      record[as] = record[replaces];
+      delete record[replaces];
+    }
+    record[to] = created[name];
+  }
+
+  record.rewireBlock = Number(rewire.receipts?.[0]?.blockNumber ?? 0);
+}
+
 const rpc = process.env.ARC_TESTNET_RPC_URL ?? "https://rpc.testnet.arc.io";
 
 /**
@@ -173,3 +250,11 @@ writeFileSync(out, `${JSON.stringify(record, null, 2)}\n`);
 console.log(`Wrote ${out}`);
 for (const [key, value] of Object.entries(record)) console.log(`  ${key.padEnd(21)} ${value}`);
 console.log("\nSet PLAZO_PLAN_FACTORY_ADDRESS and PLAZO_START_BLOCK for the indexer from this file.");
+if (record.checkoutRouterLegacy) {
+  console.log(
+    "This chain has been rewired. PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY must be set to\n" +
+      `  ${record.checkoutRouterLegacy}\n` +
+      "or vintage-3 origination history is silently not indexed — an unset legacy address\n" +
+      "is not neutral, it is the loss of every plan the old router originated.",
+  );
+}

@@ -290,9 +290,32 @@ interface Deployment {
   eligibilityRegistry: Address;
   compliance: Address;
   fxRouter: Address;
-  payout: Address;
+  /**
+   * The live settlement adapter — `PayoutRouter` since plan 06-13's rewire.
+   *
+   * `payoutLegacy` is `ArcLocalPayout`, which still holds code and is still callable
+   * and is pointed at by nothing. One name for one thing: the record used to carry a
+   * `payout` key whose meaning moved when the implementation did, and two keys
+   * carrying one address is how they later disagree.
+   */
+  payoutRouter: Address;
+  payoutLegacy?: Address;
   receivable: Address;
   merchantRegistry: Address;
+  merchantRegistryLegacy?: Address;
+  settlementEscrow: Address;
+  refundEscrow: Address;
+  /**
+   * The escrow timers' registry, and only theirs (DEC-72).
+   *
+   * `ESCROW_ATTESTATION_DEADLINE`, `ESCROW_RELEASE_TIMER` and
+   * `ESCROW_DISPUTE_TIMELOCK` are seeded by a private `_define` in
+   * `ParameterRegistry`'s constructor and `get()` reverts on an undefined key, so the
+   * vintage-3 registry — which predates plan 06-14 — can never carry them. The live
+   * registry keeps every origination, merchant and pool row; this one is read by the
+   * two escrows and by nothing else.
+   */
+  escrowParameterRegistry: Address;
   poolRegistry: Address;
   creditPool: Address;
   seniorShares: Address;
@@ -307,6 +330,15 @@ interface Deployment {
   installmentPlan: Address;
   planFactory: Address;
   checkoutRouter: Address;
+  /**
+   * The router the rewire replaced. Kept alive deliberately (D-24).
+   *
+   * `recognise` is permissionless and `poolOf[planId]` for every vintage-3 plan lives
+   * on this address, so nothing was revoked from it. The indexer needs it to decode
+   * origination history and the variable being unset is silent loss of that history,
+   * not a neutral default.
+   */
+  checkoutRouterLegacy?: Address;
 }
 
 /** POOL-12's permanent per-tranche seed. Protocol money, never redeemable. */
@@ -772,9 +804,12 @@ class Slice {
       ["ParameterRegistry", d.parameterRegistry],
       ["EligibilityRegistry", d.eligibilityRegistry],
       ["AllowlistCompliance", d.compliance],
-      ["ArcLocalPayout", d.payout],
+      ["PayoutRouter", d.payoutRouter],
       ["ReceivableToken", d.receivable],
       ["MerchantRegistry", d.merchantRegistry],
+      ["SettlementEscrow", d.settlementEscrow],
+      ["RefundEscrow", d.refundEscrow],
+      ["ParameterRegistry (escrow)", d.escrowParameterRegistry],
       ["PoolRegistry", d.poolRegistry],
       ["TranchedCreditPool", d.creditPool],
       ["SeniorShares", d.seniorShares],
