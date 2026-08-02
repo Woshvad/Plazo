@@ -60,6 +60,29 @@ contract MerchantRegistry is AccessControl {
     ///      is a deliberate act rather than a new deployment.
     bytes32 public constant SLASHER_ROLE = keccak256("PLAZO.SLASHER");
 
+    /// @notice Whether this merchant's settlement is held until shipment, or paid out
+    ///         in the origination transaction.
+    ///
+    /// @dev MERCH-04 and D-06. **`Escrowed` is ordinal zero, and that ordering is the
+    ///      security property rather than a stylistic choice.** A merchant record
+    ///      written before this field existed decodes it as zero, and a merchant
+    ///      nobody has looked at decodes it as zero, and in both cases the answer has
+    ///      to be "hold the money". The failure mode of the other ordering is a
+    ///      merchant who was never assessed being paid instantly for goods they may
+    ///      never ship, which is the exact fraud MERCH-04 exists to price.
+    ///
+    ///      It lives here rather than in `TermsDetail` because `TermsDetail` is a
+    ///      frozen preimage: a category field there changes `termsHash`, therefore
+    ///      `planId`, therefore the `plan-core` parity corpus and `packages/strip`.
+    ///      The mutability objection does not bind, because `CheckoutRouter` reads
+    ///      this **once, at origination**, and the routing decision is immediate and
+    ///      irreversible. The borrower's obligations are identical either way, which
+    ///      is why this is a merchant and pool control and not a signed term.
+    enum SettlementCategory {
+        Escrowed,
+        Instant
+    }
+
     struct Merchant {
         bool registered;
         bool kybVerified;
@@ -78,6 +101,11 @@ contract MerchantRegistry is AccessControl {
         uint64 bucketAt;
         /// @notice Per-merchant override. Zero means "use the policy default".
         uint256 velocityCapOverride;
+        /// @notice Whether settlement is escrowed until shipment (MERCH-04).
+        /// @dev **Appended, never inserted.** This registry holds a live book and
+        ///      every reader of `merchantOf` decodes the struct by position; moving a
+        ///      field would silently re-interpret a bond as a bucket.
+        SettlementCategory category;
     }
 
     IERC20 public immutable token;
@@ -98,6 +126,7 @@ contract MerchantRegistry is AccessControl {
     event PayoutRouteChanged(address indexed merchant, address recipient, uint32 domain);
     event ExposureChanged(address indexed merchant, uint256 outstanding, uint256 requiredBond);
     event VelocityCapOverridden(address indexed merchant, uint256 cap);
+    event SettlementCategoryChanged(address indexed merchant, uint8 category, address indexed by);
 
     error AlreadyRegistered(address merchant);
     error NotRegistered(address merchant);
@@ -108,6 +137,7 @@ contract MerchantRegistry is AccessControl {
     error VelocityCapExceeded(uint256 attempted, uint256 cap);
     error ExposureUnderflow(uint256 outstanding, uint256 reduction);
     error NothingToRelease();
+    error CannotUnescrowUnseasoned(address merchant);
 
     constructor(address admin, address token_, address parameters_) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -152,6 +182,43 @@ contract MerchantRegistry is AccessControl {
         m.payoutRecipient = payoutRecipient;
         m.payoutDomain = payoutDomain;
         emit PayoutRouteChanged(msg.sender, payoutRecipient, payoutDomain);
+    }
+
+    /// @notice Whether `merchant` settles instantly or into escrow. MERCH-04, D-06.
+    /// @dev `Escrowed` for an address nobody has ever registered, because the mapping
+    ///      returns a zero struct and `Escrowed` is ordinal zero. That is deliberate:
+    ///      the only safe answer about a merchant the protocol knows nothing about is
+    ///      "hold it".
+    function categoryOf(address merchant) public view returns (SettlementCategory) {
+        return _merchants[merchant].category;
+    }
+
+    /// @notice Move a merchant between settlement categories. MERCH-04's opt-out.
+    ///
+    /// @dev **Governance-gated on purpose, and deliberately not self-serve.**
+    ///      `setPayoutRoute` above is the merchant's own, because a payout route is a
+    ///      preference. This is a risk control: a merchant who could name themselves
+    ///      `Instant` would have an opt-out from the single strongest fraud control in
+    ///      the phase, which is no control at all.
+    ///
+    ///      The opt-out cannot reach an unseasoned merchant. Physical-goods escrow
+    ///      defaults **on** for a merchant with no track record, and that default is
+    ///      not waivable by attestation — which is why the seasoning test here reuses
+    ///      `vestingBpsFor` rather than inventing a second definition of "new". One
+    ///      definition of seasoning, in one place, or the two drift and the looser one
+    ///      wins.
+    ///
+    ///      Setting a merchant *back* to `Escrowed` is always allowed. Tightening a
+    ///      control should never need a waiting period.
+    function setCategory(address merchant, SettlementCategory category) external onlyRole(KYB_ROLE) {
+        Merchant storage m = _merchants[merchant];
+        if (!m.registered) revert NotRegistered(merchant);
+        if (category == SettlementCategory.Instant && vestingBpsFor(merchant) != 0) {
+            revert CannotUnescrowUnseasoned(merchant);
+        }
+
+        m.category = category;
+        emit SettlementCategoryChanged(merchant, uint8(category), msg.sender);
     }
 
     function setVelocityCapOverride(address merchant, uint256 cap) external onlyRole(DEFAULT_ADMIN_ROLE) {

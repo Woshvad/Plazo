@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.30;
 
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+
 import {OriginationFixture} from "./helpers/OriginationFixture.sol";
 
 import {CheckoutRouter} from "../src/CheckoutRouter.sol";
@@ -242,6 +244,108 @@ contract MerchantRegistryTest is OriginationFixture {
 
         merchants.setVelocityCapOverride(merchant, 1000e6);
         assertEq(merchants.velocityCapFor(merchant), 1000e6, "the override did not bind");
+    }
+
+    // ─── Settlement category (MERCH-04, D-06) ────────────────────────────────
+
+    /// @notice Escrowed is ordinal zero, so silence means "hold the money".
+    ///
+    /// @dev The enum ordering is the security property. A merchant record written
+    ///      before this field existed decodes it as zero, and an address nobody has
+    ///      ever registered decodes it as zero — and in both cases the answer has to be
+    ///      escrowed. The other ordering pays a merchant nobody assessed, instantly,
+    ///      for goods they may never ship.
+    function test_escrowedIsTheZeroValueAndThereforeTheDefault() public view {
+        assertEq(
+            uint8(MerchantRegistry.SettlementCategory.Escrowed),
+            0,
+            "Escrowed is not ordinal zero, so an uninitialised merchant would settle instantly"
+        );
+        assertEq(
+            uint8(merchants.categoryOf(merchant)),
+            uint8(MerchantRegistry.SettlementCategory.Escrowed),
+            "a freshly registered merchant was not escrowed by default"
+        );
+        assertEq(
+            uint8(merchants.categoryOf(address(0xC0FFEE))),
+            uint8(MerchantRegistry.SettlementCategory.Escrowed),
+            "an address nobody has registered reported as instant"
+        );
+    }
+
+    /// @notice The category is governance's to set, not the merchant's.
+    /// @dev `setPayoutRoute` is self-serve because a payout route is a preference. This
+    ///      is a risk control, and a merchant who could name themselves `Instant` would
+    ///      hold an opt-out from the strongest fraud control in the phase.
+    function test_theCategoryIsNotSelfServe() public {
+        // The role is read into a local first. `vm.prank` is consumed by the next
+        // external call, and `merchants.KYB_ROLE()` inside the expectation's arguments
+        // is an external call — the fixture documents this trap at lines 240-244.
+        bytes32 kyb = merchants.KYB_ROLE();
+
+        vm.prank(merchant);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, merchant, kyb)
+        );
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Instant);
+
+        vm.prank(stranger);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, stranger, kyb)
+        );
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Instant);
+    }
+
+    /// @notice The opt-out cannot reach a merchant with no track record.
+    ///
+    /// @dev Escrow defaults on for an unseasoned merchant and that default is not
+    ///      waivable by attestation. The merchant most likely to take an order and ship
+    ///      nothing is the one who onboarded this morning, so the one category change
+    ///      that would pay them instantly is the one that has to wait.
+    function test_anUnseasonedMerchantCannotBeUnescrowed() public {
+        assertGt(merchants.vestingBpsFor(merchant), 0, "the merchant is already seasoned");
+
+        vm.expectRevert(abi.encodeWithSelector(MerchantRegistry.CannotUnescrowUnseasoned.selector, merchant));
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Instant);
+
+        assertEq(
+            uint8(merchants.categoryOf(merchant)),
+            uint8(MerchantRegistry.SettlementCategory.Escrowed),
+            "the refused call moved the category anyway"
+        );
+    }
+
+    /// @notice The same call succeeds once the vesting window has elapsed.
+    /// @dev And the seasoning test reuses `vestingBpsFor`, so there is exactly one
+    ///      definition of "new merchant" in this contract rather than two that drift.
+    function test_aSeasonedMerchantMayBeMovedToInstantAndBack() public {
+        vm.warp(vm.getBlockTimestamp() + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
+        assertEq(merchants.vestingBpsFor(merchant), 0, "the merchant is still vesting");
+
+        vm.expectEmit(true, true, false, true, address(merchants));
+        emit MerchantRegistry.SettlementCategoryChanged(
+            merchant, uint8(MerchantRegistry.SettlementCategory.Instant), address(this)
+        );
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Instant);
+        assertEq(
+            uint8(merchants.categoryOf(merchant)),
+            uint8(MerchantRegistry.SettlementCategory.Instant),
+            "a seasoned merchant could not be opted out"
+        );
+
+        // Tightening a control never waits. Only loosening one does.
+        merchants.setCategory(merchant, MerchantRegistry.SettlementCategory.Escrowed);
+        assertEq(
+            uint8(merchants.categoryOf(merchant)),
+            uint8(MerchantRegistry.SettlementCategory.Escrowed),
+            "a merchant could not be put back into escrow"
+        );
+    }
+
+    /// @notice An unregistered address has no category to set.
+    function test_anUnregisteredAddressCannotBeCategorised() public {
+        vm.expectRevert(abi.encodeWithSelector(MerchantRegistry.NotRegistered.selector, newMerchant));
+        merchants.setCategory(newMerchant, MerchantRegistry.SettlementCategory.Escrowed);
     }
 
     // ─── Standing ────────────────────────────────────────────────────────────
