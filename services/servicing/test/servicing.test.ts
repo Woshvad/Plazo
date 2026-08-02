@@ -10,9 +10,9 @@ import {
   type UpcomingInstallment,
 } from "../src/balance.js";
 import {
-  DeliveryLog,
   dispatch,
   LEAD_TIMES_MS,
+  InMemoryDeliveryLog,
   ladderFor,
   missedNotices,
   receiptNotice,
@@ -20,8 +20,8 @@ import {
   type Transport,
 } from "../src/ladder.js";
 import {
-  AuditLog,
   can,
+  InMemoryAuditLog,
   NotAuthorized,
   perform,
   waiveFee,
@@ -131,7 +131,7 @@ describe("the reminder ladder", () => {
   });
 
   it("keys every notice so a retry cannot produce a second message", async () => {
-    const log = new DeliveryLog();
+    const log = new InMemoryDeliveryLog();
     const notice = receiptNotice(PLAN, 0, NOW);
     const transport: Transport = {send: async () => {}};
 
@@ -140,11 +140,11 @@ describe("the reminder ladder", () => {
 
     expect(first).toBe(1);
     expect(second).toBe(0);
-    expect(log.all()).toHaveLength(1);
+    expect(await log.all()).toHaveLength(1);
   });
 
   it("does not send a notice before its time", async () => {
-    const log = new DeliveryLog();
+    const log = new InMemoryDeliveryLog();
     const future: Notice = {...receiptNotice(PLAN, 0, at(48)), sendAt: at(48)};
 
     const sent = await dispatch([future], [{channel: "email", address: "a@b.c"}], {send: async () => {}}, log, NOW);
@@ -153,7 +153,7 @@ describe("the reminder ladder", () => {
 
   /** A log containing only successes cannot tell you an address has been bouncing. */
   it("records failures as well as sends", async () => {
-    const log = new DeliveryLog();
+    const log = new InMemoryDeliveryLog();
     const transport: Transport = {
       send: async () => {
         throw new Error("mailbox full");
@@ -162,23 +162,23 @@ describe("the reminder ladder", () => {
 
     await dispatch([receiptNotice(PLAN, 0, NOW)], [{channel: "email", address: "a@b.c"}], transport, log, NOW);
 
-    expect(log.failures()).toHaveLength(1);
-    expect(log.failures()[0]?.detail).toBe("mailbox full");
-    expect(log.wasSent(receiptNotice(PLAN, 0, NOW).key)).toBe(false);
+    expect(await log.failures()).toHaveLength(1);
+    expect((await log.failures())[0]?.detail).toBe("mailbox full");
+    expect(await log.wasSent(receiptNotice(PLAN, 0, NOW).key)).toBe(false);
   });
 
   /**
    * The audit the log exists for. The ladder is derivable from the chain by anybody, so
    * "we sent it" is checkable rather than assertable.
    */
-  it("reports the notices that should have gone out and did not", () => {
-    const log = new DeliveryLog();
+  it("reports the notices that should have gone out and did not", async () => {
+    const log = new InMemoryDeliveryLog();
     const past = {
       planId: PLAN,
       installments: [{index: 0, dueAt: new Date(NOW.getTime() - 60 * 60 * 1000)}],
     };
 
-    const missed = missedNotices(ladderFor(past), log, NOW);
+    const missed = await missedNotices(ladderFor(past), log, NOW);
     expect(missed.length).toBe(LEAD_TIMES_MS.length);
   });
 });
@@ -281,7 +281,7 @@ describe("the operator console", () => {
   const viewer: Operator = {id: "vic", roles: ["readonly"]};
 
   function deps(): ConsoleDeps {
-    return {log: new AuditLog(), now: () => NOW};
+    return {log: new InMemoryAuditLog(), now: () => NOW};
   }
 
   it("grants capabilities by role and nothing beyond them", () => {
@@ -308,7 +308,7 @@ describe("the operator console", () => {
     await expect(
       perform(d, support, "parameter.set", "plazo.pool.epochLength", "because", async () => 1),
     ).rejects.toBeInstanceOf(NotAuthorized);
-    expect(d.log.all()).toHaveLength(0);
+    expect(await d.log.all()).toHaveLength(0);
   });
 
   it("records every action it does allow", async () => {
@@ -320,9 +320,9 @@ describe("the operator console", () => {
       async () => {},
     );
 
-    expect(d.log.all()).toHaveLength(1);
-    expect(d.log.all()[0]?.reason).toContain("bank held");
-    expect(d.log.all()[0]?.detail.amount).toBe("5000000");
+    expect(await d.log.all()).toHaveLength(1);
+    expect((await d.log.all())[0]?.reason).toContain("bank held");
+    expect((await d.log.all())[0]?.detail.amount).toBe("5000000");
   });
 
   /** "Waived the late fee" tells a regulator nothing. The reason is the record. */
@@ -338,8 +338,9 @@ describe("the operator console", () => {
     await waiveFee(d, support, {planId: PLAN, amount: 1n, reason: "one"}, async () => {});
     await waiveFee(d, support, {planId: PLAN_B, amount: 2n, reason: "two"}, async () => {});
 
-    expect(d.log.verify()).toEqual({ok: true});
-    expect(d.log.all()[1]?.previous).toBe(d.log.all()[0]?.hash);
+    expect(await d.log.verify()).toEqual({ok: true});
+    const chained = await d.log.all();
+    expect(chained[1]?.previous).toBe(chained[0]?.hash);
   });
 
   /**
@@ -347,7 +348,7 @@ describe("the operator console", () => {
    * breaks every hash after it, and `verify` says which one.
    */
   it("reports where a tampered log stops adding up", async () => {
-    const log = new AuditLog();
+    const log = new InMemoryAuditLog();
     const d: ConsoleDeps = {log, now: () => NOW};
 
     await waiveFee(d, support, {planId: PLAN, amount: 1n, reason: "one"}, async () => {});
@@ -356,9 +357,9 @@ describe("the operator console", () => {
     // Somebody edits the record of the first waiver. The cast through `unknown` is the
     // point: the type system forbids this, so tampering has to be deliberate — and the
     // hash chain is what catches it when somebody deliberate does it anyway.
-    const entries = log.all() as unknown as {reason: string}[];
+    const entries = (await log.all()) as unknown as {reason: string}[];
     entries[0]!.reason = "no reason given";
 
-    expect(log.verify()).toEqual({ok: false, brokenAt: 0});
+    expect(await log.verify()).toEqual({ok: false, brokenAt: 0});
   });
 });

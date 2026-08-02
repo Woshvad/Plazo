@@ -158,37 +158,56 @@ export interface DeliveryRecord {
  *
  * Append-only is the requirement, not a design flourish. A delivery log an operator can
  * edit is a log that says whatever the operator needed it to say on the day somebody
- * asked — and "we notified you" is exactly the claim a borrower will dispute, in exactly
- * the jurisdictions where the answer decides whether a fee stands.
+ * asked, and "we notified you" is exactly the claim a borrower will dispute, in exactly
+ * the jurisdictions where the answer decides whether a fee stands. So the interface has
+ * no update and no delete, and neither implementation has one either.
  *
  * Failures are recorded, not discarded. A log containing only successes cannot tell you
  * that a borrower's address has been bouncing for three months.
+ *
+ * Every method returns a promise because one implementation is Postgres. See the same note
+ * on `console.ts`'s `AuditLog`: two interfaces with one name is worse than one interface
+ * with a promise the in-memory case did not need.
  */
-export class DeliveryLog {
+export interface DeliveryLog {
+  /** Every attempt, in the order it happened. */
+  all(): Promise<readonly DeliveryRecord[]>;
+  for(planId: Hex): Promise<readonly DeliveryRecord[]>;
+  /** Whether this exact notice has already gone out successfully. */
+  wasSent(key: string): Promise<boolean>;
+  record(record: DeliveryRecord): Promise<void>;
+  /** Attempts that never reached anybody. What an operator has to act on. */
+  failures(): Promise<readonly DeliveryRecord[]>;
+}
+
+/**
+ * The delivery log in process memory. Fine for a unit test, not a record.
+ *
+ * `resolveDeliveryLog` in `index.ts` picks this only when there is no `DATABASE_URL`, and
+ * says so at startup.
+ */
+export class InMemoryDeliveryLog implements DeliveryLog {
   readonly #records: DeliveryRecord[] = [];
   readonly #seen = new Set<string>();
 
-  /** Every attempt, in the order it happened. */
-  all(): readonly DeliveryRecord[] {
+  async all(): Promise<readonly DeliveryRecord[]> {
     return this.#records;
   }
 
-  for(planId: Hex): readonly DeliveryRecord[] {
+  async for(planId: Hex): Promise<readonly DeliveryRecord[]> {
     return this.#records.filter((r) => r.planId === planId);
   }
 
-  /** Whether this exact notice has already gone out successfully. */
-  wasSent(key: string): boolean {
+  async wasSent(key: string): Promise<boolean> {
     return this.#seen.has(key);
   }
 
-  record(record: DeliveryRecord): void {
+  async record(record: DeliveryRecord): Promise<void> {
     this.#records.push(record);
     if (record.outcome === "sent") this.#seen.add(record.key);
   }
 
-  /** Attempts that never reached anybody. What an operator has to act on. */
-  failures(): readonly DeliveryRecord[] {
+  async failures(): Promise<readonly DeliveryRecord[]> {
     return this.#records.filter((r) => r.outcome === "failed");
   }
 }
@@ -220,12 +239,12 @@ export async function dispatch(
 
   for (const notice of notices) {
     if (notice.sendAt > now) continue;
-    if (log.wasSent(notice.key)) continue;
+    if (await log.wasSent(notice.key)) continue;
 
     for (const contact of contacts) {
       try {
         await transport.send(notice, contact.address, contact.channel);
-        log.record({
+        await log.record({
           key: notice.key,
           kind: notice.kind,
           planId: notice.planId,
@@ -236,7 +255,7 @@ export async function dispatch(
         });
         sent += 1;
       } catch (error) {
-        log.record({
+        await log.record({
           key: notice.key,
           kind: notice.kind,
           planId: notice.planId,
@@ -260,12 +279,14 @@ export async function dispatch(
  * anybody — against what was actually delivered, so "we sent it" is checkable rather
  * than assertable.
  */
-export function missedNotices(
+export async function missedNotices(
   ladder: readonly Notice[],
   log: DeliveryLog,
   now: Date,
-): Notice[] {
-  return ladder.filter((n) => n.sendAt <= now && !log.wasSent(n.key));
+): Promise<Notice[]> {
+  const due = ladder.filter((n) => n.sendAt <= now);
+  const sent = await Promise.all(due.map((n) => log.wasSent(n.key)));
+  return due.filter((_, i) => !sent[i]);
 }
 
 export interface BorrowerContacts {

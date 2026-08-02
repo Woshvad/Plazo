@@ -1,0 +1,1 @@
+ALTER TABLE "operator"."notice_delivery" ADD COLUMN "seq" bigserial NOT NULL;

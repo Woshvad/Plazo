@@ -27,13 +27,12 @@ import {
   type UpcomingInstallment,
 } from "./balance.js";
 import {
-  DeliveryLog,
   ladderFor,
   missedNotices,
+  type DeliveryLog,
   type LadderInput,
 } from "./ladder.js";
 import {
-  AuditLog,
   can,
   NotAuthorized,
   resendNotice,
@@ -41,6 +40,7 @@ import {
   tripPause,
   waiveFee,
   type Capability,
+  type AuditLog,
   type ConsoleDeps,
   type Operator,
   type PlanView,
@@ -164,7 +164,7 @@ export function createServicingApi(deps: ServicingDeps) {
     if (!plans.some((p) => p.planId === planId)) return c.json({error: "not found"}, 404);
 
     return c.json({
-      deliveries: deps.deliveries.for(planId).map((d) => ({
+      deliveries: (await deps.deliveries.for(planId)).map((d) => ({
         kind: d.kind,
         channel: d.channel,
         outcome: d.outcome,
@@ -202,12 +202,12 @@ export function createServicingApi(deps: ServicingDeps) {
         index: i.index,
         dueAt: i.dueAt.toISOString(),
       })),
-      deliveries: deps.deliveries.for(planId).length,
+      deliveries: (await deps.deliveries.for(planId)).length,
       /**
        * The gap between what the ladder said should be sent and what the log says was.
        * The operator's own failure, surfaced without anyone having to ask for it.
        */
-      missed: missedNotices(ladder, deps.deliveries, deps.now()).map((n) => n.key),
+      missed: (await missedNotices(ladder, deps.deliveries, deps.now())).map((n) => n.key),
     });
   });
 
@@ -284,9 +284,9 @@ export function createServicingApi(deps: ServicingDeps) {
     if (denied) return c.json({error: denied.error}, denied.status);
 
     return c.json({
-      head: deps.audit.head(),
-      integrity: deps.audit.verify(),
-      entries: deps.audit.all().map((e) => ({
+      head: await deps.audit.head(),
+      integrity: await deps.audit.verify(),
+      entries: (await deps.audit.all()).map((e) => ({
         seq: e.seq,
         at: e.at.toISOString(),
         operator: e.operator,

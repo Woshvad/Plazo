@@ -14,9 +14,72 @@
  * every operator role at the zero address is what that means in practice, and it is why
  * the fee waiver settles by paying the plan rather than by reaching into it.
  */
+import {db} from "./db/client.js";
+import {InMemoryAuditLog, type AuditLog} from "./console.js";
+import {InMemoryDeliveryLog, type DeliveryLog} from "./ladder.js";
+import {PgAuditLog} from "./store/pg-audit.js";
+import {PgDeliveryLog} from "./store/pg-deliveries.js";
+
 export * from "./balance.js";
 export * from "./cctp.js";
 export * from "./ladder.js";
 export * from "./relayer.js";
 export * from "./console.js";
 export * from "./api.js";
+export * from "./db/schema.js";
+export * from "./db/client.js";
+export * from "./store/pg-audit.js";
+export * from "./store/pg-deliveries.js";
+
+/**
+ * Which stores the process is actually running on, said out loud.
+ *
+ * The banner is unconditional, matching the one `services/origination` prints for its
+ * session store and the sample-data banner on `apps/lender`. An operator must never have
+ * to infer whether the record in front of them is durable: "the audit log is gone" and
+ * "the audit log is fine" look identical from a request that succeeded, and the difference
+ * only surfaces after somebody has already asked for the log as evidence.
+ *
+ * That asymmetry is sharper here than it was for sessions. A lost checkout session costs
+ * somebody a re-signature; a lost audit log costs the operator the ability to answer a
+ * regulator, and it costs them it retroactively, for actions taken months earlier that
+ * everybody believed were recorded (D-19).
+ *
+ * The switch is the presence of `DATABASE_URL` and nothing cleverer, and it **throws**
+ * rather than degrading when the URL is set and the pool cannot be built. A store that
+ * fell back to memory on an unreachable database would turn an outage into silent loss of
+ * evidence; an unset variable is a deliberate choice and an unreachable database is a
+ * fault, and the two must not have the same consequence.
+ *
+ * The URL is never logged. It carries a password.
+ */
+function banner(line: string): void {
+  // eslint-disable-next-line no-console
+  console.log(line);
+}
+
+export function resolveAuditLog(url: string | undefined = process.env["DATABASE_URL"]): AuditLog {
+  if (url) {
+    banner("[plazo:servicing] audit log: postgres — append-only, hash-chained, survives a restart");
+    return new PgAuditLog(db(url));
+  }
+
+  banner(
+    "[plazo:servicing] audit log: in-memory — NOT EVIDENCE. Entries die with this process. Set DATABASE_URL to persist them.",
+  );
+  return new InMemoryAuditLog();
+}
+
+export function resolveDeliveryLog(
+  url: string | undefined = process.env["DATABASE_URL"],
+): DeliveryLog {
+  if (url) {
+    banner("[plazo:servicing] delivery log: postgres — every send attempt survives a restart");
+    return new PgDeliveryLog(db(url));
+  }
+
+  banner(
+    "[plazo:servicing] delivery log: in-memory — notice deliveries die with this process. Set DATABASE_URL to persist them.",
+  );
+  return new InMemoryDeliveryLog();
+}

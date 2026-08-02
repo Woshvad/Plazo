@@ -38,6 +38,7 @@
 import {sql} from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   check,
   index,
   integer,
@@ -222,6 +223,17 @@ export const noticeDelivery = operator.table(
   "notice_delivery",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /**
+     * Insertion order, and the only truthful answer to "in the order it happened".
+     *
+     * `sent_at` cannot carry it: one `dispatch` pass stamps every record it writes with
+     * the same `now`, so ordering by it leaves same-pass rows in whatever order the
+     * planner returns them. A random `id` is worse — it is a stable order that is not the
+     * real one, which is the kind of lie a log is specifically not allowed to tell. This
+     * is a `bigserial` and not a chosen value because, unlike `audit_entry.seq`, it is not
+     * inside any hash and nothing but the database needs to agree on it.
+     */
+    seq: bigserial("seq", {mode: "number"}).notNull(),
     /**
      * `${planId}:${index}:${kind}` — the notice's idempotency key, the same shape the
      * keeper's job key uses. `wasSent` reads this, so sending twice is impossible rather
