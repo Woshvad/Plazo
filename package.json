@@ -15,7 +15,7 @@
     "contracts:build": "forge build --root contracts",
     "contracts:test": "forge test --root contracts",
     "parity": "pnpm --filter @plazo/plan-core parity",
-    "boundary": "node tools/check-boundaries.mjs && node tools/check-test-clock.mjs",
+    "boundary": "node tools/check-boundaries.mjs && node tools/check-test-clock.mjs && node tools/check-no-oracle.mjs",
     "ci": "pnpm boundary && pnpm build && pnpm test"
   },
   "devDependencies": {
