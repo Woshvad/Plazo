@@ -14,3 +14,4 @@
  */
 export * from "./bridge.js";
 export * from "./checkout.js";
+export * from "./messaging.js";
