@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "lint": "node ../../tools/check-design-tokens.mjs"
+    "lint": "node ../../tools/check-design-tokens.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@plazo/plan-core": "workspace:*",
@@ -23,7 +24,9 @@
     "@types/node": "26.1.2",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "jsdom": "30.0.1",
     "tailwindcss": "4.3.3",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
   }
 }

@@ -98,6 +98,42 @@
   --shadow-hero: 8px 8px 0 var(--color-ink);
 }
 
+/* ── White label ──────────────────────────────────────────────────────────── */
+
+/*
+ * The four properties a PSP may repaint checkout's chrome with, and their defaults.
+ * APP-07.
+ *
+ * They are declared here so every consumer of the system has them defined even with no
+ * theme applied — an unthemed deployment paints Plazo's own accent rather than falling
+ * through to whatever the browser does with an unset `var()`.
+ *
+ * A partner's *values* do not live in this file. They are resolved server-side per
+ * deployment and emitted as inline custom properties on one wrapper element, because a
+ * theme baked into a stylesheet is a theme that needs a rebuild to change and a theme
+ * a query parameter could switch is a theme the framing page controls.
+ *
+ * The allowlist is closed at four, and it is a closed allowlist rather than a denylist
+ * on purpose: a denylist grows a hole every time this file gains a token, and the hole
+ * is always the one that hides text. `apps/checkout/app/_theme.ts` is the enforcement,
+ * and it names the eight properties that may never join this set.
+ *
+ * `--plazo-surface` and `--plazo-on-accent` are set by the *named theme*, never by the
+ * partner. A background and the ink on the accent are how legibility is decided, and
+ * that decision stays with the design system.
+ */
+@layer base {
+  :root {
+    --plazo-accent: var(--color-accent);
+    --plazo-radius: var(--radius-edge);
+    --plazo-logo-url: none;
+    --plazo-font-sans: var(--font-body);
+
+    --plazo-surface: var(--color-paper);
+    --plazo-on-accent: var(--color-ink);
+  }
+}
+
 /* ── Base ─────────────────────────────────────────────────────────────────── */
 
 @layer base {

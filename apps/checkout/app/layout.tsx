@@ -1,6 +1,9 @@
+import type {CSSProperties, ReactElement} from "react";
+
 import type {Metadata} from "next";
 import {IBM_Plex_Mono, Instrument_Sans, Space_Grotesk} from "next/font/google";
 
+import {configuredThemeId, resolveTheme, themeStyle} from "./_theme";
 import "./globals.css";
 
 /**
@@ -50,10 +53,39 @@ export const metadata: Metadata = {
   robots: {index: false, follow: false},
 };
 
-export default function RootLayout({children}: {children: React.ReactNode}) {
+/**
+ * The theme is resolved here and nowhere else. APP-07.
+ *
+ * Server-side, from the deployment's own configuration, into inline custom properties
+ * on one wrapper element. Everything a PSP can repaint is inside that wrapper and is
+ * exactly the four properties `_theme.ts` allows; everything that decides whether the
+ * buyer can read who they are borrowing from is outside it, or insulated from it.
+ *
+ * The partner mark is rendered here rather than in the page because it is chrome and
+ * because the decision is conditional: a deployment with no configured logo shows
+ * Plazo's own wordmark, and a conditional belongs in TypeScript where it can be read,
+ * not in CSS where it would have to be faked.
+ */
+export default function RootLayout({children}: {children: React.ReactNode}): ReactElement {
+  const theme = resolveTheme(configuredThemeId());
+
   return (
     <html lang="en" className={`${display.variable} ${body.variable} ${mono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <div data-plazo-theme={theme.id} style={themeStyle(theme) as CSSProperties}>
+          {theme.logoUrl ? (
+            <div className="mx-auto flex max-w-md items-center px-5 pt-5">
+              <span
+                aria-label={theme.label}
+                role="img"
+                className="block h-6 w-32 bg-contain bg-left bg-no-repeat"
+                style={{backgroundImage: "var(--plazo-logo-url)"}}
+              />
+            </div>
+          ) : null}
+          {children}
+        </div>
+      </body>
     </html>
   );
 }

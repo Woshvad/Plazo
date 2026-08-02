@@ -9,6 +9,7 @@
   "types": "./src/tokens.ts",
   "exports": {
     ".": "./src/tokens.ts",
+    "./contrast": "./src/contrast.ts",
     "./theme.css": "./src/theme.css"
   },
   "scripts": {
