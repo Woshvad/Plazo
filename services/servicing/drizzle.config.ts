@@ -21,6 +21,22 @@
  * from, this says what the run is allowed to reach. Every table added to `src/db/schema.ts`
  * must be added here too. The duplication is the point: widening what a migration can touch
  * is a deliberate act.
+ *
+ * ## And the filter only covers tables. Declare nothing else in `operator`.
+ *
+ * `tablesFilter` scopes tables. It does not scope sequences, enums, views or functions —
+ * those are schema-level objects, and the other service's push sees every one of them as an
+ * orphan with no declaration behind it and proposes a `DROP`.
+ *
+ * This is measured, not theoretical. A `bigserial` column added to `operator.notice_delivery`
+ * made `drizzle-kit push` from `services/origination` emit
+ * `DROP SEQUENCE "operator"."notice_delivery_seq_seq"`. It failed only because Postgres
+ * refused to drop a sequence a live column's default depends on; a standalone sequence would
+ * have gone. The rule that follows is a hard one for both services:
+ *
+ *   **No `serial`, no `bigserial`, no identity columns, no `pgEnum`, no views, no functions
+ *   inside `operator`.** Use a `uuid` default, a `text` column with a `check` constraint, or
+ *   a value the writer chooses. Plan 06-06 adds tables here and inherits this rule.
  */
 import {defineConfig} from "drizzle-kit";
 

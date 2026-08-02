@@ -11,7 +11,7 @@
  * went through a float would pass on 100 USDC and fail here, which is the only place the
  * bug would ever be caught before it reached a plan.
  */
-import {describe, expect, it} from "vitest";
+import {afterAll, beforeAll, describe, expect, it} from "vitest";
 import {keccak256, toHex, type Address, type Hex} from "viem";
 
 import {
@@ -25,7 +25,8 @@ import {
 } from "@plazo/plan-core";
 
 import {openSession, recordAcceptance, recordAuthorization, type CheckoutSession} from "../src/session.js";
-import {fromStoredSession, toStoredSession} from "../src/store/pg-session.js";
+import {fromStoredSession, PgSessionStore, toStoredSession} from "../src/store/pg-session.js";
+import {openTestDatabase, type TestDatabase} from "./db.fixture.js";
 
 const FACTORY = "0x00000000000000000000000000000000000fac70" as Address;
 const IMPLEMENTATION = "0x0000000000000000000000000000000000019911" as Address;
@@ -151,5 +152,112 @@ describe("a checkout session survives the trip to jsonb and back", () => {
     const under = fresh();
     expect(under.quote.fallback).toBeUndefined();
     expect("fallback" in toStoredSession(under).quote).toBe(false);
+  });
+});
+
+/**
+ * And now the half that needed a database.
+ *
+ * The codec suite above is a false positive on everything that lives outside the process:
+ * whether the committed DDL applies, whether `jsonb` gives back the object it was handed,
+ * and whether `put`'s `onConflictDoUpdate` updates rather than appends. 06-02a said so
+ * plainly and left the claim unproven; this is the plan that retires it.
+ */
+describe("a checkout session survives a real Postgres", () => {
+  let fixture: TestDatabase;
+
+  beforeAll(async () => {
+    fixture = await openTestDatabase();
+  }, 60_000);
+
+  afterAll(async () => {
+    await fixture?.close();
+  });
+
+  /**
+   * The restart. Written on one connection, read on another, with no object in common —
+   * which is what a redeploy leaves behind and what an in-memory store cannot survive.
+   */
+  it("round-trips through the database on a fresh client, bigints intact", async () => {
+    const session = fresh();
+    await new PgSessionStore(fixture.db).put(session);
+
+    const restored = await new PgSessionStore(fixture.connect()).get(session.sessionId);
+
+    expect(restored).toEqual(session);
+    expect(typeof restored?.terms.principal).toBe("bigint");
+    expect(restored?.terms.principal).toBe(session.terms.principal);
+    expect(restored?.quote.mdr).toBe(session.quote.mdr);
+  });
+
+  /**
+   * The assertion a float implementation fails and a `numeric` column would round.
+   *
+   * Past `Number.MAX_SAFE_INTEGER`, which at 6-decimal USDC is about $9.007bn — reachable
+   * by a chain id or a due date long before it is reachable by a cart.
+   */
+  it("preserves a value past the safe-integer boundary through jsonb", async () => {
+    const enormous = 9_007_199_254_740_993n;
+    const base = fresh();
+    const stretched: CheckoutSession = {
+      ...base,
+      sessionId: keccak256(toHex("session-enormous")),
+      terms: {...base.terms, firstDueDate: enormous},
+      quote: {...base.quote, availableLimit: enormous},
+    };
+
+    const store = new PgSessionStore(fixture.db);
+    await store.put(stretched);
+
+    const restored = await new PgSessionStore(fixture.connect()).get(stretched.sessionId);
+    expect(restored?.terms.firstDueDate).toBe(enormous);
+    expect(restored?.quote.availableLimit).toBe(enormous);
+  });
+
+  /**
+   * `recordAuthorization` returns a **new** record rather than mutating one, so `put` is
+   * write-whole-row. The failure this catches is a store that inserted instead of upserting:
+   * the session would still read back correctly on `get` — the row it found would just be
+   * one of two — and the table would grow a row per signature until a primary key finally
+   * complained. Counting rows is the only assertion that sees it.
+   */
+  it("overwrites the row on a transition rather than appending one", async () => {
+    const store = new PgSessionStore(fixture.db);
+    const opened = {...fresh(), sessionId: keccak256(toHex("session-transitions"))};
+    await store.put(opened);
+
+    let session = recordAuthorization(opened, 0, sig(0), authorizations[0]!, NOW);
+    await store.put(session);
+    session = recordAuthorization(session, 1, sig(1), authorizations[1]!, NOW);
+    await store.put(session);
+
+    const rows = await fixture
+      .raw()`select count(*)::int as n from operator.checkout_session where session_id = ${opened.sessionId}`;
+    expect(rows[0]?.["n"]).toBe(1);
+
+    const restored = await new PgSessionStore(fixture.connect()).get(opened.sessionId);
+    expect(restored?.signatures.strip[0]).toBe(sig(0));
+    expect(restored?.signatures.strip[1]).toBe(sig(1));
+    expect(restored?.state).toBe("signing");
+  });
+
+  /**
+   * The denormalised columns exist so a dashboard never parses jsonb to draw a list. If
+   * they stop tracking the payload they are worse than absent: a sweeper reading
+   * `expires_at` would be reading a value from two transitions ago.
+   */
+  it("keeps the denormalised columns in step with the payload", async () => {
+    const store = new PgSessionStore(fixture.db);
+    const opened = {...fresh(), sessionId: keccak256(toHex("session-columns"))};
+    await store.put(opened);
+    await store.put(recordAuthorization(opened, 0, sig(0), authorizations[0]!, NOW));
+
+    const rows = await fixture
+      .raw()`select merchant, state, plan_id, expires_at from operator.checkout_session where session_id = ${opened.sessionId}`;
+
+    expect(rows[0]?.["merchant"]).toBe(MERCHANT);
+    expect(rows[0]?.["state"]).toBe("signing");
+    expect(rows[0]?.["plan_id"]).toBe(planId);
+    expect((rows[0]?.["expires_at"] as Date).getTime()).toBe(opened.expiresAt * 1000);
   });
 });

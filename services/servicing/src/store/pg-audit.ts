@@ -67,14 +67,24 @@ export class AuditForkError extends Error {
   }
 }
 
-/** SQLSTATE 23505. The driver surfaces it on a plain object property, not a subclass. */
+/**
+ * SQLSTATE 23505, wherever it ended up in the chain.
+ *
+ * Drizzle wraps a driver error in a `DrizzleQueryError` and hangs the original off `cause`,
+ * so the code is one level down and not always the same level — checking only the top of
+ * the chain silently misses every violation, which is exactly what the fork test caught the
+ * first time it ran. Walking the chain is bounded rather than recursive because a cycle in a
+ * `cause` chain is not impossible and a hang here would look like a deadlock.
+ */
 function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as {code?: unknown}).code === "23505"
-  );
+  let current: unknown = error;
+
+  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth += 1) {
+    if ((current as {code?: unknown}).code === "23505") return true;
+    current = (current as {cause?: unknown}).cause;
+  }
+
+  return false;
 }
 
 /**

@@ -13,12 +13,18 @@
  * an operator that a borrower's address has been bouncing for three months, which is one of
  * the two things it exists for.
  *
- * ## Ordering
+ * ## Ordering, and what it does not claim
  *
- * `all()` orders by `seq`, the table's `bigserial`, and not by `sent_at`. One `dispatch`
- * pass stamps every record it writes with the same `now`, so `sent_at` cannot distinguish
- * them and ordering by it would return same-pass rows in whatever order the planner felt
- * like. See the column's own note in `db/schema.ts`.
+ * Reads order by `(sent_at, id)`. That is deterministic but not causal: one `dispatch` pass
+ * stamps every row it writes with the same `now`, so rows from a single pass come back in
+ * `id` order, which is `gen_random_uuid()` order, which is nothing.
+ *
+ * This is deliberate rather than a shortfall. Those sends happened in a loop over one
+ * borrower's contacts at one logical instant and there is no order between them to record.
+ * A `bigserial` would have invented one that reads as more precise than the data — and it
+ * cannot live in this schema in any case, because `tablesFilter` does not scope sequences
+ * and the other service's push would offer to drop it. `drizzle.config.ts` carries the
+ * measurement.
  */
 import {and, asc, eq} from "drizzle-orm";
 
@@ -47,7 +53,7 @@ export class PgDeliveryLog implements DeliveryLog {
   constructor(private readonly database: Db) {}
 
   async all(): Promise<readonly DeliveryRecord[]> {
-    const rows = await this.database.select().from(noticeDelivery).orderBy(asc(noticeDelivery.seq));
+    const rows = await this.database.select().from(noticeDelivery).orderBy(asc(noticeDelivery.sentAt), asc(noticeDelivery.id));
     return rows.map(toRecord);
   }
 
@@ -56,7 +62,7 @@ export class PgDeliveryLog implements DeliveryLog {
       .select()
       .from(noticeDelivery)
       .where(eq(noticeDelivery.planId, planId))
-      .orderBy(asc(noticeDelivery.seq));
+      .orderBy(asc(noticeDelivery.sentAt), asc(noticeDelivery.id));
 
     return rows.map(toRecord);
   }
@@ -71,7 +77,7 @@ export class PgDeliveryLog implements DeliveryLog {
    */
   async wasSent(key: string): Promise<boolean> {
     const rows = await this.database
-      .select({seq: noticeDelivery.seq})
+      .select({id: noticeDelivery.id})
       .from(noticeDelivery)
       .where(and(eq(noticeDelivery.noticeKey, key), eq(noticeDelivery.outcome, "sent")))
       .limit(1);
@@ -97,7 +103,7 @@ export class PgDeliveryLog implements DeliveryLog {
       .select()
       .from(noticeDelivery)
       .where(eq(noticeDelivery.outcome, "failed"))
-      .orderBy(asc(noticeDelivery.seq));
+      .orderBy(asc(noticeDelivery.sentAt), asc(noticeDelivery.id));
 
     return rows.map(toRecord);
   }

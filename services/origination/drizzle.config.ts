@@ -18,6 +18,22 @@
  * Every table added to `src/db/schema.ts` must be added here too. That duplication is
  * the point: adding a table is a deliberate act, and so is widening what a migration can
  * touch.
+ *
+ * ## And the filter only covers tables. Declare nothing else in `operator`.
+ *
+ * `tablesFilter` scopes tables. It does not scope sequences, enums, views or functions —
+ * those are schema-level objects, and a push from either service sees every one of them
+ * that it did not declare as an orphan and proposes a `DROP`.
+ *
+ * Measured in plan 06-02b: a `bigserial` column on `operator.notice_delivery` — a
+ * `@plazo/servicing` table this config has never heard of — made **this** config's push emit
+ * `DROP SEQUENCE "operator"."notice_delivery_seq_seq"`. It failed only because Postgres
+ * refuses to drop a sequence a live column's default depends on. A standalone sequence, or
+ * a `DROP ... CASCADE`, would have gone through.
+ *
+ *   **No `serial`, no `bigserial`, no identity columns, no `pgEnum`, no views, no functions
+ *   inside `operator`, in either service.** Use a `uuid` default, a `text` column with a
+ *   `check` constraint, or a value the writer chooses.
  */
 import {defineConfig} from "drizzle-kit";
 

@@ -1,0 +1,14 @@
+-- 0001 added this column and was wrong. The correction is a migration rather than a
+-- rewritten history, because the next person to reach for a bigserial in this schema will
+-- read the migrations before they read the config.
+--
+-- `tablesFilter` scopes tables and nothing else. The sequence behind a bigserial is a
+-- schema-level object, so it is invisible to the filter, and the OTHER operator service's
+-- next push introspects `operator`, finds a sequence it never declared, and emits
+-- DROP SEQUENCE "operator"."notice_delivery_seq_seq". Measured: that is exactly what
+-- `drizzle-kit push` from services/origination proposed. It failed only because Postgres
+-- refuses to drop a sequence a live column's default depends on. A standalone sequence,
+-- or a DROP ... CASCADE, would have gone through and taken a servicing object with it.
+--
+-- No serial, no bigserial, no identity columns, no pgEnum, no views inside `operator`.
+ALTER TABLE "operator"."notice_delivery" DROP COLUMN "seq";

@@ -15,6 +15,13 @@
       "when": 1785663508926,
       "tag": "0001_clean_queen_noir",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785664299746,
+      "tag": "0002_massive_carmella_unuscione",
+      "breakpoints": true
     }
   ]
 }

@@ -29,7 +29,18 @@ services:
       POSTGRES_USER: plazo
       POSTGRES_PASSWORD: plazo
     ports:
-      - "5432:5432"
+      # 5432 unless the host already has something there.
+      #
+      # Postgres's default port is the one every other project on a developer's
+      # machine also claims, so "the port is taken" is the normal case rather than
+      # the exceptional one — and the tempting fix, an untracked `-f` override file
+      # kept outside the repository, works on exactly one machine and silently does
+      # not exist for the next contributor or for CI. Making it a variable with the
+      # conventional default keeps `docker compose up -d postgres` correct on a host
+      # where 5432 is free and one line of `.env` away from correct on a host where
+      # it is not. `PLAZO_PG_PORT` is documented in `.env.example`, and Compose reads
+      # `.env` from the project directory without being asked.
+      - "${PLAZO_PG_PORT:-5432}:5432"
     volumes:
       - plazo-pgdata:/var/lib/postgresql/data
     healthcheck:

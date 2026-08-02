@@ -38,7 +38,6 @@
 import {sql} from "drizzle-orm";
 import {
   bigint,
-  bigserial,
   check,
   index,
   integer,
@@ -86,6 +85,18 @@ export const operator = pgSchema("operator");
  * `previous.seq + 1` in the same expression that chains the hash, and Postgres holds it as
  * a primary key. Starting at 0 matches the in-memory implementation exactly, so the two
  * produce byte-identical chains from the same inputs.
+ *
+ * There is a second reason, discovered by running the push rather than by reading the
+ * docs, and it applies to every table in this schema: **no column here may be `serial`,
+ * `bigserial` or an identity column.** `tablesFilter` scopes tables and nothing else. A
+ * sequence is a schema-level object, so the sequence behind a `bigserial` is invisible to
+ * the filter — the *other* service's next push introspects the shared `operator` schema,
+ * finds a sequence with no declaration behind it, calls it an orphan and emits
+ * `DROP SEQUENCE`. Measured: adding one `bigserial` to `notice_delivery` made
+ * `drizzle-kit push` from `services/origination` propose dropping it, and the only thing
+ * that stopped it was Postgres refusing because the column's default depended on it. A
+ * standalone sequence, or a `DROP ... CASCADE`, would have gone through. See the rule in
+ * `drizzle.config.ts`.
  *
  * There is no update and no delete path — not in this file, not in the store, and in a
  * deployed environment not in the grants either.
@@ -218,22 +229,20 @@ export const webhookDelivery = operator.table(
  *
  * Failures are rows, not discards, and there is no update path: a second attempt is a
  * second row.
+ *
+ * ## There is no sequence column, and the log does not claim an order it has not got
+ *
+ * `all()` orders by `(sent_at, id)`. One `dispatch` pass stamps every row it writes with
+ * the same `now`, so rows from one pass are returned in a deterministic but arbitrary
+ * order — and that is the honest answer, because those sends happened in a loop over one
+ * borrower's contacts at one logical instant and there is no causal order between them to
+ * record. A `bigserial` would have manufactured one that looked more precise than the
+ * data, and it cannot live in a shared schema anyway (see `auditEntry` above).
  */
 export const noticeDelivery = operator.table(
   "notice_delivery",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    /**
-     * Insertion order, and the only truthful answer to "in the order it happened".
-     *
-     * `sent_at` cannot carry it: one `dispatch` pass stamps every record it writes with
-     * the same `now`, so ordering by it leaves same-pass rows in whatever order the
-     * planner returns them. A random `id` is worse — it is a stable order that is not the
-     * real one, which is the kind of lie a log is specifically not allowed to tell. This
-     * is a `bigserial` and not a chosen value because, unlike `audit_entry.seq`, it is not
-     * inside any hash and nothing but the database needs to agree on it.
-     */
-    seq: bigserial("seq", {mode: "number"}).notNull(),
     /**
      * `${planId}:${index}:${kind}` — the notice's idempotency key, the same shape the
      * keeper's job key uses. `wasSent` reads this, so sending twice is impossible rather
