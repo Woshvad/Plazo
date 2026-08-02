@@ -645,3 +645,196 @@ their routing, that shows up as a failed assertion rather than as a silent behav
   have to be trusted.
 - **One dollar is not a ceiling test.** `burnLimitsPerMessage(USDC)` reads 1e13 and the gate
   asserts it, but nothing here exercised a burn anywhere near it.
+
+---
+
+# Phase 6 addendum — the merchant plane on the live book
+
+## What the Phase 6 live run proved
+
+`forge script script/Rewire.s.sol --broadcast` and `pnpm --filter @plazo/arc-verify slice`,
+2026-08-02, chain 5042002, block ~54,929,585.
+
+Six contracts deployed in one broadcast — a new `MerchantRegistry`, `PayoutRouter`, an
+escrow-only `ParameterRegistry`, `SettlementEscrow`, `CheckoutRouter` and `RefundEscrow` —
+for a total estimated 20,724,994 gas, **0.833 USDC** quoted and about 0.32 actually spent.
+Nothing was revoked from vintage 3.
+
+| Claim | Evidence |
+|---|---|
+| Every contract in the record holds bytecode | 22 addresses, including the six new ones |
+| A settlement to a non-Arc domain credits a queue and not a wallet | `queued(usdc, merchant, 6)` 0 → 1.000000; the merchant's Arc balance did not move |
+| …and credits **only** that domain (DEC-36) | `queued(usdc, merchant, 3)` stayed zero |
+| A wallet holding no role pushes it across (GOV-08 row 11) | `dispatch` from `0x881fc8B8…`, **0.002792245 USDC** of gas, no role on any contract |
+| The queue is zeroed before the external call | `queued` read zero immediately after |
+| **A contract's burn clears out of Arc, not just an EOA's** | `MessageSent`, **376 bytes**, from `MessageTransmitterV2` — [`0x1fd0b4f0…c45a5504a`](https://testnet.arcscan.app/tx/0x1fd0b4f0f2636e0546d9a602338282b3293c89732961392fd9d8423c45a5504a) |
+| Iris attests it | `complete` after **4.0 s**, 130 bytes — two signatures, matching `signatureThreshold() == 2` |
+| The tracking identifier comes from Circle, not from the chain | `eventNonce 0x3e69a51d…c6`; the emitted message's nonce field is still all zeros |
+| An unseasoned merchant settles into escrow by default (D-06) | `categoryOf` reads 0 — `Escrowed` is ordinal zero |
+| The category opt-out cannot reach an unseasoned merchant | `setCategory(_, Instant)` refused with `KYB_ROLE` held |
+| The escrow timers read from a registry, not a constant (D-08) | 168 h / 72 h / 72 h, live |
+| The old router is alive for the paper it originated (D-24) | `poolOf` on `0x26482cfc…` still returns the pool for both vintage-3 plans; `openPlans` read **0** before the cut |
+| The D-25 renounce guard refuses the live book | demonstrated firing against `EligibilityRegistry`, not asserted to exist |
+
+**36 assertions on the first run, 28 on the second** — the drop is the burn correctly
+reporting as spent rather than passing twice (findings 17, 24, 25).
+
+### 29. The live `ParameterRegistry` can never carry the escrow rows, and `get()` reverts
+
+`ParameterKeys.ESCROW_ATTESTATION_DEADLINE`, `ESCROW_RELEASE_TIMER` and
+`ESCROW_DISPUTE_TIMELOCK` were added in plan 06-14. They are seeded by `_define`, which is
+**private and called only from `ParameterRegistry`'s constructor**, and `get()` reverts
+`ParameterUndefined` on a key nobody set rather than returning zero — deliberately, and the
+contract's header says why.
+
+The vintage-3 registry predates 06-14. All three read `isDefined == false` on chain, and
+there is no function anywhere that could add them.
+
+That is not cosmetic. `SettlementCategory.Escrowed` is ordinal zero, so **every** unseasoned
+merchant escrows; `release`, `refundToPool` and `executeSlash` all read one of those rows;
+and a settlement held by an escrow that cannot compute its own deadline is a settlement
+that strands permanently, with the borrower still paying.
+
+The registry is a constructor immutable on `TranchedCreditPool`, `Tier0Underwriter`,
+`MerchantRegistry`, `PlazoPassport`, `RelayerGate` and `FirstPaymentDefaultSwitch`, so
+replacing it is a new pool and a migration of every tranche position — which the standing
+Phase 5 constraint forbids.
+
+**The rewire therefore deploys a second `ParameterRegistry` read by the two escrows and by
+nothing else (DEC-72).** The split is by reader and the key sets are disjoint: the live
+registry keeps `MDR_BPS`, `ATTESTATION_MAX_TTL`, `MIN_TICKET`, `MAX_TICKET`,
+`LIMIT_HARD_CEILING`, every merchant row and every pool row, along with its governance
+history. Its bands are the same compiled `require()`s, so the 24-hour dispute-timelock floor
+that stops `SLASHER_ROLE` becoming an instant key over every bond is enforced identically.
+
+**The general lesson, which will recur:** a `ParameterRegistry` whose rows are constructor-
+seeded cannot be extended, so **adding a `ParameterKeys` row is a registry redeployment**.
+Anything holding it as an immutable either moves with it or reads a second one. Nothing in
+`ParameterRegistry`'s own docstring says this and it is the kind of thing that is obvious
+once and never again.
+
+### 30. A vintage-3 `MerchantRegistry` cannot serve a Phase 6 router, and the failure is total
+
+Plan 06-09 added `SettlementCategory`, a `category` field inside the `Merchant` struct, and
+`categoryOf`. `CheckoutRouter._settleMerchant` calls `categoryOf` on **every** origination.
+
+The live registry predates it. Measured against `0xcbab6e5e…`: `categoryOf` reverts, while
+`vestingBpsFor`, `payoutRouteOf` and `velocityCapFor` all answer — so the contract is alive
+and only that one selector is missing, which is the shape that makes this easy to miss. A
+rewire that had kept it would have deployed a router whose every checkout reverts, and no
+local test could have found it: the fixture deploys the current source.
+
+`MerchantRegistry` is a plain constructor deployment with no upgrade path, so it was
+redeployed. The blast radius is exactly the three contracts that reference it —
+`CheckoutRouter`, `SettlementEscrow` and `RefundEscrow` — all of which are new in this
+rewire. The merchant's standing bond on the old registry is not stranded: `withdrawBond` is
+merchant-callable and `requiredBond` is zero with no fronted exposure outstanding.
+
+**Read the deployed contract, not the source, before wiring a new contract to an old one.**
+The cheapest form of that check is an `eth_call` of the one selector the new caller depends
+on. It costs nothing and it is the difference between a working rewire and a router that
+reverts on every checkout.
+
+### 31. `abitype` refuses `defined` as a parameter name, so `ParameterRegistry.parameter` needs the tuple form
+
+`parseAbi(["function parameter(bytes32) view returns (uint256 value, uint256 min, uint256 max, bool defined)"])`
+throws `SolidityProtectedKeywordError` at parse time — `defined` is on abitype's reserved
+list. The struct compiles and the ABI is fine; only the human-readable form is refused.
+
+Use the anonymous tuple: `returns ((uint256,uint256,uint256,bool))`. Worth a line because
+the error names Solidity, which sends a reader to the contract, and the contract is correct.
+
+## The refund-arbitrage bond, as arithmetic
+
+The phase context asked for a number nobody has computed: whether the exposure-scaled bond
+covers a realistic refund-arbitrage loss. Every input below is **read live from the
+`ParameterRegistry` at `0x753e08a6…`** by `pnpm --filter @plazo/arc-verify gov08`, and the
+same reads are taken again after the run and compared, so "no parameter was moved to make
+this read better" is a check rather than a promise. It reported them identical.
+
+| Row | Value |
+|---|---|
+| `MERCHANT_BOND_BPS` | 1000 bp (10%) |
+| `MERCHANT_BOND_FLOOR` | 0 USDC — a setting inside its 0…10,000 band, so the exposure-scaled term is what is exercised |
+| `MERCHANT_VESTING_BPS` | 1000 bp (10%) |
+| `MERCHANT_VESTING_WINDOW` | 90 days |
+| `MERCHANT_VELOCITY_CAP` | 5,000 USDC |
+| `MERCHANT_VELOCITY_WINDOW` | 24 hours |
+| `MDR_BPS` | 400 bp (4%) |
+
+A day-one merchant, fronting their whole allowance inside one velocity window:
+
+| | |
+|---|---|
+| One velocity-cap window of fronted principal | 5,000.00 |
+| What the pool actually pays out, less MDR | 4,800.00 |
+| Bond the merchant must hold against it | **500.00** |
+| …withheld from their own settlements (DEC-09) | 480.00 |
+| …their own capital | **20.00** |
+| The confederate's down payment, check #1 at checkout | 1,250.00 |
+| Pool loss — ships nothing, pays nothing more | **3,550.00** |
+| Pool loss — nothing comes back at all | 4,800.00 |
+
+**The bond does not cover one velocity-cap window of fronted exposure. It covers 14.1% of a
+realistic refund-arbitrage loss and 10.4% of what the pool fronted.**
+
+It is not designed to and it cannot be. The bond is priced as a *share* of exposure, so it
+is that share by construction: raising `MERCHANT_BOND_BPS` to its 5,000 bp ceiling would
+take it to 50%, and a merchant would have to post 2,500 USDC of capital to front 5,000 —
+which is not a bond, it is prepayment, and it would close the corridor to exactly the
+cross-border sellers this product is for.
+
+Nothing here is recovered inside the window, either. `TranchedCreditPool.minInterval` is an
+immutable seven days, so the first installment after checkout cannot fall sooner and a
+24-hour velocity window is entirely front.
+
+**What actually bounds this loss is the velocity cap and MERCH-04's escrow, not the bond.**
+The cap is what makes 5,000 the ceiling rather than an opening balance; the escrow is what
+makes the fraud require attesting a shipment that did not happen and then surviving seven
+days before `refundToPool` sends the settlement back — and it defaults *on*, because
+`Escrowed` is ordinal zero. Read that way the three controls are a sequence rather than
+three attempts at the same job: the escrow delays settlement for the merchant class where
+"shipped nothing" is the fraud, the cap bounds what one unseasoned merchant can reach, and
+the bond takes a first bite out of whatever gets through.
+
+The honest residue: for a merchant governance has moved to `Instant`, the cap and the bond
+are the whole of it, and 14% coverage of a total-default window is the number. That belongs
+on the standing cohort-recalibration track, which owns the parameter. This plan owns
+writing it down.
+
+## The GOV-08 live witness is deferred on funding, and here is the exact gap
+
+`PLAZO_GOV08=1 pnpm --filter @plazo/arc-verify gov08`, 2026-08-02, exit 0. The run reports
+its branch in its first four lines and takes the unfunded one, which is a precondition that
+was not met rather than a failure.
+
+| | |
+|---|---|
+| Deployer | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` |
+| Held | 80.43295 USDC |
+| Peak requirement | 409.84 USDC |
+| **Shortfall** | **329.40705 USDC** |
+| Faucet visits implied | **17**, at ~20 USDC per address |
+
+**GOV-08 is proven by `forge test --root contracts --mt test_operatorFreeLoop`.** That is
+the gate and it is green. The live witness is a best-effort extra.
+
+### Top-up procedure
+
+1. Visit `https://faucet.circle.com`, select **Arc Testnet**, and request USDC to
+   `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2`. The drip is ~20 USDC per address per
+   request, so closing 329.40705 USDC takes **17 requests**. `pnpm --filter @plazo/arc-verify faucet`
+   reports progress against the same exported `REQUIRED` the witness enforces.
+2. Re-run `PLAZO_GOV08=1 pnpm --filter @plazo/arc-verify gov08`. It re-reads the balance and
+   branches again; it deploys nothing until the precondition is met.
+3. The peak figure is `REQUIRED` in `packages/arc-verify/src/slice.ts`, exported so it is
+   written once. It is 409.84 USDC: 322 of book capitalisation, 10 of merchant bond, 75 of
+   borrower float, 1.60 of mark escrow, 1.00 for the payout probe and 0.24 of gas float.
+   Most of it is the book rather than a cost, but on a **throwaway** stack none of it comes
+   back — that is what throwaway means.
+4. Row 12, the negative control, must report as a counted assertion. Paste the output here.
+
+**Widening the Tier-0 band to make the run fit is forbidden.** UW-02's cap is why a $75
+ticket needs $300 behind it (finding 13), and DEC-02 put Tier 0 on pool capital from day one
+on the understanding that the cap was real. It is also the same registry the bond worked
+example above reads, so a moved band would corrupt that too.

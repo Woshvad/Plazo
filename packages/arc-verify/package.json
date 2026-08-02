@@ -16,7 +16,8 @@
     "verify:mainnet": "tsx src/cli.ts --network mainnet",
     "slice": "tsx src/slice-cli.ts",
     "faucet": "tsx src/faucet-cli.ts",
-    "spike:cctp": "tsx src/spike-cli.ts"
+    "spike:cctp": "tsx src/spike-cli.ts",
+    "gov08": "tsx src/gov08-cli.ts"
   },
   "dependencies": {
     "@plazo/plan-core": "workspace:*",
