@@ -13,12 +13,14 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
+    "@hono/zod-validator": "0.9.0",
     "@plazo/events": "workspace:*",
     "@plazo/plan-core": "workspace:*",
     "drizzle-orm": "0.45.2",
     "hono": "4.12.32",
     "postgres": "3.4.9",
-    "viem": "2.55.10"
+    "viem": "2.55.10",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

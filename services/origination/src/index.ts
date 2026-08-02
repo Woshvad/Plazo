@@ -11,13 +11,30 @@
  * practice. What these services own is the *entry*: pricing a cart, holding a
  * half-signed strip while someone finds their phone, and deciding a limit.
  */
+import {eq} from "drizzle-orm";
+
 import {db} from "./db/client.js";
+import {merchantExternalRef} from "./db/schema.js";
+import {
+  createSandboxMerchant,
+  issueKey,
+  listKeys,
+  revokeKey,
+  rotateKey,
+  verifyKey,
+  type Environment,
+} from "./keys.js";
+import {tokenBucket, type RateLimiter} from "./ratelimit.js";
 import {InMemorySessionStore, type SessionStore} from "./session.js";
 import {PgSessionStore} from "./store/pg-session.js";
+import type {MerchantPlane} from "./api.js";
 
 export * from "./session.js";
 export * from "./underwriting.js";
 export * from "./compliance.js";
+export * from "./keys.js";
+export * from "./auth.js";
+export * from "./ratelimit.js";
 export * from "./api.js";
 export * from "./db/schema.js";
 export * from "./db/client.js";
@@ -52,4 +69,64 @@ export function resolveSessionStore(url: string | undefined = process.env["DATAB
     "[plazo:origination] session store: in-memory — checkout sessions die with this process. Set DATABASE_URL to persist them.",
   );
   return new InMemorySessionStore();
+}
+
+/**
+ * The merchant plane. MERCH-05's wiring point.
+ *
+ * There is **no in-memory variant, and there must not be one.** A forgetful session store
+ * costs a borrower a re-signature; a forgetful key store is an authentication system that
+ * forgets who is allowed, and the failure is not that it stops working — it is that it
+ * keeps working while meaning nothing. So this throws when `DATABASE_URL` is unset rather
+ * than degrading, which is the same rule `resolveSessionStore` applies to an unreachable
+ * database, applied here to an absent one.
+ *
+ * `environment` is what this deployment serves, and it is the value a presented key's
+ * prefix must match. A sandbox deployment reads `sandbox`; production reads `live` and
+ * refuses a `plazo_test_…` key on shape (D-18).
+ */
+export function resolveMerchantPlane(
+  environment: Environment = (process.env["PLAZO_ENVIRONMENT"] as Environment) ?? "sandbox",
+  url: string | undefined = process.env["DATABASE_URL"],
+): MerchantPlane {
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set. Merchant API keys have no in-memory mode: an authentication " +
+        "store that forgets is not a weaker store, it is a different system. Set DATABASE_URL.",
+    );
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[plazo:origination] merchant plane: postgres — serving the '${environment}' environment`);
+
+  const handle = db(url);
+
+  return {
+    verify: (presented) => verifyKey(handle, presented, {environment}),
+    issue: (merchantId, keyEnvironment) => issueKey(handle, {merchantId, environment: keyEnvironment}),
+    list: (merchantId) => listKeys(handle, merchantId),
+    rotate: (merchantId, keyId, overlapDays) => rotateKey(handle, keyId, {merchantId, overlapDays}),
+    revoke: (merchantId, keyId) => revokeKey(handle, keyId, {merchantId}),
+    selfServeSandbox: (address) => createSandboxMerchant(handle, address),
+    linkExternalRef: async (merchantId, planId, externalId) => {
+      await handle
+        .insert(merchantExternalRef)
+        .values({planId, merchantId, externalId})
+        // A merchant who re-opens a session for the same counterfactual plan is correcting
+        // their own order id, not forking the join. Last write wins, scoped to the owner.
+        .onConflictDoUpdate({
+          target: merchantExternalRef.planId,
+          set: {externalId},
+          setWhere: eq(merchantExternalRef.merchantId, merchantId),
+        });
+    },
+  };
+}
+
+/** The per-key rate limiter, over the same Postgres. */
+export function resolveRateLimiter(url: string | undefined = process.env["DATABASE_URL"]): RateLimiter {
+  if (!url) {
+    throw new Error("DATABASE_URL is not set; the Postgres token bucket cannot be constructed without it");
+  }
+  return tokenBucket(db(url));
 }
