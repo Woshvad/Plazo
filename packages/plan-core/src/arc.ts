@@ -5,7 +5,7 @@
  * addresses are checked by `@plazo/arc-verify` on every CI run, so a change on
  * Arc's side surfaces as a failing gate rather than as a production incident.
  */
-import type {Address} from "viem";
+import {pad, type Address, type Hex} from "viem";
 
 export const ARC_TESTNET_CHAIN_ID = 5_042_002;
 
@@ -107,3 +107,179 @@ export const ARC_USDC_DOMAIN = {
   chainId: ARC_TESTNET_CHAIN_ID,
   verifyingContract: ARC_USDC,
 } as const;
+
+// ─── CCTP v2 and Gateway ──────────────────────────────────────────────────────
+//
+// Where a merchant's settlement goes once it leaves Arc, and where a lender's
+// capital comes from before it arrives. Every address below was read from chain
+// 5042002 and carries bytecode; `@plazo/arc-verify` re-reads the live shape of
+// each one on every CI run, so a Circle redeployment or a pause surfaces as a
+// failing gate rather than as a payout into a void.
+//
+// None of these are hardcoded into a contract. A mainnet flip moves every one of
+// them, and the flip is a change to this file plus a re-run of the gate.
+
+/**
+ * Arc's identifier inside CCTP's own domain numbering.
+ *
+ * **This is not `block.chainid`.** Arc is chain 5042002 and CCTP domain 26; the
+ * two numbers have nothing to do with each other and are not derivable from one
+ * another. Ethereum is chain 1 and domain 0, Base Sepolia is chain 84532 and
+ * domain 6. Passing a chain id where a domain is expected produces a burn Iris
+ * will never attest, and the USDC is gone.
+ *
+ * `TokenMessengerV2.remoteTokenMessengers(26)` returns `bytes32(0)` on Arc:
+ * CCTP has no self-domain route, so a payout to domain 26 is a plain transfer
+ * and never a burn.
+ */
+export const ARC_CCTP_DOMAIN = 26;
+
+/**
+ * CCTP v2 `TokenMessengerV2` on Arc — the burn side.
+ *
+ * This is the **testnet** address, and it is deployed at the same address on
+ * every CCTP v2 testnet domain rather than being Arc-specific. The mainnet
+ * address `0x28b5a0e9C621a5BaDaA536219b3a228C8168cf5d` holds no code on Arc,
+ * which is exactly what a testnet should look like. A mainnet flip moves this
+ * constant and re-runs `pnpm arc:verify`; nothing else changes.
+ *
+ * Proxy at this address; implementation `0xf07c0ad1…` as of 2026-08-01. The
+ * seven-argument `depositForBurn` (selector `0x8e0250ee`) is present and the
+ * CCTP **v1** four-argument form is absent, which is what makes the v2 shape the
+ * only shape.
+ */
+export const ARC_TOKEN_MESSENGER_V2: Address = "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA";
+
+/**
+ * CCTP v2 `MessageTransmitterV2` on Arc — the message side.
+ *
+ * `depositForBurn` emits `MessageSent(bytes message)` from here, not from the
+ * messenger, so a payout dispatcher that watches the wrong address sees nothing
+ * and reports a successful burn with no message to attest. `localDomain()` reads
+ * 26 and `signatureThreshold()` reads 2.
+ *
+ * It also holds one of the three kill switches Plazo does not control:
+ * `paused()` halts all CCTP messaging. That is why the burn is dispatched after
+ * settlement rather than inside it.
+ */
+export const ARC_MESSAGE_TRANSMITTER_V2: Address = "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275";
+
+/**
+ * CCTP v2 `TokenMinterV2` on Arc.
+ *
+ * Holds the per-message burn ceiling — `burnLimitsPerMessage(ARC_USDC)` reads
+ * `1e13`, which is 10,000,000 USDC at 6 decimals — and the second kill switch.
+ * Plazo never calls it directly; it is here so the gate can read the ceiling and
+ * the pause state, because a payout larger than the ceiling reverts and a payout
+ * during a minter pause strands.
+ */
+export const ARC_TOKEN_MINTER_V2: Address = "0xb43db544E2c27092c107639Ad201b3dEfAbcF192";
+
+/**
+ * Circle Gateway `GatewayWallet` on Arc — where a unified balance is deposited.
+ *
+ * The inbound half of the lender funding path. It carries
+ * `depositWithAuthorization` (EIP-3009), which means a lender can fund a
+ * unified balance with the same signature primitive the check strip uses. It
+ * does **not** carry `depositWithPermit` in any arity.
+ */
+export const ARC_GATEWAY_WALLET: Address = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
+
+/**
+ * Circle Gateway `GatewayMinter` on Arc — where an attested unified balance
+ * lands as USDC.
+ *
+ * `gatewayMint(bytes attestationPayload, bytes signature)`. A bare
+ * `mint(bytes,bytes)` is absent.
+ */
+export const ARC_GATEWAY_MINTER: Address = "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B";
+
+/**
+ * Circle's attestation service, sandbox.
+ *
+ * ⚠️ **The endpoint form documented in Circle's own technical guide does not
+ * route.** `GET /v2/messages?txHash=…` returns an HTML `Cannot GET /v2/messages`
+ * with status 404. The working form is
+ *
+ *     GET /v2/messages/{sourceDomain}?transactionHash=0x…
+ *     GET /v2/messages/{sourceDomain}?nonce=0x…
+ *
+ * and when the message genuinely is not indexed yet it answers 404 with a JSON
+ * body of `{"error":"Message not found for provided parameters"}`.
+ *
+ * Both forms return 404, so **a poller must branch on the body shape, not on the
+ * status code**. One 404 means "wait and ask again"; the other means the URL is
+ * wrong and waiting will never fix it.
+ */
+export const IRIS_SANDBOX_BASE_URL = "https://iris-api-sandbox.circle.com/v2";
+
+/** The mainnet attestation service. Same path shapes, same 404 caveat. */
+export const IRIS_MAINNET_BASE_URL = "https://iris-api.circle.com/v2";
+
+/**
+ * Circle Gateway's testnet API.
+ *
+ * `/v1/info` and `/v1/balances` both answered 200 unauthenticated, which matches
+ * Circle's position that Gateway kit keys are free and require no KYC. `/v1/info`
+ * lists Arc as domain 26 among thirteen testnet domains.
+ */
+export const GATEWAY_API_TESTNET_BASE_URL = "https://gateway-api-testnet.circle.com/v1";
+
+/**
+ * `minFinalityThreshold` for every burn Plazo sends. 2000 is "standard"
+ * (source-finalized); 1000 is "fast".
+ *
+ * There is deliberately no fast/standard toggle. Circle's fee oracle returns
+ * `minimumFee: 0` from domain 26 to every destination at **both** thresholds, so
+ * fast buys nothing that standard does not already give — and Arc's
+ * deterministic single-slot finality means "finalized" arrives in about half a
+ * second anyway. A toggle here would be a control with no effect and a second
+ * code path to test.
+ */
+export const CCTP_FINALITY_STANDARD = 2000;
+
+/**
+ * `maxFee` for every burn Plazo sends.
+ *
+ * Zero, and not as an optimism: the fee oracle was queried live for domains
+ * 0,1,2,3,6,7,10,11,13,14,16,21 out of Arc and returned `minimumFee: 0` for all
+ * of them at both finality thresholds. Outbound merchant payouts from Arc are
+ * free. (Inbound is not — Ethereum→Arc fast costs a basis point — and the
+ * asymmetry runs in Plazo's favour.)
+ *
+ * If this ever needs to be non-zero, the fee is read from the oracle at dispatch
+ * time rather than guessed, because a `maxFee` below the minimum reverts.
+ */
+export const CCTP_MAX_FEE_FROM_ARC = 0n;
+
+/**
+ * `GatewayWallet.withdrawalDelay()` on Arc, in seconds. Fourteen days.
+ *
+ * Circle's documentation says seven. The chain says fourteen, and the chain
+ * wins — this figure was read from the deployed contract, not from a page.
+ *
+ * It matters because it is the honest headline for the lender surface: Gateway's
+ * `initiateWithdrawal` → wait → `withdraw` is the non-attested escape hatch out
+ * of a unified balance, not a transfer, and presenting it as the redemption route
+ * would understate the wait by a week. The redemption route out of Arc is CCTP,
+ * which costs zero and clears in seconds.
+ */
+export const GATEWAY_WITHDRAWAL_DELAY_SECONDS = 1_209_600;
+
+/**
+ * An address as CCTP's `mintRecipient`: **left**-padded to 32 bytes.
+ *
+ * The padding direction is the whole function. `mintRecipient` is a `bytes32`
+ * and an address is 20 bytes, so something has to fill the other twelve. Left
+ * padding — `0x000…0<address>` — is what every CCTP implementation decodes back
+ * to an address. Right padding produces a well-formed `bytes32` that decodes to
+ * a *different*, unowned address on the destination chain, and the mint
+ * succeeds. There is no revert, no error, and no recovery: the USDC exists, at
+ * an address whose key does not.
+ *
+ * So this is a named function with a test asserting the direction, rather than
+ * an inline cast at each call site.
+ */
+export function mintRecipient(recipient: Address): Hex {
+  return pad(recipient, {size: 32});
+}
