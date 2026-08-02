@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.30;
 
-import {PlanInvariants} from "./PlanInvariants.sol";
+import {PlanInvariants, IPlanFlowView} from "./PlanInvariants.sol";
 import {PoolInvariants} from "./PoolInvariants.sol";
 import {ConfigurablePlan} from "./stubs/ConfigurablePlan.sol";
 import {ConfigurablePool} from "./stubs/ConfigurablePool.sol";
@@ -38,6 +38,7 @@ contract PlanInvariantsBiteTest is PlanInvariants {
         // Schedule starts a year out, so nothing is overdue in the baseline.
         sut.initHealthy(COUNT, PRINCIPAL, vm.getBlockTimestamp() + 365 days, 14 days);
         subject = IInstallmentPlan(address(sut));
+        flows = IPlanFlowView(address(sut));
     }
 
     function test_baselineSatisfiesEveryInvariant() public view {
@@ -50,6 +51,8 @@ contract PlanInvariantsBiteTest is PlanInvariants {
         check_graceFollowsDueDate();
         check_terminalStatesAreClean();
         check_settledWithFeeOutstandingIsCoherent();
+        check_refundOnlyToBorrower();
+        check_escrowNeverStrandsSettlement();
     }
 
     /// @dev Collections that do not retire principal or pay a fee. The plan is
@@ -162,6 +165,46 @@ contract PlanInvariantsBiteTest is PlanInvariants {
 
         vm.expectRevert();
         this.check_settledWithFeeOutstandingIsCoherent();
+    }
+
+    /// @dev A refund whose residue went somewhere the borrower never named. The
+    ///      on-chain redirection attack is impossible in today's `creditRefund`, and
+    ///      this is what would notice the day a recipient parameter gets added for
+    ///      somebody's convenience.
+    function test_catchesRefundToAThirdParty() public {
+        sut.setRefundFlow(100_000_000, 60_000_000, 15_000_000, 25_000_000);
+
+        vm.expectRevert();
+        this.check_refundOnlyToBorrower();
+    }
+
+    /// @dev The same flow with nothing diverted, but not exhaustive: 40 arrived and
+    ///      nowhere accounts for it. Without this row the property would pass on any
+    ///      leak that simply failed to name its destination.
+    function test_catchesRefundResidue() public {
+        sut.setRefundFlow(100_000_000, 60_000_000, 0, 0);
+
+        vm.expectRevert();
+        this.check_refundOnlyToBorrower();
+    }
+
+    /// @dev A settlement in none of its three states — the fourth outcome MERCH-04's
+    ///      state machine is not allowed to have.
+    function test_catchesStrandedSettlement() public {
+        sut.setSettlement(407_000_000, 0, 0, 0, false);
+
+        vm.expectRevert();
+        this.check_escrowNeverStrandsSettlement();
+    }
+
+    /// @dev Accounted for, and still stranded: held in full with neither exit
+    ///      reachable. This is the clause that makes the property about D-07's
+    ///      permissionless exits rather than only about arithmetic.
+    function test_catchesHeldSettlementWithNoExit() public {
+        sut.setSettlement(407_000_000, 407_000_000, 0, 0, false);
+
+        vm.expectRevert();
+        this.check_escrowNeverStrandsSettlement();
     }
 }
 

@@ -27,6 +27,8 @@ An invariant suite written after the contract tends to describe the contract —
 | `graceFollowsDueDate` | `check_graceFollowsDueDate` | A grace window that closes before the installment is due. |
 | `terminalStatesAbsorbing` | `check_terminalStatesAreClean` | A repaid plan being made delinquent by a late keeper crank; a charged-off plan resurrecting and double-counting against the waterfall; a refunded plan leaving principal the pool still believes it holds. |
 | `settledWithFeeOutstandingIsCoherent` | `check_settledWithFeeOutstandingIsCoherent` | The state existing for no reason. It exists so payoff is never blocked on a fee dispute: principal clear, fee outstanding, no further pulls. |
+| `refundOnlyToBorrower` | `check_refundOnlyToBorrower` | A merchant naming where refunded value goes. `creditRefund` splits every unit between principal — forwarded to the disclosed settlement recipient — and the plan's immutable `borrower`, and no function in the tree accepts a recipient. "Already impossible by construction" is exactly the claim that stops being true the day somebody adds a convenience parameter, and the second clause rules out a residue as well as a redirection: value that entered the plan and left toward nobody accountable. |
+| `escrowNeverStrands` | `check_escrowNeverStrandsSettlement` | MERCH-04's fourth outcome. A settlement is paid to the merchant's route, returned to the pool's reserve, or held with at least one exit anybody can reach — never in none of them, and never held with neither exit open. An escrow that can reach that state has made the operator a party the merchant's money depends on, which is the thing GOV-08 exists to rule out (D-07). |
 
 ## Pool properties
 
@@ -50,6 +52,13 @@ Phase 1 wrote the properties above before any contract existed and proved they b
 | `planHoldsNoFloat` | `invariant_planHoldsNoFloat` | Custody by accident. Every unit that arrives leaves in the same transaction — to the keeper who cranked, back to the borrower as a rebate, or forward to the disclosed recipient. The only balance a plan carries is its own crank escrow. |
 | `markBudgetAlwaysFunded` | `invariant_markBudgetStaysFunded` | A plan reaching the moment it must record its own default and being unable to afford the bounty. Found by the fuzzer: `revalidate()` and `markMissed()` drew on the same escrow, so a plan whose signer kept changing could be revalidated weekly for the ninety days its strip stays live and arrive at delinquency with nothing left. The mark budget is now reserved and observation spends only the surplus. |
 | `overdueInstallmentRecordable` | `invariant_everyOverdueInstallmentIsRecordable` | The collection guarantee, stated as something a contract can actually promise. Checked by *performing* the crank from an unrelated address and rolling the state back, so it asserts what the contract does rather than what its views claim. |
+| `refundNeverReturnsToMerchant` | `invariant_refundNeverReturnsToTheMerchant` | Added in Phase 6. The half of `refundOnlyToBorrower` a live system can be asked directly: the merchant's balance is exactly what was minted to them minus what they successfully refunded, so any path returning refunded value to the merchant — by any route, in any order — shows up as a surplus. The merchant is the address to watch because they are the only party with both a motive and a call. |
+
+### Why the two Phase 6 plan properties bind to a separate view
+
+`check_refundOnlyToBorrower` and `check_escrowNeverStrandsSettlement` read an `IPlanFlowView` bound alongside `subject`, not `IInstallmentPlan`. The reason is deliberate: they are stated over **flows** (`refundInflow`, `refundToBorrower`) and over an escrow row that lives in a different contract, and the real `InstallmentPlan` stores neither — it pays every unit out in the same transaction it arrives. Adding storage to a live contract so a test could read it would be the test changing the system it is supposed to constrain.
+
+Under Certora the distinction disappears: the prover sees the transition relation and the sums are quantified over it directly. Under Foundry the bite suite binds `ConfigurablePlan`, which carries the running totals precisely so both properties can be driven to failure, and `invariant_refundNeverReturnsToTheMerchant` covers the live half.
 
 ### Why `everyInstallmentAccountedFor` is not asserted under the fuzzer
 

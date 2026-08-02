@@ -30,6 +30,13 @@ contract PlanHandler is Test {
     uint256 public repaid;
     uint256 public refunded;
 
+    /// @notice Every unit ever minted to the merchant, and every unit the merchant
+    ///         successfully credited to the plan as a refund.
+    /// @dev The two numbers that make "no refunded unit ever came back out to the
+    ///      merchant" an exact identity rather than an inequality.
+    uint256 public mintedToMerchant;
+    uint256 public refundedIn;
+
     address internal constant KEEPER_A = address(0xA1);
     address internal constant KEEPER_B = address(0xB2);
 
@@ -95,9 +102,11 @@ contract PlanHandler is Test {
     function creditRefund(uint256 amount) external as_(merchant) {
         uint256 value = bound(amount, 1, 200e6);
         usdc.mint(merchant, value);
+        mintedToMerchant += value;
         usdc.approve(address(plan), value);
         try plan.creditRefund(value) {
             refunded++;
+            refundedIn += value;
         } catch {}
     }
 
@@ -249,6 +258,27 @@ contract PlanFuzzTest is PlanFixture, PlanInvariants {
             usdc.balanceOf(address(plan)),
             plan.markEscrow(),
             "the plan is holding value that is neither escrow nor in transit"
+        );
+    }
+
+    /// @notice No refunded unit ever comes back out to the merchant.
+    ///
+    /// @dev `check_refundOnlyToBorrower` states the property over flow totals the real
+    ///      plan does not store; this is the half of it a live system can be asked
+    ///      directly, and it is asked under the fuzzer rather than in a scripted
+    ///      scenario. The merchant's balance is exactly what was minted to them minus
+    ///      what they successfully refunded — so any path that returned refunded value
+    ///      to the merchant, by any route and in any order, shows up here as a surplus.
+    ///
+    ///      The merchant is the right address to watch because they are the only party
+    ///      with both a motive and a call: `creditRefund` is theirs alone, and a
+    ///      merchant who could cycle originate → refund → recover would be draining the
+    ///      borrower's own payments out of a plan the borrower signed.
+    function invariant_refundNeverReturnsToTheMerchant() public view {
+        assertEq(
+            usdc.balanceOf(merchant),
+            handler.mintedToMerchant() - handler.refundedIn(),
+            "value that entered a plan as a refund found its way back to the merchant"
         );
     }
 

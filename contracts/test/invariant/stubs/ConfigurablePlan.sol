@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {IInstallmentPlan} from "../../../src/interfaces/IInstallmentPlan.sol";
+import {IPlanFlowView} from "../PlanInvariants.sol";
 
 /// @notice A plan whose accounting can be set to anything, including states no real
 ///         implementation should reach.
@@ -13,7 +14,7 @@ import {IInstallmentPlan} from "../../../src/interfaces/IInstallmentPlan.sol";
 ///
 ///      It is not a mock of `InstallmentPlan`. It has no behaviour; Phase 2 builds
 ///      the real one and rebinds the same invariants to it.
-contract ConfigurablePlan is IInstallmentPlan {
+contract ConfigurablePlan is IInstallmentPlan, IPlanFlowView {
     bytes32 public planId;
     PlanState public state = PlanState.Active;
     uint256 public installmentCount;
@@ -30,6 +31,23 @@ contract ConfigurablePlan is IInstallmentPlan {
     mapping(uint256 => uint256) internal _amount;
     mapping(uint256 => InstallmentStatus) internal _status;
 
+    // ─── Phase 6 flow accounting ─────────────────────────────────────────────
+    //
+    // Flows the real plan does not store, because it pays every unit out in the same
+    // transaction it arrives. Here they are running totals so the two Phase 6
+    // properties can be driven to failure — a property that cannot be broken is a
+    // property the bite suite is not testing.
+
+    uint256 public refundInflow;
+    uint256 public refundToBorrower;
+    uint256 public refundToThirdParty;
+
+    uint256 public settlementAmount;
+    uint256 public settlementHeld;
+    uint256 public settlementReleased;
+    uint256 public settlementReturned;
+    bool public settlementExitReachable;
+
     /// @notice A coherent four-installment plan that satisfies every invariant.
     /// @dev The baseline each violation test perturbs by exactly one field, so a
     ///      failure can only be attributed to the thing that was changed.
@@ -37,6 +55,13 @@ contract ConfigurablePlan is IInstallmentPlan {
         installmentCount = count;
         principal = principal_;
         outstandingPrincipal = principal_;
+
+        // Nothing refunded yet, and the plan's settlement sitting in escrow with both
+        // exits open — the state every escrowed origination starts in.
+        settlementAmount = principal_;
+        settlementHeld = principal_;
+        settlementExitReachable = true;
+
         for (uint256 i = 0; i < count; ++i) {
             _dueDate[i] = start + (i * interval);
             _graceEndsAt[i] = _dueDate[i] + 3 days;
@@ -78,6 +103,35 @@ contract ConfigurablePlan is IInstallmentPlan {
 
     function setInstallmentAmount(uint256 index, uint256 amount) external {
         _amount[index] = amount;
+    }
+
+    /// @dev The whole refund flow in one call, including `refundCredit`, so a test
+    ///      cannot leave the credit and the flow totals disagreeing about the same
+    ///      units by accident and then attribute the failure to the wrong thing.
+    function setRefundFlow(
+        uint256 inflow,
+        uint256 credit,
+        uint256 toBorrower,
+        uint256 toThirdParty
+    ) external {
+        refundInflow = inflow;
+        refundCredit = credit;
+        refundToBorrower = toBorrower;
+        refundToThirdParty = toThirdParty;
+    }
+
+    function setSettlement(
+        uint256 amount,
+        uint256 held,
+        uint256 released,
+        uint256 returned,
+        bool exitReachable
+    ) external {
+        settlementAmount = amount;
+        settlementHeld = held;
+        settlementReleased = released;
+        settlementReturned = returned;
+        settlementExitReachable = exitReachable;
     }
 
     bool internal _payoffOverridden;
