@@ -1,7 +1,13 @@
+import {Escrow} from "./Escrow";
+import {Payouts} from "./Payouts";
+import {Refunds} from "./Refunds";
+import {Settlements} from "./Settlements";
 import {
   SOURCE_ENV,
+  attestations,
+  escrows,
+  refunds,
   settlements,
-  shortId,
   usd,
   type Sourced,
 } from "./_data";
@@ -35,11 +41,14 @@ export default async function Merchant({
     return Array.isArray(raw) ? raw[0] : raw;
   };
 
-  const book = await settlements({
-    status: one("status"),
-    from: one("from"),
-    to: one("to"),
-  });
+  const filter = {status: one("status"), from: one("from"), to: one("to")};
+  const book = await settlements(filter);
+
+  const [attested, held, refundable] = await Promise.all([
+    attestations(book.settlements.filter((s) => s.dispatchTxHash !== null).map((s) => s.planId)),
+    escrows(),
+    refunds(),
+  ]);
 
   const gross = sum(book.settlements.map((s) => s.gross));
   const mdr = sum(book.settlements.map((s) => s.mdr));
@@ -63,7 +72,14 @@ export default async function Merchant({
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
-        <SampleBanner payloads={[{label: "Settlements", payload: book}]} />
+        <SampleBanner
+          payloads={[
+            {label: "Settlements", payload: book},
+            {label: "Payout attestations", payload: attested},
+            {label: "Held settlements", payload: held},
+            {label: "Refund previews", payload: refundable},
+          ]}
+        />
 
         <div className="mb-6 grid grid-cols-3 gap-5">
           <Figure label="Gross" value={usd(gross)} note="what buyers were charged" />
@@ -71,24 +87,10 @@ export default async function Merchant({
           <Figure label="Net settled" value={usd(net)} note="before withholding" />
         </div>
 
-        <section className="mb-5 border-2 border-ink bg-white p-5 shadow-[var(--shadow-card)]">
-          <h2 className="mb-3 font-mono text-[length:var(--text-xs)] tracking-caps text-muted uppercase">
-            Settlements
-          </h2>
-          <ul>
-            {book.settlements.map((row) => (
-              <li
-                key={row.planId}
-                className="flex items-baseline justify-between border-b border-rule py-2 last:border-b-0"
-              >
-                <span className="font-mono text-[length:var(--text-sm)] text-ink">
-                  {row.externalId ?? shortId(row.planId)}
-                </span>
-                <span className="font-mono text-[length:var(--text-sm)] text-ink">{usd(row.net)}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <Settlements data={book} filter={filter} />
+        <Payouts settlements={book} attestations={attested} />
+        <Refunds data={refundable} planId={one("plan")} amount={one("amount")} />
+        <Escrow data={held} />
       </main>
     </>
   );
