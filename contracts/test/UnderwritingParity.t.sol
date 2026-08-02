@@ -65,7 +65,7 @@ contract UnderwritingParityTest is Test {
             borrower: address(uint160(uint256(keccak256(abi.encodePacked("borrower", s))))),
             personId: keccak256(abi.encodePacked("person", s)),
             identityClass: uint8(seed % 2),
-            limit: uint256(keccak256(abi.encodePacked("limit", s))) % (6_000 * 1e6),
+            limit: uint256(keccak256(abi.encodePacked("limit", s))) % (6000 * 1e6),
             validUntil: 1_800_000_000 + (uint256(s) % 900)
         });
 
@@ -73,9 +73,8 @@ contract UnderwritingParityTest is Test {
         row.identified = seed % 2 == 1;
         row.mutableSigner = seed % 3 == 0;
 
-        row.tier0Limit = Tier0Curve.limitFor(
-            row.cleanCompletions, row.identified, row.mutableSigner, _curveParams()
-        );
+        row.tier0Limit =
+            Tier0Curve.limitFor(row.cleanCompletions, row.identified, row.mutableSigner, _curveParams());
         row.band = _band(row.attestation.limit);
 
         row.structHash = LimitAttestation.hashStruct(row.attestation);
@@ -182,11 +181,7 @@ contract UnderwritingParityTest is Test {
 
     function _hashJson(Row memory row) internal pure returns (string memory) {
         return string.concat(
-            '"structHash":"',
-            vm.toString(row.structHash),
-            '","digest":"',
-            vm.toString(row.digest),
-            '"'
+            '"structHash":"', vm.toString(row.structHash), '","digest":"', vm.toString(row.digest), '"'
         );
     }
 

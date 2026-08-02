@@ -175,9 +175,7 @@ contract RedemptionQueueTest is OriginationFixture {
     /// @notice Only an allowlisted venue can take the buffer.
     function test_theBufferOnlyGoesToAnAllowlistedVenue() public {
         ParkedYieldVenue venue = new ParkedYieldVenue(address(this), address(usdc));
-        vm.expectRevert(
-            abi.encodeWithSelector(TranchedCreditPool.VenueNotAllowed.selector, address(venue))
-        );
+        vm.expectRevert(abi.encodeWithSelector(TranchedCreditPool.VenueNotAllowed.selector, address(venue)));
         creditPool.setVenue(address(venue));
     }
 
@@ -202,10 +200,10 @@ contract RedemptionQueueTest is OriginationFixture {
 
         // Yield arrives. The position is worth more than it cost, and the difference is
         // income — it goes down the income waterfall like any other earning.
-        usdc.mint(address(this), 1_000e6);
-        usdc.approve(address(venue), 1_000e6);
+        usdc.mint(address(this), 1000e6);
+        usdc.approve(address(venue), 1000e6);
         uint256 assetsBefore = creditPool.totalAssets();
-        venue.payYield(1_000e6);
+        venue.payYield(1000e6);
 
         creditPool.syncVenue();
         assertGt(creditPool.totalAssets(), assetsBefore, "the yield never reached the book");

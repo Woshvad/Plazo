@@ -33,11 +33,11 @@ contract TranchesTest is OriginationFixture {
     ///      distribution walks past is a restriction on the secondary market only, and
     ///      the primary distribution is exactly where an ineligible holder is created.
     function test_aTrancheShareCannotReachAnIneligibleHolder() public {
-        usdc.mint(stranger, 1_000e6);
+        usdc.mint(stranger, 1000e6);
         vm.startPrank(stranger);
-        usdc.approve(address(creditPool), 1_000e6);
+        usdc.approve(address(creditPool), 1000e6);
         vm.expectRevert(abi.encodeWithSelector(TranchedCreditPool.NotEligible.selector, stranger));
-        creditPool.requestDeposit(ICreditPool.Tranche.Senior, 1_000e6);
+        creditPool.requestDeposit(ICreditPool.Tranche.Senior, 1000e6);
         vm.stopPrank();
     }
 
@@ -45,9 +45,7 @@ contract TranchesTest is OriginationFixture {
     function test_aTrancheShareCannotBeTransferredToAnIneligibleHolder() public {
         TrancheToken senior = creditPool.seniorShares();
         vm.prank(lender);
-        vm.expectRevert(
-            abi.encodeWithSelector(TrancheToken.TransferNotPermitted.selector, lender, stranger)
-        );
+        vm.expectRevert(abi.encodeWithSelector(TrancheToken.TransferNotPermitted.selector, lender, stranger));
         senior.transfer(stranger, 1e9);
     }
 
@@ -122,9 +120,7 @@ contract TranchesTest is OriginationFixture {
         assertEq(fresh, vm.getBlockTimestamp() + junior.lockPeriod(), "the receipt did not restamp");
 
         vm.prank(secondLender);
-        vm.expectRevert(
-            abi.encodeWithSelector(TrancheToken.SharesLocked.selector, secondLender, fresh)
-        );
+        vm.expectRevert(abi.encodeWithSelector(TrancheToken.SharesLocked.selector, secondLender, fresh));
         junior.transfer(lender, 1e9);
     }
 
@@ -147,13 +143,13 @@ contract TranchesTest is OriginationFixture {
         TranchedCreditPool fresh = _freshPool();
         eligibility.setGlobal(address(fresh), true);
 
-        usdc.mint(lender, 1_000e6);
+        usdc.mint(lender, 1000e6);
         vm.startPrank(lender);
-        usdc.approve(address(fresh), 1_000e6);
+        usdc.approve(address(fresh), 1000e6);
         vm.expectRevert(
             abi.encodeWithSelector(TranchedCreditPool.NotSeeded.selector, ICreditPool.Tranche.Junior)
         );
-        fresh.requestDeposit(ICreditPool.Tranche.Junior, 1_000e6);
+        fresh.requestDeposit(ICreditPool.Tranche.Junior, 1000e6);
         vm.stopPrank();
     }
 
@@ -182,13 +178,13 @@ contract TranchesTest is OriginationFixture {
     /// @notice A pending deposit is not a claim, and can be taken back intact.
     function test_aPendingDepositIsNotAClaimAndCanBeCancelled() public {
         eligibility.setGlobal(secondLender, true);
-        usdc.mint(secondLender, 5_000e6);
+        usdc.mint(secondLender, 5000e6);
 
         uint256 assetsBefore = creditPool.totalAssets();
 
         vm.startPrank(secondLender);
-        usdc.approve(address(creditPool), 5_000e6);
-        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 5_000e6);
+        usdc.approve(address(creditPool), 5000e6);
+        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 5000e6);
         vm.stopPrank();
 
         assertEq(creditPool.totalAssets(), assetsBefore, "a pending deposit reached NAV");
@@ -196,17 +192,17 @@ contract TranchesTest is OriginationFixture {
 
         vm.prank(secondLender);
         creditPool.cancelDeposit(ICreditPool.Tranche.Junior);
-        assertEq(usdc.balanceOf(secondLender), 5_000e6, "the cancellation returned something else");
+        assertEq(usdc.balanceOf(secondLender), 5000e6, "the cancellation returned something else");
     }
 
     /// @notice Shares cannot be claimed before the epoch that prices them closes.
     function test_sharesCannotBeClaimedBeforeTheEpochCloses() public {
         eligibility.setGlobal(secondLender, true);
-        usdc.mint(secondLender, 5_000e6);
+        usdc.mint(secondLender, 5000e6);
 
         vm.startPrank(secondLender);
-        usdc.approve(address(creditPool), 5_000e6);
-        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 5_000e6);
+        usdc.approve(address(creditPool), 5000e6);
+        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 5000e6);
         vm.expectRevert(
             abi.encodeWithSelector(TranchedCreditPool.NotYetPriced.selector, creditPool.currentEpoch())
         );
@@ -220,17 +216,17 @@ contract TranchesTest is OriginationFixture {
     ///      worth something; here it is worth nothing.
     function test_twoDepositorsInOneEpochGetTheSamePrice() public {
         eligibility.setGlobal(secondLender, true);
-        usdc.mint(secondLender, 4_000e6);
-        usdc.mint(lender, 2_000e6);
+        usdc.mint(secondLender, 4000e6);
+        usdc.mint(lender, 2000e6);
 
         vm.startPrank(secondLender);
-        usdc.approve(address(creditPool), 4_000e6);
-        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 4_000e6);
+        usdc.approve(address(creditPool), 4000e6);
+        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 4000e6);
         vm.stopPrank();
 
         vm.startPrank(lender);
-        usdc.approve(address(creditPool), 2_000e6);
-        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 2_000e6);
+        usdc.approve(address(creditPool), 2000e6);
+        creditPool.requestDeposit(ICreditPool.Tranche.Junior, 2000e6);
         vm.stopPrank();
 
         uint256 lenderBefore = creditPool.juniorShares().balanceOf(lender);
@@ -284,9 +280,7 @@ contract TranchesTest is OriginationFixture {
         creditPool.requestDeposit(ICreditPool.Tranche.Junior, 10_000e6);
         vm.stopPrank();
 
-        assertGt(
-            creditPool.maxSeniorDeposit(), before, "pending junior money did not raise senior capacity"
-        );
+        assertGt(creditPool.maxSeniorDeposit(), before, "pending junior money did not raise senior capacity");
     }
 
     // ─── POOL-01: no tenor commingling ───────────────────────────────────────
@@ -302,9 +296,7 @@ contract TranchesTest is OriginationFixture {
     function test_aProductLineCannotBeRepointed() public {
         TranchedCreditPool other = _freshPool();
         vm.expectRevert(
-            abi.encodeWithSelector(
-                PoolRegistry.LineAlreadyRegistered.selector, PAY_IN_4, address(creditPool)
-            )
+            abi.encodeWithSelector(PoolRegistry.LineAlreadyRegistered.selector, PAY_IN_4, address(creditPool))
         );
         poolRegistry.register(PAY_IN_4, address(other));
     }

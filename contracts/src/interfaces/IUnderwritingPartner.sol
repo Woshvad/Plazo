@@ -39,15 +39,15 @@ interface IUnderwritingPartner {
     ///      error — the router turns it into CHKT-08's fallback offer rather than a
     ///      revert, because a flat decline at the moment of purchase is the worst
     ///      possible answer to "you are $12 over".
-    function capFor(bytes32 personId, IdentityClass identity, TermsDetail.SignerClass signerClass)
-        external
-        view
-        returns (uint256);
+    function capFor(
+        bytes32 personId,
+        IdentityClass identity,
+        TermsDetail.SignerClass signerClass
+    ) external view returns (uint256);
 
     /// @notice Record that a plan was originated against this person.
     /// @dev Router-only. The active-plan slot and the exposure both move here.
-    function notePlan(bytes32 personId, IdentityClass identity, bytes32 planId, uint256 principal)
-        external;
+    function notePlan(bytes32 personId, IdentityClass identity, bytes32 planId, uint256 principal) external;
 
     /// @notice Settle a finished plan's effect on the person's standing.
     ///

@@ -33,7 +33,8 @@ contract PlanIdParityTest is Test {
 
     function setUp() public {
         implementation = address(new PlanImplementationStub());
-        factory = new PlanFactory(implementation, address(new JurisdictionRegistry(address(this))), address(this));
+        factory =
+            new PlanFactory(implementation, address(new JurisdictionRegistry(address(this))), address(this));
         factory.setOriginator(address(this));
     }
 

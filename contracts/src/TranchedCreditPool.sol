@@ -220,7 +220,9 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
     event Seeded(Tranche indexed tranche, uint256 assets, uint256 shares);
     event ReserveFunded(address indexed from, uint256 amount, uint256 balance);
     event Fronted(bytes32 indexed planId, address indexed merchant, uint256 principal, uint256 mdr);
-    event Recognised(bytes32 indexed planId, uint256 inflow, uint256 principalRecovered, uint256 incomeEarned);
+    event Recognised(
+        bytes32 indexed planId, uint256 inflow, uint256 principalRecovered, uint256 incomeEarned
+    );
     event LossAbsorbed(bytes32 indexed planId, uint256 fromReserve, uint256 fromJunior, uint256 fromSenior);
     event FraudLossAbsorbed(bytes32 indexed planId, uint256 fromReserve, uint256 beyondReserve);
     event Provisioned(bytes32 indexed planId, uint256 epoch, uint256 amount, uint256 total);
@@ -228,9 +230,7 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
     event OriginationGated(bool open, uint256 subordinationBps, uint256 reserveBps);
     event UnmarkedDelinquency(bytes32 indexed planId, bool unmarked);
     event EpochMarked(uint256 indexed epoch, uint256 marked, uint256 openPlans);
-    event EpochClosed(
-        uint256 indexed epoch, uint256 seniorNav, uint256 juniorNav, uint256 liquidityFeeBps
-    );
+    event EpochClosed(uint256 indexed epoch, uint256 seniorNav, uint256 juniorNav, uint256 liquidityFeeBps);
     event QueueFilled(
         Tranche indexed tranche, uint256 indexed epoch, uint256 shares, uint256 assets, uint256 feeBps
     );
@@ -547,9 +547,7 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
 
         RedeemTicket[] storage tickets = _redeemTickets[tranche][msg.sender];
         index = tickets.length;
-        tickets.push(
-            RedeemTicket({lo: lo, hi: hi, claimedTo: lo, cursor: _fills[tranche].length})
-        );
+        tickets.push(RedeemTicket({lo: lo, hi: hi, claimedTo: lo, cursor: _fills[tranche].length}));
 
         _epochRedeemRequested[tranche][_epoch] += shares;
 
@@ -562,11 +560,11 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
     ///      and resumable, so a ticket whose fill straddled many epochs is never a
     ///      transaction that cannot fit in a block — the claimant pays for their own
     ///      patience rather than the pool carrying an unbounded loop at close.
-    function claimRedemption(Tranche tranche, uint256 index, uint256 maxSteps)
-        public
-        nonReentrant
-        returns (uint256 assets)
-    {
+    function claimRedemption(
+        Tranche tranche,
+        uint256 index,
+        uint256 maxSteps
+    ) public nonReentrant returns (uint256 assets) {
         RedeemTicket[] storage tickets = _redeemTickets[tranche][msg.sender];
         if (index >= tickets.length) revert BadTicketIndex(index);
         RedeemTicket storage ticket = tickets[index];
@@ -605,11 +603,11 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
         return _redeemTickets[tranche][holder].length;
     }
 
-    function redeemTicketAt(Tranche tranche, address holder, uint256 index)
-        external
-        view
-        returns (RedeemTicket memory)
-    {
+    function redeemTicketAt(
+        Tranche tranche,
+        address holder,
+        uint256 index
+    ) external view returns (RedeemTicket memory) {
         return _redeemTickets[tranche][holder][index];
     }
 
@@ -629,11 +627,10 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
         return _fills[tranche][i];
     }
 
-    function epochDeposits(Tranche tranche, uint256 epoch)
-        external
-        view
-        returns (uint256 assets, uint256 shares)
-    {
+    function epochDeposits(
+        Tranche tranche,
+        uint256 epoch
+    ) external view returns (uint256 assets, uint256 shares) {
         return (_epochDepositAssets[tranche][epoch], _epochDepositShares[tranche][epoch]);
     }
 
@@ -775,8 +772,7 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
 
         IInstallmentPlan.PlanState planState = plan.state();
         if (
-            planState == IInstallmentPlan.PlanState.Repaid
-                || planState == IInstallmentPlan.PlanState.Refunded
+            planState == IInstallmentPlan.PlanState.Repaid || planState == IInstallmentPlan.PlanState.Refunded
                 || planState == IInstallmentPlan.PlanState.Cancelled
                 || planState == IInstallmentPlan.PlanState.Defaulted
                 || planState == IInstallmentPlan.PlanState.FraudReversed
@@ -1045,10 +1041,10 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
         uint256 assets = totalAssets();
         if (assets == 0) return 0;
 
-        uint256 requested = _redemptionAssetsRequested(Tranche.Senior)
-            + _redemptionAssetsRequested(Tranche.Junior);
-        uint256 deposits = _epochDepositAssets[Tranche.Senior][_epoch]
-            + _epochDepositAssets[Tranche.Junior][_epoch];
+        uint256 requested =
+            _redemptionAssetsRequested(Tranche.Senior) + _redemptionAssetsRequested(Tranche.Junior);
+        uint256 deposits =
+            _epochDepositAssets[Tranche.Senior][_epoch] + _epochDepositAssets[Tranche.Junior][_epoch];
         if (deposits >= requested) return 0;
 
         uint256 net = requested - deposits;
@@ -1322,11 +1318,10 @@ contract TranchedCreditPool is ICreditPool, Ownable, ReentrancyGuard {
         return _corridorExposure[corridor];
     }
 
-    function concentrationHeadroom(address merchant, bytes32 corridor)
-        external
-        view
-        returns (uint256 merchantRoom, uint256 corridorRoom)
-    {
+    function concentrationHeadroom(
+        address merchant,
+        bytes32 corridor
+    ) external view returns (uint256 merchantRoom, uint256 corridorRoom) {
         uint256 assets = totalAssets();
         uint256 merchantCap =
             (assets * parameters.get(ParameterKeys.MERCHANT_CONCENTRATION_BPS)) / PlanParams.BPS;

@@ -124,9 +124,7 @@ contract MerchantRegistryTest is OriginationFixture {
 
         vm.prank(merchant);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                MerchantRegistry.BondBelowRequirement.selector, bond - excessive, required
-            )
+            abi.encodeWithSelector(MerchantRegistry.BondBelowRequirement.selector, bond - excessive, required)
         );
         merchants.withdrawBond(excessive);
 
@@ -164,13 +162,9 @@ contract MerchantRegistryTest is OriginationFixture {
 
         _checkoutDefault();
 
-        assertEq(
-            merchants.bondOf(merchant) - bondBefore, expected, "nothing was withheld into the bond"
-        );
+        assertEq(merchants.bondOf(merchant) - bondBefore, expected, "nothing was withheld into the bond");
         assertEq(merchants.merchantOf(merchant).withheld, expected, "the withholding was not tracked");
-        assertEq(
-            usdc.balanceOf(merchantPayout), net - expected, "the merchant was paid the withheld part"
-        );
+        assertEq(usdc.balanceOf(merchantPayout), net - expected, "the merchant was paid the withheld part");
     }
 
     /// @notice A seasoned merchant is paid in full.
@@ -201,9 +195,7 @@ contract MerchantRegistryTest is OriginationFixture {
         vm.prank(merchant);
         merchants.withdrawBond(draw);
 
-        assertEq(
-            merchants.merchantOf(merchant).withheld, withheld - draw, "deposits were released first"
-        );
+        assertEq(merchants.merchantOf(merchant).withheld, withheld - draw, "deposits were released first");
     }
 
     // ─── Velocity (MERCH-06) ─────────────────────────────────────────────────
@@ -217,9 +209,7 @@ contract MerchantRegistryTest is OriginationFixture {
         merchants.noteOrigination(merchant, cap);
 
         assertEq(merchants.velocityUsed(merchant), cap, "the bucket did not fill");
-        vm.expectRevert(
-            abi.encodeWithSelector(MerchantRegistry.VelocityCapExceeded.selector, cap + 1, cap)
-        );
+        vm.expectRevert(abi.encodeWithSelector(MerchantRegistry.VelocityCapExceeded.selector, cap + 1, cap));
         merchants.noteOrigination(merchant, 1);
     }
 
@@ -250,8 +240,8 @@ contract MerchantRegistryTest is OriginationFixture {
         vm.warp(vm.getBlockTimestamp() + parameters.get(ParameterKeys.MERCHANT_VESTING_WINDOW) + 1);
         assertEq(merchants.velocityCapFor(merchant), type(uint256).max, "a seasoned merchant is capped");
 
-        merchants.setVelocityCapOverride(merchant, 1_000e6);
-        assertEq(merchants.velocityCapFor(merchant), 1_000e6, "the override did not bind");
+        merchants.setVelocityCapOverride(merchant, 1000e6);
+        assertEq(merchants.velocityCapFor(merchant), 1000e6, "the override did not bind");
     }
 
     // ─── Standing ────────────────────────────────────────────────────────────
@@ -310,10 +300,8 @@ contract MerchantRegistryTest is OriginationFixture {
         assertEq(remaining, 0, "the concentration bucket did not fill");
 
         CheckoutRouter.OriginationInput memory input =
-            _originationInput(_terms(PRINCIPAL, COUNT, 9), keccak256("s"), 5_000e6);
-        vm.expectRevert(
-            abi.encodeWithSelector(CheckoutRouter.MerchantConcentration.selector, PRINCIPAL, 0)
-        );
+            _originationInput(_terms(PRINCIPAL, COUNT, 9), keccak256("s"), 5000e6);
+        vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.MerchantConcentration.selector, PRINCIPAL, 0));
         checkout.originate(input);
     }
 }

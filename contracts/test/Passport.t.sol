@@ -258,9 +258,7 @@ contract PassportTest is OriginationFixture {
         });
         // Signed by somebody who is not the borrower.
         bytes memory forged = _sign(0xDEADBEEF, grant);
-        vm.expectRevert(
-            abi.encodeWithSelector(PlazoPassport.ConsentSignatureInvalid.selector, borrower)
-        );
+        vm.expectRevert(abi.encodeWithSelector(PlazoPassport.ConsentSignatureInvalid.selector, borrower));
         passport.grantConsent(grant, forged);
     }
 
@@ -350,9 +348,7 @@ contract PassportTest is OriginationFixture {
         assertEq(schemas.latest(SCHEMA).version, 2);
         assertEq(schemas.versionAt(SCHEMA, 1).contentHash, keccak256("v1"), "version 1 was rewritten");
 
-        vm.expectRevert(
-            abi.encodeWithSelector(AttestationSchemaRegistry.VersionNotSequential.selector, 3, 2)
-        );
+        vm.expectRevert(abi.encodeWithSelector(AttestationSchemaRegistry.VersionNotSequential.selector, 3, 2));
         schemas.publish(SCHEMA, 2, keccak256("v2-again"), "ipfs://two");
     }
 
@@ -363,11 +359,7 @@ contract PassportTest is OriginationFixture {
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
-    function _sign(uint256 key, PlazoPassport.ConsentGrant memory grant)
-        private
-        view
-        returns (bytes memory)
-    {
+    function _sign(uint256 key, PlazoPassport.ConsentGrant memory grant) private view returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, passport.hashConsent(grant));
         return abi.encodePacked(r, s, v);
     }

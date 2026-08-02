@@ -107,10 +107,7 @@ contract FirstPaymentDefaultSwitch is AccessControl {
     ///      because seasoning at the time of the decision is what was priced. A
     ///      borrower who becomes seasoned between origination and their first missed
     ///      payment did not make that decision better.
-    function noteOrigination(bytes32 planId, address plan, bool seasoned)
-        external
-        onlyRole(REGISTRAR_ROLE)
-    {
+    function noteOrigination(bytes32 planId, address plan, bool seasoned) external onlyRole(REGISTRAR_ROLE) {
         Registration storage r = _registrations[planId];
         if (r.registered) revert AlreadyRegistered(planId);
 

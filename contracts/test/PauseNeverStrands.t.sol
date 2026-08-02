@@ -70,13 +70,13 @@ contract PauseNeverStrandsTest is OriginationFixture {
             PlanParams.MARK_BOUNTY,
             "a paused protocol stopped paying for the delinquency signal"
         );
-        assertEq(
-            uint8(p.state()), uint8(IInstallmentPlan.PlanState.Delinquent), "the plan is not delinquent"
-        );
+        assertEq(uint8(p.state()), uint8(IInstallmentPlan.PlanState.Delinquent), "the plan is not delinquent");
 
         // 4. The borrower still cures and pays off.
         _payOff(p);
-        assertEq(uint8(p.state()), uint8(IInstallmentPlan.PlanState.Repaid), "a paused protocol blocked payoff");
+        assertEq(
+            uint8(p.state()), uint8(IInstallmentPlan.PlanState.Repaid), "a paused protocol blocked payoff"
+        );
 
         // 5. The book still recognises it and the borrower's slot still reopens.
         creditPool.recognise(id);
@@ -89,7 +89,7 @@ contract PauseNeverStrandsTest is OriginationFixture {
         pauses.pause();
 
         CheckoutRouter.OriginationInput memory input =
-            _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 5_000e6);
+            _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 5000e6);
 
         vm.expectRevert(OriginationPause.OriginationPaused.selector);
         checkout.originate(input);
@@ -105,11 +105,9 @@ contract PauseNeverStrandsTest is OriginationFixture {
         pauses.pauseCorridor(corridor);
 
         CheckoutRouter.OriginationInput memory input =
-            _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 5_000e6);
+            _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 5000e6);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(OriginationPause.CorridorOriginationPaused.selector, corridor)
-        );
+        vm.expectRevert(abi.encodeWithSelector(OriginationPause.CorridorOriginationPaused.selector, corridor));
         checkout.originate(input);
 
         assertFalse(pauses.globallyPaused(), "a corridor pause escalated to a global one");

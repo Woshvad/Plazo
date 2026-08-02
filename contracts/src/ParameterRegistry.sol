@@ -66,15 +66,15 @@ contract ParameterRegistry is Ownable {
         // ─── Ticket and pricing ──────────────────────────────────────────────
 
         // The Phase 1 measurement, and the floor the keeper market sets.
-        _define(ParameterKeys.MIN_TICKET, PlanParams.MIN_TICKET, 25 * usdc, 1_000 * usdc);
+        _define(ParameterKeys.MIN_TICKET, PlanParams.MIN_TICKET, 25 * usdc, 1000 * usdc);
         // Tier 0 never approaches this; it exists so a mis-signed attestation cannot
         // originate an arbitrarily large plan against the book.
-        _define(ParameterKeys.MAX_TICKET, 2_000 * usdc, 100 * usdc, 50_000 * usdc);
+        _define(ParameterKeys.MAX_TICKET, 2000 * usdc, 100 * usdc, 50_000 * usdc);
         // 4%. The band's ceiling is 10% because above that the product is not
         // competitive with the incumbents it is meant to displace, and a parameter
         // that can be set to a number the business would never choose is a parameter
         // whose band is doing no work.
-        _define(ParameterKeys.MDR_BPS, 400, 0, 1_000);
+        _define(ParameterKeys.MDR_BPS, 400, 0, 1000);
 
         // ─── Tier 0 ──────────────────────────────────────────────────────────
 
@@ -88,17 +88,17 @@ contract ParameterRegistry is Ownable {
         // to what a well-behaved pseudonymous borrower deserves. Raising it is the
         // single most tempting recalibration and the single most dangerous one.
         _define(ParameterKeys.TIER0_PSEUDONYMOUS_CAP, 200 * usdc, 50 * usdc, 500 * usdc);
-        _define(ParameterKeys.TIER0_IDENTIFIED_CAP, 1_000 * usdc, 100 * usdc, 5_000 * usdc);
+        _define(ParameterKeys.TIER0_IDENTIFIED_CAP, 1000 * usdc, 100 * usdc, 5000 * usdc);
         // DEC-02. Tier 0 draws pool capital from day one, so this cap and the FPD
         // switch are the two things standing between an unproven scorecard and the
         // senior tranche. The band's ceiling is 25%.
-        _define(ParameterKeys.TIER0_BOOK_SHARE_BPS, 1_000, 100, 2_500);
+        _define(ParameterKeys.TIER0_BOOK_SHARE_BPS, 1000, 100, 2500);
         // UW-10. An account whose signature validation can change is an account whose
         // strip is only as good as the last `revalidate()`.
-        _define(ParameterKeys.CONTRACT_SIGNER_CAP_BPS, 5_000, 1_000, 10_000);
+        _define(ParameterKeys.CONTRACT_SIGNER_CAP_BPS, 5000, 1000, 10_000);
         // CHKT-05's hard onchain ceiling. An attestation can only ever lower what the
         // chain would have allowed; this is the number a stolen signing key runs into.
-        _define(ParameterKeys.LIMIT_HARD_CEILING, 5_000 * usdc, 100 * usdc, 100_000 * usdc);
+        _define(ParameterKeys.LIMIT_HARD_CEILING, 5000 * usdc, 100 * usdc, 100_000 * usdc);
         // Minutes, not hours. An attestation that outlives its checkout is a bearer
         // credential.
         _define(ParameterKeys.ATTESTATION_MAX_TTL, 15 minutes, 1 minutes, 24 hours);
@@ -109,15 +109,15 @@ contract ParameterRegistry is Ownable {
         // out of five plans is noise, and a switch that fires on noise is a switch an
         // attacker can trip for the price of five plans.
         _define(ParameterKeys.FPD_MIN_COHORT, 50, 10, 10_000);
-        _define(ParameterKeys.FPD_TRIGGER_BPS, 500, 100, 5_000);
-        _define(ParameterKeys.FPD_FULL_STOP_BPS, 2_000, 200, 10_000);
+        _define(ParameterKeys.FPD_TRIGGER_BPS, 500, 100, 5000);
+        _define(ParameterKeys.FPD_FULL_STOP_BPS, 2000, 200, 10_000);
         // A new wallet's default counts a quarter. New wallets are the cheap thing to
         // manufacture, so an attacker buying the throttle down has to pay for
         // *seasoned* ones — and a seasoned wallet costs real completed plans to make.
-        _define(ParameterKeys.FPD_NEW_WALLET_WEIGHT_BPS, 2_500, 0, 10_000);
+        _define(ParameterKeys.FPD_NEW_WALLET_WEIGHT_BPS, 2500, 0, 10_000);
         // Graduated, not binary: the switch outputs a throttle, and this is how far
         // down it can push. Zero means a full stop is reachable.
-        _define(ParameterKeys.FPD_THROTTLE_FLOOR_BPS, 0, 0, 5_000);
+        _define(ParameterKeys.FPD_THROTTLE_FLOOR_BPS, 0, 0, 5000);
         _define(ParameterKeys.FPD_SEASONING_PLANS, 1, 1, 10);
         // Observations decay over this window, so a book that has run for a year is
         // not anchored by the cohort it originated in its first month. An all-time
@@ -126,9 +126,9 @@ contract ParameterRegistry is Ownable {
 
         // ─── Pool ────────────────────────────────────────────────────────────
 
-        _define(ParameterKeys.MIN_SUBORDINATION_BPS, 1_000, 500, 5_000);
-        _define(ParameterKeys.MIN_RESERVE_BPS, 200, 50, 2_000);
-        _define(ParameterKeys.RESERVE_TARGET_BPS, 500, 100, 5_000);
+        _define(ParameterKeys.MIN_SUBORDINATION_BPS, 1000, 500, 5000);
+        _define(ParameterKeys.MIN_RESERVE_BPS, 200, 50, 2000);
+        _define(ParameterKeys.RESERVE_TARGET_BPS, 500, 100, 5000);
 
         // ─── Epoch accounting ────────────────────────────────────────────────
 
@@ -141,15 +141,15 @@ contract ParameterRegistry is Ownable {
         // the delinquency is public rather than at charge-off. A book that waits until
         // the sixtieth day to admit a loss is a book selling shares at a price it
         // already knows is wrong.
-        _define(ParameterKeys.DELINQUENT_PROVISION_BPS, 5_000, 0, 10_000);
+        _define(ParameterKeys.DELINQUENT_PROVISION_BPS, 5000, 0, 10_000);
         // The share of assets kept as cash rather than deployed to the savings venue.
         // Redemptions fill from cash, so this is the difference between a queue that
         // moves every epoch and one that waits on a venue redemption.
-        _define(ParameterKeys.BUFFER_FLOOR_BPS, 1_000, 0, 5_000);
+        _define(ParameterKeys.BUFFER_FLOOR_BPS, 1000, 0, 5000);
         // POOL-09. Above this much net redemption in one epoch the liquidity fee
         // switches on. Ten percent of the book leaving in a day is not ordinary
         // runoff.
-        _define(ParameterKeys.LIQUIDITY_FEE_THRESHOLD_BPS, 1_000, 100, 10_000);
+        _define(ParameterKeys.LIQUIDITY_FEE_THRESHOLD_BPS, 1000, 100, 10_000);
         // One percent, charged uniformly to everyone filled in that epoch, and it
         // stays in the pool. The point is not the revenue — it is that redeeming
         // early stops being profitable, which is the only thing that stops a run.
@@ -160,7 +160,7 @@ contract ParameterRegistry is Ownable {
         // and is paid first out of income, and if income is short the shortfall
         // carries rather than being conjured. The band's ceiling is 30% because a
         // senior tranche demanding more than that is not senior paper.
-        _define(ParameterKeys.SENIOR_TARGET_APY_BPS, 800, 0, 3_000);
+        _define(ParameterKeys.SENIOR_TARGET_APY_BPS, 800, 0, 3000);
 
         // ─── Passport and servicing ──────────────────────────────────────────
 
@@ -179,17 +179,17 @@ contract ParameterRegistry is Ownable {
         // The bond scales with outstanding fronted exposure rather than being a flat
         // entry cost, because refund arbitrage is the highest-yield attack on this
         // book and a flat cost is one a well-capitalised attacker pays once.
-        _define(ParameterKeys.MERCHANT_BOND_BPS, 1_000, 0, 5_000);
+        _define(ParameterKeys.MERCHANT_BOND_BPS, 1000, 0, 5000);
         _define(ParameterKeys.MERCHANT_BOND_FLOOR, 250 * usdc, 0, 10_000 * usdc);
         _define(ParameterKeys.MERCHANT_VESTING_WINDOW, 90 days, 0, 365 days);
-        _define(ParameterKeys.MERCHANT_VESTING_BPS, 1_000, 0, 3_000);
+        _define(ParameterKeys.MERCHANT_VESTING_BPS, 1000, 0, 3000);
         _define(ParameterKeys.MERCHANT_VELOCITY_WINDOW, 1 days, 1 hours, 30 days);
-        _define(ParameterKeys.MERCHANT_VELOCITY_CAP, 5_000 * usdc, 100 * usdc, 1_000_000 * usdc);
+        _define(ParameterKeys.MERCHANT_VELOCITY_CAP, 5000 * usdc, 100 * usdc, 1_000_000 * usdc);
 
         // ─── Concentration (UW-09) ───────────────────────────────────────────
 
-        _define(ParameterKeys.MERCHANT_CONCENTRATION_BPS, 2_000, 100, 10_000);
-        _define(ParameterKeys.CORRIDOR_CONCENTRATION_BPS, 5_000, 100, 10_000);
+        _define(ParameterKeys.MERCHANT_CONCENTRATION_BPS, 2000, 100, 10_000);
+        _define(ParameterKeys.CORRIDOR_CONCENTRATION_BPS, 5000, 100, 10_000);
 
         // ─── Settlement escrow (Phase 6) ─────────────────────────────────────
 

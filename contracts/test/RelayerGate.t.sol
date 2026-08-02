@@ -42,8 +42,7 @@ contract RelayerGateTest is OriginationFixture {
 
         // The expected-revert payload is built first. `p.dueDate(1)` is an external
         // call, and building it inline would consume the prank meant for `collect`.
-        bytes memory expected =
-            abi.encodeWithSelector(RelayerGate.TooEarly.selector, p.dueDate(1), earliest);
+        bytes memory expected = abi.encodeWithSelector(RelayerGate.TooEarly.selector, p.dueDate(1), earliest);
 
         vm.prank(operator);
         vm.expectRevert(expected);

@@ -301,11 +301,10 @@ abstract contract OriginationFixture is PlanFixture {
         });
     }
 
-    function _signAttestation(LimitAttestation.Attestation memory attestation, uint256 key)
-        internal
-        view
-        returns (bytes memory)
-    {
+    function _signAttestation(
+        LimitAttestation.Attestation memory attestation,
+        uint256 key
+    ) internal view returns (bytes memory) {
         bytes32 digest = LimitAttestation.digest(attestation, block.chainid, address(checkout));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
         return abi.encodePacked(r, s, v);
@@ -313,11 +312,11 @@ abstract contract OriginationFixture is PlanFixture {
 
     // ─── Origination through the router ──────────────────────────────────────
 
-    function _originationInput(PlanId.PlanTerms memory terms, bytes32 sessionId, uint256 limit)
-        internal
-        view
-        returns (CheckoutRouter.OriginationInput memory)
-    {
+    function _originationInput(
+        PlanId.PlanTerms memory terms,
+        bytes32 sessionId,
+        uint256 limit
+    ) internal view returns (CheckoutRouter.OriginationInput memory) {
         bytes32 id = PlanId.derive(terms);
         LimitAttestation.Attestation memory attestation = _attestation(sessionId, id, limit);
         return CheckoutRouter.OriginationInput({
@@ -328,10 +327,11 @@ abstract contract OriginationFixture is PlanFixture {
     }
 
     /// @notice Originate through the router, as a checkout would.
-    function _checkout(PlanId.PlanTerms memory terms, bytes32 sessionId, uint256 limit)
-        internal
-        returns (InstallmentPlan)
-    {
+    function _checkout(
+        PlanId.PlanTerms memory terms,
+        bytes32 sessionId,
+        uint256 limit
+    ) internal returns (InstallmentPlan) {
         planId = PlanId.derive(terms);
         firstDue = terms.firstDueDate;
 
@@ -378,9 +378,8 @@ abstract contract OriginationFixture is PlanFixture {
     /// @dev Returns the plan id, because the caller usually wants to assert against
     ///      the person's standing rather than the plan.
     function _completeCleanPlan(uint256 nonce) internal returns (bytes32) {
-        InstallmentPlan p = _checkout(
-            _terms(PRINCIPAL, COUNT, nonce), keccak256(abi.encode("session", nonce)), 5_000e6
-        );
+        InstallmentPlan p =
+            _checkout(_terms(PRINCIPAL, COUNT, nonce), keccak256(abi.encode("session", nonce)), 5000e6);
         bytes32 id = planId;
         _payOff(p);
         tier0.notePlanOutcome(id);

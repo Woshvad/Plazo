@@ -109,9 +109,9 @@ library LimitAttestation {
         if (limit < 100 * usdc) return 0;
         if (limit < 250 * usdc) return 1;
         if (limit < 500 * usdc) return 2;
-        if (limit < 1_000 * usdc) return 3;
-        if (limit < 2_500 * usdc) return 4;
-        if (limit < 5_000 * usdc) return 5;
+        if (limit < 1000 * usdc) return 3;
+        if (limit < 2500 * usdc) return 4;
+        if (limit < 5000 * usdc) return 5;
         return 6;
     }
 }

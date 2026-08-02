@@ -77,9 +77,7 @@ contract EligibilityRegistry is ITransferEligibility, Ownable {
         emit AssetEligibilitySet(asset, account, eligible);
     }
 
-    function setForAssetBatch(address asset, address[] calldata accounts, bool[] calldata flags)
-        external
-    {
+    function setForAssetBatch(address asset, address[] calldata accounts, bool[] calldata flags) external {
         if (accounts.length != flags.length) revert LengthMismatch(accounts.length, flags.length);
         for (uint256 i = 0; i < accounts.length; ++i) {
             setForAsset(asset, accounts[i], flags[i]);

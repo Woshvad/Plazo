@@ -52,7 +52,6 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     ///      against.
     bytes32 public constant ORIGINATOR_ROLE = keccak256("PLAZO.ORIGINATOR");
 
-
     struct Person {
         uint256 cleanCompletions;
         uint256 activePlans;
@@ -148,11 +147,11 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// @inheritdoc IUnderwritingPartner
-    function capFor(bytes32 personId, IdentityClass identity, TermsDetail.SignerClass signerClass)
-        public
-        view
-        returns (uint256)
-    {
+    function capFor(
+        bytes32 personId,
+        IdentityClass identity,
+        TermsDetail.SignerClass signerClass
+    ) public view returns (uint256) {
         Person storage p = _people[personId];
 
         // One active plan until the first completes. Zero is a decision, not an
@@ -209,10 +208,12 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// @inheritdoc IUnderwritingPartner
-    function notePlan(bytes32 personId, IdentityClass identity, bytes32 planId, uint256 principal)
-        external
-        onlyRole(ORIGINATOR_ROLE)
-    {
+    function notePlan(
+        bytes32 personId,
+        IdentityClass identity,
+        bytes32 planId,
+        uint256 principal
+    ) external onlyRole(ORIGINATOR_ROLE) {
         PlanRecord storage record = _plans[planId];
         if (record.personId != bytes32(0)) revert PlanAlreadyNoted(planId);
 
@@ -304,8 +305,9 @@ contract Tier0Underwriter is IUnderwritingPartner, AccessControl {
         Person storage p = _people[record.personId];
         p.activePlans -= 1;
         p.outstanding -= record.principal > p.outstanding ? p.outstanding : record.principal;
-        _outstandingExposure -=
-            record.principal > _outstandingExposure ? _outstandingExposure : record.principal;
+        _outstandingExposure -= record.principal > _outstandingExposure
+            ? _outstandingExposure
+            : record.principal;
 
         if (clean) p.cleanCompletions += 1;
 

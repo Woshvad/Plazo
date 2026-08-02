@@ -82,9 +82,7 @@ contract EpochsTest is OriginationFixture {
         creditPool.closeEpoch();
 
         vm.warp(creditPool.epochEndsAt() + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(TranchedCreditPool.MarkPhaseIncomplete.selector, 0, 1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(TranchedCreditPool.MarkPhaseIncomplete.selector, 0, 1));
         creditPool.closeEpoch();
     }
 
@@ -115,9 +113,7 @@ contract EpochsTest is OriginationFixture {
         creditPool.markEpoch(16);
 
         assertFalse(creditPool.allDelinquenciesMarked(), "the pool did not see the delinquency");
-        vm.expectRevert(
-            abi.encodeWithSelector(TranchedCreditPool.UnmarkedDelinquencyOutstanding.selector, 1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(TranchedCreditPool.UnmarkedDelinquencyOutstanding.selector, 1));
         creditPool.closeEpoch();
 
         vm.prank(keeper);
@@ -144,9 +140,7 @@ contract EpochsTest is OriginationFixture {
             (carrying * parameters.get(ParameterKeys.DELINQUENT_PROVISION_BPS)) / PlanParams.BPS;
 
         assertEq(creditPool.provisionOf(id).amount, expected, "the provision was not half the carrying");
-        assertEq(
-            assetsBefore - creditPool.totalAssets(), expected, "the provision did not reach NAV"
-        );
+        assertEq(assetsBefore - creditPool.totalAssets(), expected, "the provision did not reach NAV");
         assertEq(
             creditPool.provisionedAt(creditPool.currentEpoch()),
             expected,
@@ -243,9 +237,7 @@ contract EpochsTest is OriginationFixture {
         uint256 struck = _lossAbsorbed(vm.getRecordedLogs());
 
         assertEq(creditPool.totalProvisioned(), 0, "the provision survived the charge-off");
-        assertEq(
-            uint8(p.state()), uint8(IInstallmentPlan.PlanState.Defaulted), "the plan did not charge off"
-        );
+        assertEq(uint8(p.state()), uint8(IInstallmentPlan.PlanState.Defaulted), "the plan did not charge off");
 
         // Net movement is the real loss: the provision came back and the write-off went
         // out, and the write-off is the carrying value less the fee that was never
@@ -269,7 +261,7 @@ contract EpochsTest is OriginationFixture {
     function test_aFraudLossRoutesToTheReserve() public {
         creditPool.setOriginator(address(this));
 
-        uint256 amount = 1_000e6;
+        uint256 amount = 1000e6;
         ConfigurablePlan stub = new ConfigurablePlan();
         stub.initHealthy(4, amount, vm.getBlockTimestamp() + 365 days, 14 days);
 
@@ -284,9 +276,7 @@ contract EpochsTest is OriginationFixture {
         stub.setState(IInstallmentPlan.PlanState.FraudReversed);
         creditPool.recognise(id);
 
-        assertEq(
-            reserveBefore - creditPool.reserveBalance(), amount, "the reserve did not absorb the fraud"
-        );
+        assertEq(reserveBefore - creditPool.reserveBalance(), amount, "the reserve did not absorb the fraud");
         assertEq(
             creditPool.trancheAssets(ICreditPool.Tranche.Junior),
             juniorBefore,

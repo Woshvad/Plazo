@@ -35,9 +35,7 @@ contract AttestationSchemaRegistry is AccessControl {
     mapping(bytes32 schemaId => SchemaVersion[]) private _versions;
     bytes32[] private _schemaIds;
 
-    event SchemaPublished(
-        bytes32 indexed schemaId, uint64 indexed version, bytes32 contentHash, string uri
-    );
+    event SchemaPublished(bytes32 indexed schemaId, uint64 indexed version, bytes32 contentHash, string uri);
 
     error NoSuchSchema(bytes32 schemaId);
     error ContentHashZero();
@@ -51,10 +49,12 @@ contract AttestationSchemaRegistry is AccessControl {
     /// @notice Publish the next version of a schema.
     /// @dev Versions are dense and sequential so "version 3" is unambiguous and a gap
     ///      cannot be mistaken for a withdrawal.
-    function publish(bytes32 schemaId, uint64 version, bytes32 contentHash, string calldata uri)
-        external
-        onlyRole(PUBLISHER_ROLE)
-    {
+    function publish(
+        bytes32 schemaId,
+        uint64 version,
+        bytes32 contentHash,
+        string calldata uri
+    ) external onlyRole(PUBLISHER_ROLE) {
         if (contentHash == bytes32(0)) revert ContentHashZero();
 
         SchemaVersion[] storage versions = _versions[schemaId];
@@ -65,10 +65,7 @@ contract AttestationSchemaRegistry is AccessControl {
 
         versions.push(
             SchemaVersion({
-                version: version,
-                publishedAt: uint64(block.timestamp),
-                contentHash: contentHash,
-                uri: uri
+                version: version, publishedAt: uint64(block.timestamp), contentHash: contentHash, uri: uri
             })
         );
 

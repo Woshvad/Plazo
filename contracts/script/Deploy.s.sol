@@ -141,8 +141,7 @@ contract Deploy is Script {
         );
 
         s.killSwitch = new FirstPaymentDefaultSwitch(deployer, address(s.parameters));
-        s.underwriter =
-            new Tier0Underwriter(deployer, address(s.parameters), address(s.killSwitch));
+        s.underwriter = new Tier0Underwriter(deployer, address(s.parameters), address(s.killSwitch));
         s.pauses = new OriginationPause(deployer, deployer);
 
         s.implementation = new InstallmentPlan();

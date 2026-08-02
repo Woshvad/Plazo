@@ -42,9 +42,7 @@ contract PoolBookTest is OriginationFixture {
         usdc.mint(address(this), 50_000e6);
         usdc.transfer(address(creditPool), 50_000e6);
 
-        assertEq(
-            usdc.balanceOf(address(creditPool)), balanceBefore + 50_000e6, "the transfer did not land"
-        );
+        assertEq(usdc.balanceOf(address(creditPool)), balanceBefore + 50_000e6, "the transfer did not land");
         assertEq(creditPool.totalAssets(), before, "a donation moved NAV");
         assertEq(creditPool.bookedCash(), balanceBefore, "a donation moved booked cash");
     }
@@ -188,9 +186,7 @@ contract PoolBookTest is OriginationFixture {
         _chargeOff(p);
         creditPool.recognise(id);
 
-        assertEq(
-            uint8(p.state()), uint8(IInstallmentPlan.PlanState.Defaulted), "the plan did not charge off"
-        );
+        assertEq(uint8(p.state()), uint8(IInstallmentPlan.PlanState.Defaulted), "the plan did not charge off");
 
         // The whole loss landed on the reserve, and neither tranche fell.
         //
@@ -242,12 +238,12 @@ contract PoolBookTest is OriginationFixture {
         uint256 reserveBefore = creditPool.reserveBalance();
 
         // A synthetic write-off far larger than the reserve.
-        _forceLoss(reserveBefore + 1_000e6);
+        _forceLoss(reserveBefore + 1000e6);
 
         assertEq(creditPool.reserveBalance(), 0, "the reserve was not exhausted first");
         assertEq(
             juniorBefore - creditPool.trancheAssets(ICreditPool.Tranche.Junior),
-            1_000e6,
+            1000e6,
             "junior did not absorb the overflow"
         );
         assertEq(
@@ -292,11 +288,11 @@ contract PoolBookTest is OriginationFixture {
     /// @dev POOL-02. Gating the entry means the holder set is correct from the
     ///      beginning rather than needing a snapshot the day the shares move.
     function test_depositsAreEligibilityGated() public {
-        usdc.mint(stranger, 1_000e6);
+        usdc.mint(stranger, 1000e6);
         vm.startPrank(stranger);
-        usdc.approve(address(creditPool), 1_000e6);
+        usdc.approve(address(creditPool), 1000e6);
         vm.expectRevert(abi.encodeWithSelector(TranchedCreditPool.NotEligible.selector, stranger));
-        creditPool.requestDeposit(ICreditPool.Tranche.Senior, 1_000e6);
+        creditPool.requestDeposit(ICreditPool.Tranche.Senior, 1000e6);
         vm.stopPrank();
     }
 
@@ -329,8 +325,9 @@ contract PoolBookTest is OriginationFixture {
         assertEq(usdc.balanceOf(lender), assets, "the redemption paid something else");
         assertApproxEqRel(assets, expected, 1e15, "half the shares were not worth half the stake");
 
-        TranchedCreditPool.Fill memory fill =
-            creditPool.fillAt(ICreditPool.Tranche.Senior, creditPool.fillCount(ICreditPool.Tranche.Senior) - 1);
+        TranchedCreditPool.Fill memory fill = creditPool.fillAt(
+            ICreditPool.Tranche.Senior, creditPool.fillCount(ICreditPool.Tranche.Senior) - 1
+        );
         assertEq(fill.feeBps, feeBps, "the epoch's fill did not carry the liquidity fee");
     }
 
@@ -377,8 +374,7 @@ contract PoolBookTest is OriginationFixture {
 
         _closeEpoch();
 
-        (uint256 ahead, uint256 size, uint256 filled) =
-            _position(ICreditPool.Tranche.Senior, lender, index);
+        (uint256 ahead, uint256 size, uint256 filled) = _position(ICreditPool.Tranche.Senior, lender, index);
         assertEq(ahead, 0, "the ticket was not at the head of the queue");
         assertLt(filled, size, "the whole request filled out of a book that could not fund it");
 
@@ -388,13 +384,12 @@ contract PoolBookTest is OriginationFixture {
     }
 
     /// @dev The queue position, as the lender app reads it.
-    function _position(ICreditPool.Tranche tranche, address holder, uint256 index)
-        private
-        view
-        returns (uint256 ahead, uint256 size, uint256 filled)
-    {
-        TranchedCreditPool.RedeemTicket memory ticket =
-            creditPool.redeemTicketAt(tranche, holder, index);
+    function _position(
+        ICreditPool.Tranche tranche,
+        address holder,
+        uint256 index
+    ) private view returns (uint256 ahead, uint256 size, uint256 filled) {
+        TranchedCreditPool.RedeemTicket memory ticket = creditPool.redeemTicketAt(tranche, holder, index);
         (, uint256 line) = creditPool.queueDepth(tranche);
         ahead = ticket.lo > line ? ticket.lo - line : 0;
         size = ticket.hi - ticket.lo;

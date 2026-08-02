@@ -196,16 +196,17 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         // its own delinquency budget rather than trusting the factory to have sent
         // one — which is the difference between a plan that can pay for its own mark
         // and a plan that discovers it cannot at the moment the mark is needed.
-        ctx.pool.front(
-            ctx.planId,
-            ctx.plan,
-            ctx.merchant,
-            ctx.corridor,
-            ctx.principal,
-            ctx.mdr,
-            ctx.escrow,
-            address(this)
-        );
+        ctx.pool
+            .front(
+                ctx.planId,
+                ctx.plan,
+                ctx.merchant,
+                ctx.corridor,
+                ctx.principal,
+                ctx.mdr,
+                ctx.escrow,
+                address(this)
+            );
 
         (planId, plan) = factory.originate(input.request);
 
@@ -280,10 +281,10 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ///      and this plan, and its signer must hold the role. What it cannot do is
     ///      raise anything: the size check that follows takes the minimum of it and
     ///      every on-chain cap.
-    function _authorize(OriginationInput calldata input, Context memory ctx)
-        private
-        returns (uint256 attested)
-    {
+    function _authorize(
+        OriginationInput calldata input,
+        Context memory ctx
+    ) private returns (uint256 attested) {
         LimitAttestation.Attestation calldata a = input.attestation;
 
         if (a.planId != ctx.planId) revert AttestationPlanMismatch(ctx.planId, a.planId);
@@ -312,10 +313,11 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ///      it is only ever the *smallest* that binds — so a compromised underwriting
     ///      key cannot extend credit the chain would not already have extended. It
     ///      can only refuse to.
-    function _sizeCheck(TermsDetail.SignerClass signerClass, Context memory ctx, uint256 attested)
-        private
-        view
-    {
+    function _sizeCheck(
+        TermsDetail.SignerClass signerClass,
+        Context memory ctx,
+        uint256 attested
+    ) private view {
         uint256 minTicket = parameters.get(ParameterKeys.MIN_TICKET);
         uint256 maxTicket = parameters.get(ParameterKeys.MAX_TICKET);
         if (ctx.principal < minTicket || ctx.principal > maxTicket) {
@@ -453,8 +455,7 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
         uint256 maxTicket = parameters.get(ParameterKeys.MAX_TICKET);
         if (limit > maxTicket) limit = maxTicket;
 
-        (uint256 merchantRoom, uint256 corridorRoom) =
-            pool.concentrationHeadroom(merchant, corridorOf(token));
+        (uint256 merchantRoom, uint256 corridorRoom) = pool.concentrationHeadroom(merchant, corridorOf(token));
         if (limit > merchantRoom) limit = merchantRoom;
         if (limit > corridorRoom) limit = corridorRoom;
 
@@ -474,11 +475,10 @@ contract CheckoutRouter is AccessControl, ReentrancyGuard {
     ///      to guess at the fix; one that can report "merchant velocity cap" tells the
     ///      merchant to try again in an hour and tells the borrower nothing about
     ///      themselves that is untrue.
-    function merchantStanding(address merchant, uint256 principal)
-        external
-        view
-        returns (bool ok, string memory reason)
-    {
+    function merchantStanding(
+        address merchant,
+        uint256 principal
+    ) external view returns (bool ok, string memory reason) {
         return merchants.canOriginate(merchant, principal);
     }
 

@@ -47,11 +47,7 @@ contract KillSwitchTest is Test {
 
         assertEq(switchboard.cohortSize(), 10, "cohort not recorded");
         assertEq(switchboard.fpdBps(), PlanParams.BPS, "a 100% default rate did not read as 100%");
-        assertEq(
-            switchboard.throttleBps(),
-            PlanParams.BPS,
-            "the switch fired on a cohort of ten"
-        );
+        assertEq(switchboard.throttleBps(), PlanParams.BPS, "the switch fired on a cohort of ten");
     }
 
     /// @notice Above the minimum, the same rate closes the book.
@@ -75,15 +71,15 @@ contract KillSwitchTest is Test {
         // the full stop is 20%, so this lands a third of the way along the ramp.
         _observe(100, 10, true);
 
-        assertEq(switchboard.fpdBps(), 1_000, "the weighted rate is not 10%");
+        assertEq(switchboard.fpdBps(), 1000, "the weighted rate is not 10%");
 
         uint256 throttle = switchboard.throttleBps();
         assertGt(throttle, 0, "a mid-range default rate closed the book entirely");
         assertLt(throttle, PlanParams.BPS, "a mid-range default rate did not throttle at all");
 
         // A third of the way from 5% to 20% removes a third of the limit.
-        assertApproxEqAbs(throttle, PlanParams.BPS - 3_333, 2, "the ramp is not linear");
-        assertEq(switchboard.throttle(1_000e6), (1_000e6 * throttle) / PlanParams.BPS);
+        assertApproxEqAbs(throttle, PlanParams.BPS - 3333, 2, "the ramp is not linear");
+        assertEq(switchboard.throttle(1000e6), (1000e6 * throttle) / PlanParams.BPS);
     }
 
     function test_aRateBelowTheTriggerChangesNothing() public {
@@ -129,7 +125,7 @@ contract KillSwitchTest is Test {
 
         assertFalse(switchboard.registrationOf(id).seasoned, "seasoning was not recorded");
         // One new-wallet default weighted at a quarter.
-        assertEq(switchboard.fpdBps(), 2_500, "the new-wallet weight was not applied");
+        assertEq(switchboard.fpdBps(), 2500, "the new-wallet weight was not applied");
     }
 
     // ─── Reading the plan ────────────────────────────────────────────────────
@@ -159,9 +155,7 @@ contract KillSwitchTest is Test {
 
         assertFalse(switchboard.isObservable(id), "an unresolved installment reported observable");
         vm.expectRevert(
-            abi.encodeWithSelector(
-                FirstPaymentDefaultSwitch.NotYetObservable.selector, id, p.graceEndsAt(0)
-            )
+            abi.encodeWithSelector(FirstPaymentDefaultSwitch.NotYetObservable.selector, id, p.graceEndsAt(0))
         );
         switchboard.observe(id);
     }

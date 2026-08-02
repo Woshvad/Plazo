@@ -21,9 +21,9 @@ import {TermsDetail} from "../src/libraries/TermsDetail.sol";
 ///      file spends most of its length proving that each of them does.
 contract Tier0Test is OriginationFixture {
     IUnderwritingPartner.IdentityClass internal constant PSEUDONYMOUS =
-        IUnderwritingPartner.IdentityClass.Pseudonymous;
+    IUnderwritingPartner.IdentityClass.Pseudonymous;
     IUnderwritingPartner.IdentityClass internal constant IDENTIFIED =
-        IUnderwritingPartner.IdentityClass.Identified;
+    IUnderwritingPartner.IdentityClass.Identified;
 
     function setUp() public {
         _deployStack();
@@ -133,7 +133,7 @@ contract Tier0Test is OriginationFixture {
     ///      The protocol can only see its own book, so it enforces what it can see
     ///      completely rather than what it wishes it could see partially.
     function test_onlyOneActivePlanPerPerson() public {
-        _checkout(_terms(PRINCIPAL, COUNT, 1), keccak256("s1"), 5_000e6);
+        _checkout(_terms(PRINCIPAL, COUNT, 1), keccak256("s1"), 5000e6);
         InstallmentPlan first = plan;
 
         assertEq(
@@ -143,7 +143,7 @@ contract Tier0Test is OriginationFixture {
         );
 
         CheckoutRouter.OriginationInput memory second =
-            _originationInput(_terms(PRINCIPAL, COUNT, 2), keccak256("s2"), 5_000e6);
+            _originationInput(_terms(PRINCIPAL, COUNT, 2), keccak256("s2"), 5000e6);
         vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.LimitExceeded.selector, PRINCIPAL, 0));
         checkout.originate(second);
 
@@ -151,7 +151,7 @@ contract Tier0Test is OriginationFixture {
         _payOff(first);
         tier0.notePlanOutcome(firstId);
 
-        _checkout(_terms(PRINCIPAL, COUNT, 3), keccak256("s3"), 5_000e6);
+        _checkout(_terms(PRINCIPAL, COUNT, 3), keccak256("s3"), 5000e6);
         assertEq(tier0.personOf(_personId()).activePlans, 1, "the slot did not reopen");
     }
 

@@ -170,11 +170,9 @@ contract PlanFactory {
     /// @notice Deploy the clone for these terms.
     /// @dev Originator-only. Deployment is idempotent-by-revert, so a duplicate
     ///      origination cannot silently produce a second plan at the same address.
-    function deploy(PlanId.PlanTerms memory terms)
-        external
-        onlyOriginator
-        returns (bytes32 planId, address plan)
-    {
+    function deploy(
+        PlanId.PlanTerms memory terms
+    ) external onlyOriginator returns (bytes32 planId, address plan) {
         return _deploy(terms);
     }
 

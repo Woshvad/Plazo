@@ -87,9 +87,7 @@ contract OriginationTest is OriginationFixture {
 
         TranchedCreditPool.PlanBook memory book = creditPool.bookOf(planId);
         assertEq(
-            book.deferredIncome,
-            checkout.mdrFor(PRINCIPAL) - escrow,
-            "the escrow was not funded out of MDR"
+            book.deferredIncome, checkout.mdrFor(PRINCIPAL) - escrow, "the escrow was not funded out of MDR"
         );
     }
 
@@ -133,13 +131,13 @@ contract OriginationTest is OriginationFixture {
     ///      origination still fails at the cap — so the answer to "what can someone
     ///      do with the signing key" is "decline business", not "lend the book out".
     function test_anAttestationCannotRaiseWhatTheChainWouldAllow() public {
-        PlanId.PlanTerms memory terms = _terms(1_000e6, COUNT, 7);
+        PlanId.PlanTerms memory terms = _terms(1000e6, COUNT, 7);
         CheckoutRouter.OriginationInput memory input =
-            _originationInput(terms, keccak256("session-greedy"), 5_000e6);
+            _originationInput(terms, keccak256("session-greedy"), 5000e6);
 
         // The Tier-0 cap for a borrower with no history is the initial limit.
         uint256 tierCap = parameters.get(ParameterKeys.TIER0_INITIAL_LIMIT);
-        vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.LimitExceeded.selector, 1_000e6, tierCap));
+        vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.LimitExceeded.selector, 1000e6, tierCap));
         checkout.originate(input);
     }
 
@@ -164,15 +162,12 @@ contract OriginationTest is OriginationFixture {
     /// @notice An attestation is not a bearer credential.
     function test_anExpiredAttestationIsRefused() public {
         PlanId.PlanTerms memory terms = _terms(PRINCIPAL, COUNT, 1);
-        CheckoutRouter.OriginationInput memory input =
-            _originationInput(terms, keccak256("s"), 200e6);
+        CheckoutRouter.OriginationInput memory input = _originationInput(terms, keccak256("s"), 200e6);
 
         vm.warp(vm.getBlockTimestamp() + 6 minutes);
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                CheckoutRouter.AttestationExpired.selector, input.attestation.validUntil
-            )
+            abi.encodeWithSelector(CheckoutRouter.AttestationExpired.selector, input.attestation.validUntil)
         );
         checkout.originate(input);
     }
@@ -263,9 +258,7 @@ contract OriginationTest is OriginationFixture {
             found = true;
             uint8 band = abi.decode(logs[i].data, (uint8));
             assertEq(band, checkout.bandOf(attested), "the emitted band is not the band");
-            assertTrue(
-                logs[i].data.length == 32, "the attestation log carries more than a single band word"
-            );
+            assertTrue(logs[i].data.length == 32, "the attestation log carries more than a single band word");
         }
         assertTrue(found, "no LimitAttested was emitted");
 
@@ -308,9 +301,7 @@ contract OriginationTest is OriginationFixture {
         CheckoutRouter.OriginationInput memory input =
             _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 200e6);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(CheckoutRouter.ScreenStale.selector, borrower, screenedAt)
-        );
+        vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.ScreenStale.selector, borrower, screenedAt));
         checkout.originate(input);
     }
 
@@ -336,9 +327,7 @@ contract OriginationTest is OriginationFixture {
             attestationSignature: _signAttestation(a, UNDERWRITER_KEY)
         });
 
-        vm.expectRevert(
-            abi.encodeWithSelector(CheckoutRouter.SettlementRecipientNotAPool.selector, merchant)
-        );
+        vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.SettlementRecipientNotAPool.selector, merchant));
         checkout.originate(input);
     }
 
@@ -404,8 +393,7 @@ contract OriginationTest is OriginationFixture {
     ///      the router's is about whether this deployment currently wants to.
     function test_aTicketBelowTheMinimumIsRefused() public {
         PlanId.PlanTerms memory terms = _terms(50e6, COUNT, 1);
-        CheckoutRouter.OriginationInput memory input =
-            _originationInput(terms, keccak256("s"), 200e6);
+        CheckoutRouter.OriginationInput memory input = _originationInput(terms, keccak256("s"), 200e6);
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -432,9 +420,7 @@ contract OriginationTest is OriginationFixture {
             _originationInput(_terms(PRINCIPAL, COUNT, 1), keccak256("s"), 200e6);
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                CheckoutRouter.MerchantIneligible.selector, "merchant not KYB verified"
-            )
+            abi.encodeWithSelector(CheckoutRouter.MerchantIneligible.selector, "merchant not KYB verified")
         );
         checkout.originate(input);
     }

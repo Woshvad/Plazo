@@ -27,8 +27,5 @@ interface ITransferEligibility {
     ///      not the party — a jurisdiction that permits holding but not selling
     ///      across a border, a lock-up that binds the sender. Implementations that
     ///      only care about the recipient defer to `isEligible(asset, to)`.
-    function isTransferPermitted(address asset, address from, address to)
-        external
-        view
-        returns (bool);
+    function isTransferPermitted(address asset, address from, address to) external view returns (bool);
 }

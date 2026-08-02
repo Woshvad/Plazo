@@ -95,14 +95,14 @@ contract ParameterRegistryTest is Test {
     function test_theTierZeroBookShareIsCappedInCode() public {
         vm.prank(governance);
         vm.expectRevert();
-        parameters.set(ParameterKeys.TIER0_BOOK_SHARE_BPS, 5_000);
+        parameters.set(ParameterKeys.TIER0_BOOK_SHARE_BPS, 5000);
     }
 
     /// @notice Limit growth can be switched off but never reversed into a shrink.
     function test_growthCannotBecomeShrinkage() public {
         vm.prank(governance);
         vm.expectRevert();
-        parameters.set(ParameterKeys.TIER0_GROWTH_BPS, 9_000);
+        parameters.set(ParameterKeys.TIER0_GROWTH_BPS, 9000);
 
         vm.prank(governance);
         parameters.set(ParameterKeys.TIER0_GROWTH_BPS, 10_000);
@@ -162,9 +162,7 @@ contract ParameterRegistryTest is Test {
         parameters.narrowBand(ParameterKeys.MDR_BPS, 300, 500);
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                ParameterRegistry.OutOfBand.selector, ParameterKeys.MDR_BPS, 550, 300, 500
-            )
+            abi.encodeWithSelector(ParameterRegistry.OutOfBand.selector, ParameterKeys.MDR_BPS, 550, 300, 500)
         );
         parameters.set(ParameterKeys.MDR_BPS, 550);
         vm.stopPrank();

@@ -107,8 +107,8 @@ contract PlazoPassport is AccessControl {
     ParameterRegistry public immutable parameters;
 
     mapping(address borrower => Record) private _records;
-    mapping(address borrower => mapping(address reader => mapping(bytes32 schemaId => uint256)))
-        private _consentUntil;
+    mapping(address borrower => mapping(address reader => mapping(bytes32 schemaId => uint256))) private
+        _consentUntil;
     mapping(bytes32 grantHash => bool) public consentUsed;
 
     /// @dev **Every event here is keyed by a salted subject, never by the wallet.**
@@ -182,19 +182,18 @@ contract PlazoPassport is AccessControl {
         Record storage record = _touch(borrower);
         _pushMark(record);
         record.updatedAt = uint64(block.timestamp);
-        emit NegativeNoted(
-            _subject(borrower, record.salt), uint64(block.timestamp), record.negativesEver
-        );
+        emit NegativeNoted(_subject(borrower, record.salt), uint64(block.timestamp), record.negativesEver);
     }
 
     /// @notice Commit to the off-chain half of a borrower's record.
     /// @dev PASS-02 and PASS-05. The version increments on every write and is inside
     ///      the commitment, so a commitment from an earlier state does not verify
     ///      against the current version.
-    function writeCommitment(address borrower, bytes32 commitment, bytes32 schemaId)
-        external
-        onlyRole(WRITER_ROLE)
-    {
+    function writeCommitment(
+        address borrower,
+        bytes32 commitment,
+        bytes32 schemaId
+    ) external onlyRole(WRITER_ROLE) {
         Record storage record = _touch(borrower);
         record.commitment = commitment;
         record.schemaId = schemaId;
@@ -259,8 +258,9 @@ contract PlazoPassport is AccessControl {
         if (record.version == 0) revert NoRecord(borrower);
 
         bytes32 previous = _subject(borrower, record.salt);
-        record.salt =
-            keccak256(abi.encode("PLAZO.PASSPORT_SALT", borrower, record.salt, block.timestamp, block.number));
+        record.salt = keccak256(
+            abi.encode("PLAZO.PASSPORT_SALT", borrower, record.salt, block.timestamp, block.number)
+        );
         record.commitment = bytes32(0);
 
         emit SaltRotated(previous, _subject(borrower, record.salt), record.version);
@@ -432,11 +432,11 @@ contract PlazoPassport is AccessControl {
         return block.timestamp <= _consentUntil[borrower][reader][schemaId];
     }
 
-    function consentExpiry(address borrower, address reader, bytes32 schemaId)
-        external
-        view
-        returns (uint256)
-    {
+    function consentExpiry(
+        address borrower,
+        address reader,
+        bytes32 schemaId
+    ) external view returns (uint256) {
         return _consentUntil[borrower][reader][schemaId];
     }
 

@@ -161,7 +161,7 @@ contract PoolHandler is Test {
     // ─── The book ────────────────────────────────────────────────────────────
 
     function front(uint256 principal, uint256 mdrSeed) external {
-        principal = bound(principal, 75e6, 5_000e6);
+        principal = bound(principal, 75e6, 5000e6);
         uint256 mdr = bound(mdrSeed, 0, principal / 10);
         uint256 escrow = PlanParams.markEscrowFor(4);
         if (mdr < escrow) mdr = escrow;
@@ -222,9 +222,7 @@ contract PoolHandler is Test {
         ConfigurablePlan p = planOf[id];
         if (p.state() == IInstallmentPlan.PlanState.Defaulted) return;
         if (p.state() == IInstallmentPlan.PlanState.Repaid) return;
-        p.setState(
-            delinquent ? IInstallmentPlan.PlanState.Delinquent : IInstallmentPlan.PlanState.Active
-        );
+        p.setState(delinquent ? IInstallmentPlan.PlanState.Delinquent : IInstallmentPlan.PlanState.Active);
     }
 
     function repayFully(uint256 seed) external {
@@ -537,9 +535,7 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
     /// @dev POOL-09 and DEC-23. If the fee depended on anything but the epoch, leaving
     ///      early would be profitable again and the gate would be back in all but name.
     function invariant_liquidityFeeIsUniform() public view {
-        assertFalse(
-            handler.feeWasNotUniform(), "two redeemers in one epoch were charged different rates"
-        );
+        assertFalse(handler.feeWasNotUniform(), "two redeemers in one epoch were charged different rates");
     }
 
     /// @notice The handler actually exercises the book.
@@ -564,7 +560,7 @@ contract PoolFuzzTest is StdInvariant, PoolInvariants {
         handler.claimShares(1, true);
         assertEq(handler.claims(), 2, "the shares were not claimed");
 
-        handler.front(1_000e6, 40e6);
+        handler.front(1000e6, 40e6);
         assertEq(handler.fronts(), 1, "the front did not land");
 
         handler.collectOn(0, 250e6);

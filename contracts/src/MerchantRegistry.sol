@@ -267,11 +267,10 @@ contract MerchantRegistry is AccessControl {
     /// @dev A view so a quote can answer "would this go through" without attempting
     ///      it. CHKT-01's quote is worth nothing if it can be contradicted at the
     ///      moment of signing.
-    function canOriginate(address merchant, uint256 principal)
-        external
-        view
-        returns (bool ok, string memory reason)
-    {
+    function canOriginate(
+        address merchant,
+        uint256 principal
+    ) external view returns (bool ok, string memory reason) {
         Merchant storage m = _merchants[merchant];
         if (!m.registered) return (false, "merchant not registered");
         if (!m.kybVerified) return (false, "merchant not KYB verified");
@@ -338,10 +337,11 @@ contract MerchantRegistry is AccessControl {
     ///      Bookkeeper-gated because it is an accounting entry with a transfer
     ///      attached: anyone may `postBond`, but only the router may declare that a
     ///      given dollar was withheld from a given plan's settlement.
-    function postWithheld(address merchant, bytes32 planId, uint256 amount)
-        external
-        onlyRole(BOOKKEEPER_ROLE)
-    {
+    function postWithheld(
+        address merchant,
+        bytes32 planId,
+        uint256 amount
+    ) external onlyRole(BOOKKEEPER_ROLE) {
         Merchant storage m = _merchants[merchant];
         if (!m.registered) revert NotRegistered(merchant);
 
