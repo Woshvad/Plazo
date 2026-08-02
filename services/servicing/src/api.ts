@@ -11,13 +11,25 @@
  * audit log. Nothing on the borrower side can be reached with an operator credential and
  * nothing on the operator side can be reached without one.
  *
- * Authentication is a header here, as in the origination service, and is Phase 6's
- * MERCH-05 to finish properly. It is marked rather than hidden so it cannot be mistaken
- * for done.
+ * ## Three planes, three credentials, and one of them is now real
+ *
+ * `/v1/*` is the **merchant** plane — webhooks and payout attestations — and it is behind
+ * a verified API key. The merchant on the context comes from the key and from nothing
+ * else; no route on this side reads a merchant from a body, a header or a path segment
+ * (MERCH-05, D-18, T-06-06-05).
+ *
+ * `/me/*` and `/ops/*` are the borrower and operator planes, and they still take an
+ * identity from a header. That is **not** MERCH-05 — a merchant key says nothing about
+ * which borrower is asking or which member of staff is acting — and it is recorded here
+ * plainly rather than covered by the merchant work having landed. A borrower session and
+ * an operator credential are each their own requirement and neither is built.
  */
 
 import {Hono} from "hono";
 import type {Address, Hex} from "viem";
+
+import type {DeliveryView, EndpointRow, ReplayResult} from "./webhooks.js";
+import {SsrfError} from "./ssrf.js";
 
 import {
   needsAttention,
@@ -67,6 +79,48 @@ export interface ServicingDeps {
   sendParameter(key: string, value: bigint): Promise<void>;
   sendPause(corridor: string): Promise<void>;
   resend(noticeKey: string): Promise<void>;
+
+  /**
+   * How a presented API key becomes a merchant. Defaults to refusing every key.
+   *
+   * Deny-by-default rather than optional-and-open: a process that has not wired its
+   * merchant plane serves 401s, which is visible, instead of serving a merchant plane
+   * with no authentication, which is not. The seam is injected because the key tables
+   * belong to `@plazo/origination` and a dependency from this service to that one would
+   * be a cycle in the operator plane.
+   */
+  readonly merchants?: MerchantAuth | undefined;
+  /** Webhook registration, the delivery log, and replay. Absent means the routes 503. */
+  readonly webhooks?: WebhookConsole | undefined;
+}
+
+/**
+ * A merchant, as this service needs them.
+ *
+ * Deliberately smaller than the origination service's record: this side needs to know
+ * whose rows these are and nothing else. Carrying the settlement address here too would
+ * be a second copy of an identity with no reader.
+ */
+export interface MerchantIdentity {
+  readonly merchantId: string;
+  readonly keyId: string;
+  readonly environment: string;
+}
+
+export interface MerchantAuth {
+  /** Resolve a presented key, or return null. Never throws for a bad key. */
+  verify(presented: string): Promise<MerchantIdentity | null>;
+}
+
+/** Refuses everything. The default, so an unwired process is shut rather than open. */
+export const denyAllMerchants: MerchantAuth = {verify: async () => null};
+
+/** The merchant-facing webhook surface, as the routes depend on it. */
+export interface WebhookConsole {
+  register(merchantId: string, url: string): Promise<{endpoint: EndpointRow; secret: string}>;
+  deliveries(merchantId: string, limit: number): Promise<DeliveryView[]>;
+  delivery(merchantId: string, deliveryId: string): Promise<DeliveryView | null>;
+  replay(merchantId: string, deliveryId: string): Promise<ReplayResult>;
 }
 
 const BORROWER_HEADER = "x-plazo-borrower";
@@ -304,6 +358,155 @@ export function createServicingApi(deps: ServicingDeps) {
    * "Permissionless collection" is the load-bearing claim in the whole design and the
    * easiest one to ship as a slogan. This is the number that would embarrass it.
    */
+  // ─── The merchant plane (MERCH-05, D-18) ────────────────────────────────
+
+  /**
+   * The merchant identity, from the key and from nowhere else.
+   *
+   * Returns a response on refusal rather than throwing, so a route reads as
+   * `const merchant = await merchantOf(c); if ("status" in merchant) return …`. There is
+   * no path through this function that produces an identity from anything the caller
+   * supplied except the key itself.
+   */
+  async function merchantOf(c: {
+    req: {header(name: string): string | undefined; query(name: string): string | undefined};
+  }): Promise<MerchantIdentity | {error: string; status: 400 | 401}> {
+    for (const name of ["api_key", "apiKey", "key", "token"]) {
+      if (c.req.query(name) !== undefined) {
+        // A key that has been in a url is in an access log and a referrer. Refusing is
+        // the only answer that tells the merchant to rotate it.
+        return {error: "key-in-query", status: 400};
+      }
+    }
+
+    const header = c.req.header("authorization");
+    const [scheme, presented] = (header ?? "").split(" ");
+    if (scheme?.toLowerCase() !== "bearer" || !presented) {
+      return {error: "unauthenticated", status: 401};
+    }
+
+    const merchant = await (deps.merchants ?? denyAllMerchants).verify(presented);
+    return merchant ?? {error: "unauthenticated", status: 401};
+  }
+
+  const isRefusal = (
+    value: MerchantIdentity | {error: string; status: 400 | 401},
+  ): value is {error: string; status: 400 | 401} => "error" in value;
+
+  function hooks(): WebhookConsole | null {
+    return deps.webhooks ?? null;
+  }
+
+  const serialiseDelivery = (d: DeliveryView) => ({
+    id: d.id,
+    event: d.event,
+    webhookId: d.webhookId,
+    endpointId: d.endpointId,
+    attempt: d.attempt,
+    responseStatus: d.responseStatus,
+    latencyMs: d.latencyMs,
+    sentAt: d.sentAt.toISOString(),
+    replayOf: d.replayOf,
+  });
+
+  /**
+   * Register a destination. The signing secret is readable exactly once, here.
+   *
+   * The URL is validated now as a courtesy and again on every send, which is the check
+   * that matters — a registration-time answer is a cached answer, and a cached answer is
+   * a DNS rebinding attack (T-06-06-02).
+   */
+  app.post("/v1/webhooks/endpoints", async (c) => {
+    const merchant = await merchantOf(c);
+    if (isRefusal(merchant)) return c.json({error: merchant.error}, merchant.status);
+
+    const webhooks = hooks();
+    if (!webhooks) return c.json({error: "webhooks-not-configured"}, 503);
+
+    const body = (await c.req.json().catch(() => ({}))) as {url?: unknown};
+    if (typeof body.url !== "string" || body.url.length === 0) {
+      return c.json({error: "invalid", message: "url is required"}, 400);
+    }
+
+    try {
+      const {endpoint, secret} = await webhooks.register(merchant.merchantId, body.url);
+      return c.json(
+        {
+          endpoint: {id: endpoint.id, url: endpoint.url, status: endpoint.status},
+          /** The only time this is readable. Rotate to get another. */
+          secret,
+          /** Documented because the merchant enforces it, not Plazo. */
+          replayWindowSeconds: 300,
+        },
+        201,
+      );
+    } catch (error) {
+      if (error instanceof SsrfError) {
+        return c.json({error: error.code, message: error.message}, 400);
+      }
+      throw error;
+    }
+  });
+
+  /** The delivery log, newest first. Failures included, which is the point of it. */
+  app.get("/v1/webhooks/deliveries", async (c) => {
+    const merchant = await merchantOf(c);
+    if (isRefusal(merchant)) return c.json({error: merchant.error}, merchant.status);
+
+    const webhooks = hooks();
+    if (!webhooks) return c.json({error: "webhooks-not-configured"}, 503);
+
+    const limit = Number(c.req.query("limit") ?? "100");
+    const rows = await webhooks.deliveries(merchant.merchantId, Number.isFinite(limit) ? limit : 100);
+    return c.json({deliveries: rows.map(serialiseDelivery)});
+  });
+
+  /** One delivery, with the bodies. MERCH-05's "inspect". */
+  app.get("/v1/webhooks/deliveries/:id", async (c) => {
+    const merchant = await merchantOf(c);
+    if (isRefusal(merchant)) return c.json({error: merchant.error}, merchant.status);
+
+    const webhooks = hooks();
+    if (!webhooks) return c.json({error: "webhooks-not-configured"}, 503);
+
+    const row = await webhooks.delivery(merchant.merchantId, c.req.param("id"));
+    if (!row) return c.json({error: "not-found"}, 404);
+
+    return c.json({
+      ...serialiseDelivery(row),
+      requestBody: row.requestBody,
+      responseBodyTruncated: row.responseBodyTruncated ?? null,
+    });
+  });
+
+  /**
+   * MERCH-05's "replay". A new `webhook-id`, the same body.
+   *
+   * The response says the new id out loud, because the merchant's own deduplication is
+   * what makes the distinction matter and they need to be able to see it (Pitfall 8).
+   */
+  app.post("/v1/webhooks/deliveries/:id/replay", async (c) => {
+    const merchant = await merchantOf(c);
+    if (isRefusal(merchant)) return c.json({error: merchant.error}, merchant.status);
+
+    const webhooks = hooks();
+    if (!webhooks) return c.json({error: "webhooks-not-configured"}, 503);
+
+    try {
+      const result = await webhooks.replay(merchant.merchantId, c.req.param("id"));
+      return c.json({
+        deliveryId: result.deliveryId,
+        webhookId: result.webhookId,
+        replayOf: result.replayOf,
+        status: result.status,
+        ok: result.ok,
+      });
+    } catch (error) {
+      if (error instanceof SsrfError) return c.json({error: error.code, message: error.message}, 400);
+      return c.json({error: "not-found", message: (error as Error).message}, 404);
+    }
+  });
+
   app.get("/ops/keeper-share", async (c) => {
     const op = await operator(c);
     const denied = guard(op, "plan.read");

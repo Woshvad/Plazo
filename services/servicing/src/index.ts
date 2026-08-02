@@ -19,12 +19,16 @@ import {InMemoryAuditLog, type AuditLog} from "./console.js";
 import {InMemoryDeliveryLog, type DeliveryLog} from "./ladder.js";
 import {PgAuditLog} from "./store/pg-audit.js";
 import {PgDeliveryLog} from "./store/pg-deliveries.js";
+import {getDelivery, listDeliveries, registerEndpoint, replay} from "./webhooks.js";
+import type {WebhookConsole} from "./api.js";
 
 export * from "./balance.js";
 export * from "./cctp.js";
 export * from "./ladder.js";
 export * from "./relayer.js";
 export * from "./console.js";
+export * from "./ssrf.js";
+export * from "./webhooks.js";
 export * from "./api.js";
 export * from "./db/schema.js";
 export * from "./db/client.js";
@@ -82,4 +86,43 @@ export function resolveDeliveryLog(
     "[plazo:servicing] delivery log: in-memory — notice deliveries die with this process. Set DATABASE_URL to persist them.",
   );
   return new InMemoryDeliveryLog();
+}
+
+/**
+ * The merchant-facing webhook surface. MERCH-05's wiring point.
+ *
+ * There is no in-memory variant, for the reason `resolveMerchantPlane` gives on the
+ * origination side: a webhook delivery log that forgets is not a weaker log, it is a
+ * different artefact — one that cannot answer "did you actually send it", which is the
+ * only question it is ever asked.
+ *
+ * **Note what this does not resolve.** `ServicingDeps.merchants` — the thing that turns a
+ * presented API key into a merchant — is not built here, because the key tables belong to
+ * `@plazo/origination` and a dependency from this service to that one would be a cycle in
+ * the operator plane. Whatever process serves both wires that seam from the origination
+ * side. Until it does, `denyAllMerchants` refuses every key and the merchant routes serve
+ * 401s, which is the correct behaviour for an unwired authenticator and is visible in a
+ * way that an open door is not.
+ */
+export function resolveWebhookConsole(
+  url: string | undefined = process.env["DATABASE_URL"],
+): WebhookConsole {
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set. The webhook delivery log has no in-memory mode: a log that " +
+        "forgets cannot answer the one question it exists for. Set DATABASE_URL.",
+    );
+  }
+
+  banner("[plazo:servicing] webhooks: postgres — every send attempt, success or failure, is a row");
+
+  const handle = db(url);
+  const deps = {db: handle};
+
+  return {
+    register: (merchantId, endpointUrl) => registerEndpoint(deps, {merchantId, url: endpointUrl}),
+    deliveries: (merchantId, limit) => listDeliveries(handle, merchantId, limit),
+    delivery: (merchantId, deliveryId) => getDelivery(handle, merchantId, deliveryId),
+    replay: (merchantId, deliveryId) => replay(deps, deliveryId, merchantId),
+  };
 }
