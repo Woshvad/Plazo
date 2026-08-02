@@ -15,6 +15,7 @@
  * the fee waiver settles by paying the plan rather than by reaching into it.
  */
 export * from "./balance.js";
+export * from "./cctp.js";
 export * from "./ladder.js";
 export * from "./relayer.js";
 export * from "./console.js";

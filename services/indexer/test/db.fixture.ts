@@ -88,13 +88,53 @@ export interface TestDatabase {
 }
 
 /**
+ * The operator half's DDL, taken from the migration a reviewer actually reads.
+ *
+ * `services/origination/drizzle/0000_*.sql` is committed on purpose — it is the artefact
+ * that stands in for running a database, and 06-02a said so. Restating one of its tables
+ * here would make this fixture a second, unversioned definition of the operator schema,
+ * and the drift would present as a cross-schema join that passes against a table
+ * production does not have.
+ *
+ * The statements are rewritten to land in the throwaway schema rather than in a real
+ * `operator` one. Test files run in parallel workers over a shared database, and a
+ * global schema shared between them is a race, not a fixture. The reconciliation read
+ * takes the schema name as configuration for exactly this reason.
+ *
+ * Applying it at all is worth something beyond this suite: until now nothing in this
+ * repository had observed whether that DDL parses, let alone applies.
+ */
+export async function operatorDdl(schema: string): Promise<string[]> {
+  const {readFile, readdir} = await import("node:fs/promises");
+  const {join, dirname} = await import("node:path");
+  const {fileURLToPath} = await import("node:url");
+
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "origination", "drizzle");
+  const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
+  if (files.length === 0) throw new Error(`no committed migration found in ${dir}`);
+
+  const sqlText = await readFile(join(dir, files[0]!), "utf8");
+
+  return sqlText
+    .split("--> statement-breakpoint")
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0)
+    // The migration creates the schema itself; the fixture already owns one.
+    .filter((statement) => !/^CREATE SCHEMA/i.test(statement))
+    .map((statement) => statement.replaceAll('"operator".', `"${schema}".`));
+}
+
+/**
  * A pool, a throwaway schema, and the requested tables inside it.
  *
  * A fresh schema per suite rather than a truncate between tests: truncation leaves
  * whatever the previous shape was, and the failure mode of a stale column is a test
  * that passes for the wrong reason. Dropping a schema cannot leave one behind.
  */
-export async function openTestDatabase(tables: PgTable[]): Promise<TestDatabase> {
+export async function openTestDatabase(
+  tables: PgTable[],
+  options: {withOperatorSchema?: boolean} = {},
+): Promise<TestDatabase> {
   const url = testDatabaseUrl();
   const admin = new pg.Pool({connectionString: url, max: 1, connectionTimeoutMillis: 5_000});
 
@@ -116,6 +156,9 @@ export async function openTestDatabase(tables: PgTable[]): Promise<TestDatabase>
   const schema = `t_${randomBytes(6).toString("hex")}`;
   await admin.query(`create schema "${schema}"`);
   for (const table of tables) await admin.query(createTableSql(table, schema));
+  if (options.withOperatorSchema) {
+    for (const statement of await operatorDdl(schema)) await admin.query(statement);
+  }
 
   /**
    * The search path is baked into the connection rather than set with a statement.
