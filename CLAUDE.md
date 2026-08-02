@@ -101,7 +101,7 @@ The one-line position: Plazo is the installment-credit clearinghouse for the sta
 | Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` | Batched reads |
 | **Multicall3From** | `0x522fAf9A91c41c443c66765030741e4AaCe147D0` | **Arc-specific.** Use for batching keeper `collect()` cranks. |
 | Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | StableFX PvP settlement uses Permit2 |
-| FxEscrow (StableFX) | `0x867650F5eAe8df91445971f14d89fd84F0C9a9f8` | StableFX onchain settlement leg |
+| FxEscrow (StableFX) | `0x867650F5eAe8df91445971f14d89fd84F0C9a9f8` — **do not hardcode; see note** | StableFX onchain settlement leg. **Arc's own contract-address reference names a different address, `0xd68256f4…`.** Both hold code, same owner, same Permit2, **different implementations** (`0x721eafa9…` vs `0xce8d080d…`). Do not pick one: the Permit2 `verifyingContract` arrives in the API response's `typedData.domain` and must be read from there at runtime. Same class of error as hardcoding USDC's `DOMAIN_SEPARATOR`, which this document already forbids. |
 | CCTP v2 TokenMessengerV2 | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` | Inbound/outbound USDC |
 | CCTP v2 MessageTransmitterV2 | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` | Hooks receive path |
 | GatewayWallet | `0x0077777d7EBA4688BDeF3E311b846F25870A19B9` | Unified balance deposits |
