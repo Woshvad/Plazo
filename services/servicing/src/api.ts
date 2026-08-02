@@ -28,7 +28,7 @@
 import {Hono} from "hono";
 import type {Address, Hex} from "viem";
 
-import type {DeliveryView, EndpointRow, ReplayResult} from "./webhooks.js";
+import type {DeliveryView, EndpointRow, EndpointView, ReplayResult} from "./webhooks.js";
 import {SsrfError} from "./ssrf.js";
 
 import {
@@ -144,6 +144,8 @@ export const denyAllMerchants: MerchantAuth = {verify: async () => null};
 /** The merchant-facing webhook surface, as the routes depend on it. */
 export interface WebhookConsole {
   register(merchantId: string, url: string): Promise<{endpoint: EndpointRow; secret: string}>;
+  /** The destinations, with a secret **count** and never a secret. */
+  endpoints(merchantId: string): Promise<EndpointView[]>;
   deliveries(merchantId: string, limit: number): Promise<DeliveryView[]>;
   delivery(merchantId: string, deliveryId: string): Promise<DeliveryView | null>;
   replay(merchantId: string, deliveryId: string): Promise<ReplayResult>;
@@ -472,6 +474,33 @@ export function createServicingApi(deps: ServicingDeps) {
       }
       throw error;
     }
+  });
+
+  /**
+   * The destinations this merchant has registered.
+   *
+   * Registration hands the signing secret back exactly once and nothing reads it again, so
+   * this route reports **how many** secrets verify rather than which. A merchant who has
+   * lost one rotates; a route that could return it would be a second place it lives.
+   */
+  app.get("/v1/webhooks/endpoints", async (c) => {
+    const merchant = await merchantOf(c);
+    if (isRefusal(merchant)) return c.json({error: merchant.error}, merchant.status);
+
+    const webhooks = hooks();
+    if (!webhooks) return c.json({error: "webhooks-not-configured"}, 503);
+
+    const rows = await webhooks.endpoints(merchant.merchantId);
+    return c.json({
+      endpoints: rows.map((endpoint) => ({
+        id: endpoint.id,
+        url: endpoint.url,
+        status: endpoint.status,
+        signingSecretCount: endpoint.signingSecretCount,
+        createdAt: endpoint.createdAt.toISOString(),
+        disabledAt: endpoint.disabledAt?.toISOString() ?? null,
+      })),
+    });
   });
 
   /** The delivery log, newest first. Failures included, which is the point of it. */

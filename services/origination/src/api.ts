@@ -209,6 +209,57 @@ function serialise(session: CheckoutSession) {
   };
 }
 
+/**
+ * Tell the merchant's own automation that their credentials moved. D-18's `key.rotated`.
+ *
+ * ## Why this is here and not in `keys.ts`
+ *
+ * `rotateKey` is the store operation and it must stay one: a function that wrote a row and
+ * then made an outbound HTTP call would make the row's durability depend on a merchant's
+ * server being up. The route is the place that already owns "the rotation happened and the
+ * caller is being told about it", so it is the place that tells everybody else.
+ *
+ * ## The payload carries no secret, and cannot
+ *
+ * `MerchantEvent.payload` is `Record<string, string | null>` and the two things worth
+ * sending are identifiers and a timestamp. The new secret is in the HTTP response to the
+ * caller and nowhere else — a webhook is delivered to a URL the *merchant* chose, over a
+ * channel Plazo does not control the far end of, and putting a live credential in it would
+ * hand the credential to whoever most recently edited that destination. The rotation is a
+ * cue to go and read the response, exactly as `onComplete` is a cue in the embed.
+ *
+ * ## A failed notification is not a failed rotation
+ *
+ * The key has already moved by the time this runs. Throwing here would report a rotation
+ * that happened as one that did not, and the merchant's next act would be to rotate again.
+ * So every failure is swallowed after `deliver` has already written its row — the delivery
+ * log is where a merchant finds out their endpoint is down, and it is populated whether
+ * this returns or not.
+ */
+async function emitKeyRotated(
+  config: ApiConfig,
+  merchantId: string,
+  rotation: Rotation,
+): Promise<void> {
+  if (!config.merchants.emit) return;
+  try {
+    await config.merchants.emit({
+      event: "key.rotated",
+      merchantId,
+      payload: {
+        keyId: rotation.issued.record.keyId,
+        last4: rotation.issued.record.last4,
+        environment: rotation.issued.record.environment,
+        retiredKeyId: rotation.retired.keyId,
+        /** When the retired key stops authenticating. The whole point of an overlap. */
+        retiredExpiresAt: rotation.retired.expiresAt?.toISOString() ?? null,
+      },
+    });
+  } catch {
+    // Deliberately swallowed. See above.
+  }
+}
+
 /** A key, as everyone but its creator sees it: a shape, a tail, and a lifecycle. */
 function serialiseKey(record: KeyRecord) {
   return {
@@ -324,6 +375,7 @@ export function createApi(config: ApiConfig): Hono<MerchantEnv> {
         c.req.param("keyId"),
         c.req.valid("json").overlapDays,
       );
+      await emitKeyRotated(config, merchant.merchantId, rotation);
       return c.json({
         key: serialiseKey(rotation.issued.record),
         secret: rotation.issued.key,

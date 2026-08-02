@@ -499,6 +499,94 @@ export async function rotateSigningSecret(
   return {secret, secrets};
 }
 
+/**
+ * Every destination this merchant has registered, secrets included.
+ *
+ * Internal — this is what the fan-out needs and it is deliberately not what a route
+ * returns. `listEndpoints` is the merchant-facing shape and it carries a count where this
+ * carries the secrets themselves.
+ */
+export async function endpointsFor(db: Db, merchantId: string): Promise<EndpointRow[]> {
+  const rows = await db
+    .select()
+    .from(webhookEndpoint)
+    .where(eq(webhookEndpoint.merchantId, merchantId));
+
+  return rows.map((row) => ({
+    id: row.id,
+    merchantId: row.merchantId,
+    url: row.url,
+    signingSecrets: row.signingSecrets,
+    status: row.status,
+  }));
+}
+
+/** A destination as a merchant may see it: never a secret, only how many are live. */
+export interface EndpointView {
+  readonly id: string;
+  readonly url: string;
+  /** `active` | `degraded` | `disabled`. */
+  readonly status: string;
+  /** How many signing secrets currently verify. Two during a rotation window. */
+  readonly signingSecretCount: number;
+  readonly createdAt: Date;
+  readonly disabledAt: Date | null;
+}
+
+/**
+ * The destination list. 06-06 shipped the `POST` and no way to read it back.
+ *
+ * The secret is a **count** here and nowhere a value, and that is structural rather than
+ * careful: `EndpointView` has no field a secret could be assigned to, so a route that
+ * returned one would not compile. A merchant who has lost a secret rotates; there is no
+ * recovery path and there must not be one (T-06-12-02).
+ */
+export async function listEndpoints(db: Db, merchantId: string): Promise<EndpointView[]> {
+  const rows = await db
+    .select()
+    .from(webhookEndpoint)
+    .where(eq(webhookEndpoint.merchantId, merchantId))
+    .orderBy(desc(webhookEndpoint.createdAt));
+
+  return rows.map((row) => ({
+    id: row.id,
+    url: row.url,
+    status: row.status,
+    signingSecretCount: row.signingSecrets.length,
+    createdAt: row.createdAt,
+    disabledAt: row.disabledAt,
+  }));
+}
+
+/**
+ * Deliver one event to every destination a merchant has registered.
+ *
+ * `disabled` endpoints are skipped and `degraded` ones are not: degraded means "failing
+ * often enough to be worth telling somebody about", and an endpoint that stopped receiving
+ * the moment it got that label could never demonstrate a recovery. `noteEndpointSuccess`
+ * is what takes the label off, and it can only run if something was still being sent.
+ *
+ * Every attempt is a row whether it worked or not, because `deliver` writes one either way.
+ * A merchant with no destination registered gets an empty array — that is a merchant who
+ * has not asked for webhooks, not a failure, and it must not throw into the caller's
+ * request.
+ */
+export async function fanout(
+  deps: DeliveryDeps,
+  merchantId: string,
+  payload: WebhookPayload,
+): Promise<WebhookDeliveryOutcome[]> {
+  const endpoints = await endpointsFor(deps.db, merchantId);
+  const outcomes: WebhookDeliveryOutcome[] = [];
+
+  for (const endpoint of endpoints) {
+    if (endpoint.status === "disabled") continue;
+    outcomes.push(await deliver(deps, endpoint, payload));
+  }
+
+  return outcomes;
+}
+
 export interface DeliveryView {
   readonly id: string;
   readonly event: string;

@@ -20,7 +20,14 @@ import {InMemoryDeliveryLog, type DeliveryLog} from "./ladder.js";
 import {PgAuditLog} from "./store/pg-audit.js";
 import {PgDeliveryLog} from "./store/pg-deliveries.js";
 import {attestationFor} from "./cctp.js";
-import {getDelivery, listDeliveries, registerEndpoint, replay} from "./webhooks.js";
+import {
+  getDelivery,
+  listDeliveries,
+  listEndpoints,
+  registerEndpoint,
+  replay,
+  type DeliveryDeps,
+} from "./webhooks.js";
 import type {AttestationConsole, WebhookConsole} from "./api.js";
 
 export * from "./balance.js";
@@ -104,9 +111,19 @@ export function resolveDeliveryLog(
  * side. Until it does, `denyAllMerchants` refuses every key and the merchant routes serve
  * 401s, which is the correct behaviour for an unwired authenticator and is visible in a
  * way that an open door is not.
+ *
+ * ## `transport` is for tests and for nothing else
+ *
+ * Both routes that send — registration and replay — go out over `fetch` to a destination a
+ * merchant chose. Injecting the transport is what lets a suite assert a real send against a
+ * real socket without owning DNS. **It cannot be used to skip the SSRF guard:**
+ * `registerEndpoint`, `deliver` and `replay` all call `assertDeliverable` themselves, on
+ * every attempt, and the only thing `resolve` changes is which addresses that guard is
+ * handed to check. A resolver that answers `169.254.169.254` still gets refused.
  */
 export function resolveWebhookConsole(
   url: string | undefined = process.env["DATABASE_URL"],
+  transport: Omit<DeliveryDeps, "db"> = {},
 ): WebhookConsole {
   if (!url) {
     throw new Error(
@@ -118,10 +135,11 @@ export function resolveWebhookConsole(
   banner("[plazo:servicing] webhooks: postgres — every send attempt, success or failure, is a row");
 
   const handle = db(url);
-  const deps = {db: handle};
+  const deps: DeliveryDeps = {...transport, db: handle};
 
   return {
     register: (merchantId, endpointUrl) => registerEndpoint(deps, {merchantId, url: endpointUrl}),
+    endpoints: (merchantId) => listEndpoints(handle, merchantId),
     deliveries: (merchantId, limit) => listDeliveries(handle, merchantId, limit),
     delivery: (merchantId, deliveryId) => getDelivery(handle, merchantId, deliveryId),
     replay: (merchantId, deliveryId) => replay(deps, deliveryId, merchantId),

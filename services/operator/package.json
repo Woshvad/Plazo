@@ -1,7 +1,7 @@
 {
-  "name": "@plazo/servicing",
+  "name": "@plazo/operator",
   "version": "0.1.0",
-  "description": "Reminders, balance monitoring, top-ups, the relayer and the operator console. Proprietary operator service.",
+  "description": "The operator composition root: one process that serves both operator services and holds the seams neither of them may hold alone. Proprietary.",
   "license": "UNLICENSED",
   "private": true,
   "type": "module",
@@ -12,22 +12,20 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "db:generate": "drizzle-kit generate",
-    "db:push": "drizzle-kit push"
+    "start": "tsx src/main.ts"
   },
   "dependencies": {
-    "@plazo/events": "workspace:*",
-    "@plazo/passport": "workspace:*",
-    "@plazo/plan-core": "workspace:*",
+    "@hono/node-server": "2.0.12",
+    "@plazo/origination": "workspace:*",
+    "@plazo/servicing": "workspace:*",
     "drizzle-orm": "0.45.2",
-    "graphile-worker": "0.17.3",
     "hono": "4.12.32",
     "postgres": "3.4.9",
     "viem": "2.55.10"
   },
   "devDependencies": {
     "@types/node": "26.1.2",
-    "drizzle-kit": "0.31.10",
+    "tsx": "4.23.4",
     "typescript": "5.9.3",
     "vitest": "3.2.4"
   }
