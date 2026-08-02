@@ -15,8 +15,25 @@ import {fileURLToPath} from "node:url";
 
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 
-/** Trees that ship under an open licence and may not depend on anything closed. */
-const OPEN = ["contracts", "packages/plan-core", "packages/events", "packages/arc-verify", "packages/keeper"];
+/**
+ * Trees that ship under an open licence and may not depend on anything closed.
+ *
+ * `packages/checkout-embed` is here for a reason worth stating: it is the only open
+ * tree that has a proprietary *counterpart* it would naturally import from. The embed
+ * speaks the same `postMessage` union as `apps/checkout`, and the obvious way to keep
+ * the two in step is to import the types. That import would be a licence violation
+ * that nothing else would catch, because the code would build and the tests would
+ * pass right up until the day the public repository is split out. D-21 says the embed
+ * is open; this array is what makes that a fact rather than an intention.
+ */
+const OPEN = [
+  "contracts",
+  "packages/plan-core",
+  "packages/events",
+  "packages/arc-verify",
+  "packages/keeper",
+  "packages/checkout-embed",
+];
 
 /** Trees that are proprietary. Nothing open may import from these. */
 const CLOSED = ["apps", "services"];

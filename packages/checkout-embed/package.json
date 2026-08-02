@@ -1,0 +1,30 @@
+{
+  "name": "@plazo/checkout-embed",
+  "version": "0.1.0",
+  "description": "The Plazo drop-in. One script tag gives a merchant a hosted checkout and a pre-cart message showing the buyer's real limit. Open source, because it runs in the buyer's browser and a merchant should be able to read what they paste into their page.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@plazo/plan-core": "workspace:*",
+    "viem": "2.55.10"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
