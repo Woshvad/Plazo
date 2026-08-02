@@ -114,6 +114,49 @@ product page must not break because a public endpoint shed a request.
 
 ---
 
+## Building the bundle
+
+```sh
+pnpm --filter @plazo/checkout-embed build
+```
+
+That runs `tsc` and then `scripts/bundle.mjs`, and writes three artefacts into `dist/`:
+
+| Artefact | What it is |
+| --- | --- |
+| `dist/plazo.js` | The bundle. A classic script (IIFE), minified, every dependency resolved. This is the file the URLs below serve. |
+| `dist/plazo.js.map` | An external source map. **Not referenced from the bundle** — attaching it is a deliberate act, not a second fetch on every page load. |
+| `dist/manifest.json` | The SRI hash, the byte counts, and the headers each URL must carry. |
+
+`dist/` is gitignored and stays that way. An SRI hash committed to a repository is a hash
+that drifts from the bytes it names, and a wrong `integrity=` is worse than none: the
+browser silently refuses to execute the script and the merchant experiences it as "Plazo
+is broken on my checkout page", with nothing in the console that says why. The hash is a
+build output and it travels in the same file as the URL it belongs to.
+
+Verify it yourself — the command is in the manifest, and this package is open source so
+that "reproducible" is something you can check rather than something we assert:
+
+```sh
+openssl dgst -sha384 -binary dist/plazo.js | openssl base64 -A
+```
+
+### It is a classic script on purpose
+
+`type="module"` is deferred by definition, so `window.Plazo` would not exist when your own
+inline handler runs — intermittently, depending on network timing, and presenting as
+`Plazo is not defined`. An IIFE executes where it is parsed.
+
+### Weight, stated rather than discovered
+
+The bundle is roughly **283 kB raw, 89 kB gzip, 70 kB brotli**, and almost all of it is
+`viem`, which is here for exactly one call: the `CheckoutRouter.maxPrincipalFor` read
+behind the pre-cart widget. On a checkout page that is a reasonable trade. On a product
+page it is heavy, and the honest answer today is to load it on the pages that need it. A
+checkout-only build with no chain read is the obvious next move and has not been made.
+
+---
+
 ## Serving the script
 
 ### `v1/plazo.js` is pinned and immutable; `/plazo.js` tracks latest
@@ -134,20 +177,29 @@ Pin the URL and pair it with `integrity=`:
         crossorigin="anonymous"></script>
 ```
 
-The SRI hash for each pinned URL is published alongside it and is reproducible from the
-build in this repository — the package is open source precisely so that "reproducible"
-is a thing you can check rather than a thing we assert. `crossorigin="anonymous"` is
-required for the browser to enforce `integrity` on a cross-origin script.
+The SRI hash for each pinned URL is `integrity` in `dist/manifest.json`, produced by the
+build and reproducible with the `openssl` command above — the package is open source
+precisely so that "reproducible" is a thing you can check rather than a thing we assert.
+`crossorigin="anonymous"` is **required** for the browser to enforce `integrity` on a
+cross-origin script; omit it and the tag looks pinned while being exactly as mutable as it
+was before.
 
 ### Headers on the serving origin
+
+These are not a description of an intention. They are `SERVING` in
+[`src/serving.ts`](src/serving.ts), the build copies them verbatim into
+`dist/manifest.json`, and `test/bundle.test.ts` asserts that this README still agrees with
+them. **A deploy should read the manifest rather than this list.**
 
 - `Cross-Origin-Resource-Policy: cross-origin` — the bundle is meant to be loaded by
   merchant pages, so it declares that explicitly rather than relying on the default.
 - `Content-Security-Policy: default-src 'none'; sandbox` — a static asset origin needs
   no capabilities at all, and saying so limits what a compromise of it can reach.
-- `Cache-Control: public, max-age=31536000, immutable` on `/v1/…` only. The immutable
-  URL is what makes a year-long cache safe; `/plazo.js` gets a short max-age.
+- `Cache-Control: public, max-age=31536000, immutable` on `/v1/plazo.js` only. The
+  immutable URL is what makes a year-long cache safe; `/plazo.js` gets
+  `public, max-age=300`.
 - `X-Content-Type-Options: nosniff`.
+- `Content-Type: application/javascript; charset=utf-8`.
 
 If your own page runs a CSP — and a checkout page should — you will need
 `script-src https://js.plazo.example` and `frame-src https://checkout.plazo.example`.
@@ -157,10 +209,16 @@ If your own page runs a CSP — and a checkout page should — you will need
 ## Development
 
 ```sh
+pnpm --filter @plazo/checkout-embed build       # tsc, then the browser bundle and its SRI
+pnpm --filter @plazo/checkout-embed bundle      # the bundle alone, against existing tsc output
 pnpm --filter @plazo/checkout-embed test        # vitest under jsdom
 pnpm --filter @plazo/checkout-embed typecheck
 pnpm boundary                                   # asserts this tree imports nothing closed
 ```
+
+`test/bundle.test.ts` builds the bundle if it is missing rather than skipping, evaluates
+the shipped bytes in jsdom, and asserts the published hash recomputes from them. A skipped
+bundle test reads exactly like a passing one.
 
 The embed carries its own copy of the `postMessage` union rather than importing it from
 the checkout app, because the licence boundary forbids an open package from depending on
