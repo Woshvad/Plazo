@@ -838,3 +838,197 @@ the gate and it is green. The live witness is a best-effort extra.
 ticket needs $300 behind it (finding 13), and DEC-02 put Tier 0 on pool capital from day one
 on the understanding that the cap was real. It is also the same registry the bond worked
 example above reads, so a moved band would corrupt that too.
+
+---
+
+# Phase 7 addendum — the corridor's preconditions, measured before they were designed around
+
+Every figure in findings 31-34 is transcribed verbatim from one run of
+`pnpm --filter @plazo/arc-verify spike:fx` on 2026-08-02 against `rpc.testnet.arc.io`,
+chain 5042002, exit 0. Nothing below is rounded, re-derived or inferred. The spike sends no
+transaction, estimates no gas, and takes every read through the same `shed()` wrapper
+`slice.ts` exports — finding 11's lesson is that a shed request arrives as HTTP 200 with an
+error body, so an unretried `balanceOf` would have reported this corridor unfundable with
+no way to tell that from the truth.
+
+**On the numbering.** These four carry the `Finding N` prefix because nine downstream Phase 7
+plans cite them as 31, 32, 33 and 34, and that citation is the contract. The Phase 6 addendum
+already carries a tooling footnote numbered `### 31.` (abitype's reserved-keyword refusal);
+it is untouched and keeps its number. Renumbering it would have been a deletion in a document
+whose whole value is that it only ever grows.
+
+### Finding 31 — EURC's EIP-3009 surface is canonical, and its domain separator is derived rather than stored
+
+`0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`, read from the deployed bytecode:
+
+| Read | Value |
+|---|---|
+| `name()` / `symbol()` | `EURC` / `EURC` |
+| `decimals()` | **6** |
+| `version()` | **`"2"`** |
+| `RECEIVE_WITH_AUTHORIZATION_TYPEHASH()` | `0xd099cc98ef71107a616c4f0f941f04c322d8e254fe26b3c6668db87aae413de8` |
+| `TRANSFER_WITH_AUTHORIZATION_TYPEHASH()` | `0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267` |
+| `CANCEL_AUTHORIZATION_TYPEHASH()` | `0x158b0a9edf7a828aad02f63cd515c68ef2f50ba807396f6d12842833a1597429` |
+| `DOMAIN_SEPARATOR()`, read | `0x649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160` |
+| Separator, **derived** from (`"EURC"`, `"2"`, `5042002`, the token) | `0x649ec6b0634bd74f28684781d2c9ae49dff14ba3d5f9bb5d70c1e1f0e1ebf160` |
+| Match | **yes** |
+
+All three typehashes are byte-identical to the canonical FiatToken values already pinned in
+`ERC3009_TYPEHASHES` — the same constants `MockArcUsdc` compiles. The corridor's check rail is
+therefore mechanically the same rail as the dollar one, and E-01's EURC-denominated plan needs
+no second collection mechanism.
+
+**The separator is compared, never cached, and that is the point of reading it at all.** It
+embeds `chainId` and `verifyingContract`; both move on mainnet. A stored value would make every
+outstanding EURC strip silently fail to validate the day the config flips — the same failure
+CLAUDE.md already forbids for USDC. The match above is simultaneously a check on the name, the
+version, the chain id and the verifying contract, because a wrong value in any one of the four
+produces a different digest.
+
+**Consequence.** `MockArcEurc` (plan 07-02) must reproduce this surface exactly, and it must do
+so by parameterising `MockArcUsdc` rather than copying it — two divergent EIP-3009 mocks is a bug
+factory, and the four values above are what they would eventually diverge on. No separator is
+stored anywhere in the tree.
+
+### Finding 32 — USYC answers permit and reverts on EIP-3009, and its Teller's oracle is an address nothing may read
+
+`0xe9185F0c5F296Ed1797AaE4238D26CCaBEadb86C`, read from the deployed bytecode:
+
+| Read | Result |
+|---|---|
+| `symbol()` / `decimals()` | `USYC` / **6** |
+| `RECEIVE_WITH_AUTHORIZATION_TYPEHASH()` | **reverted** — `The contract function "RECEIVE_WITH_AUTHORIZATION_TYPEHASH" reverted.` |
+| `authorizationState(address,bytes32)` | **reverted** — `The contract function "authorizationState" reverted.` |
+| `DOMAIN_SEPARATOR()` | answered: `0xbf0253d19b0cb8b55febeab2e30ee691028fbd141b32ca84ad55acbdee376e5d` |
+| Teller `0x9fdF14c5B14173D74C08Af27AebFf39240dC105A` `oracle()` | `0x52b56c7642E71dc54714d879127d97cd0B3D4581` |
+
+E-07 said USYC is permit-only. It is now two live reverts rather than a sentence, which matters
+because finding 30 is exactly the case of a deployed contract that answers some selectors and
+reverts on others — the only way to know which is to ask it.
+
+**Consequence 1.** A Tier-2 pledge is `approve`/`transferFrom` into `PledgeVault`, never a check
+strip (E-07, and DEC-28's `ParkedYieldVenue` is the precedent already in the tree). CLAUDE.md
+names attempting check collection in USYC as a thing not to do; there is now a revert behind
+that instruction. Plan 07-04 asserts the absence twice — `test_noEip3009PathExists` and a grep
+gate — so a future USYC upgrade that *adds* EIP-3009 surfaces as a deliberate decision rather
+than as a silent capability change.
+
+**Consequence 2, and it is the sharper one.** `0x52b56c7642E71dc54714d879127d97cd0B3D4581` is
+recorded here and **must be read by nothing in `contracts/src`** (C1). The balance sheet is
+all-dollar, there is no volatile collateral, and a price feed re-adds an attack surface for
+nothing — a pledge is valued at par minus `TIER2_PLEDGE_HAIRCUT_BPS`, which is the whole
+valuation. Plan 07-02 turns that from a comment into a build failure via
+`tools/check-no-oracle.mjs`, wired into `pnpm boundary`, and the guard is proven to fail on cue
+before it is trusted. Writing the address down here is the entire permitted use of it.
+
+### Finding 33 — the two FxEscrow addresses hold different implementations, and neither is the answer
+
+| | CLAUDE.md's address | Arc docs' address |
+|---|---|---|
+| Address | `0x867650F5eAe8df91445971f14d89fd84F0C9a9f8` | `0xd68256f4D69C6BbEcB873D8588AE0Dc6B8E22E10` |
+| Code | 130 bytes | 130 bytes |
+| ERC-1967 implementation slot | `0x721eafa9c1e38dd7fff81d30ea1a5500b37cf658` | `0xce8d080d7e26b0deeb6abd34dc7064bd7acd9b4c` |
+| `owner()` | `0x1C2C8D0CFe5fC6675ff522EF9442eC5EC1d8De7D` | `0x1C2C8D0CFe5fC6675ff522EF9442eC5EC1d8De7D` |
+| `PERMIT2()` | **did not answer** | **did not answer** |
+| `implementationsDiffer` | **YES** | |
+
+Two live proxies, one owner, **two different implementations**. E-04 said as much from the
+documents; this reads it from the chain.
+
+A second result nobody had asked for: **neither proxy answers `PERMIT2()`**. The claim that both
+share a Permit2 is not verifiable through that selector on either address — finding 30's shape
+again, a signature that is not where a document says it is. Anything that needs the Permit2
+address must obtain it the same way it obtains everything else here: from the response.
+
+**Resolution, and it is not a choice between the two.** The `verifyingContract` a StableFX
+settlement signs against arrives in the API response's `typedData.domain` and is read from there
+at runtime. Plan 07-08 zod-validates that the field is present and fails loudly naming it when it
+is not; `services/fx` constructs no domain and holds no escrow address. **A compiled constant
+named `FX_ESCROW` is a defect anywhere in this tree** — the same class of error as hardcoding a
+`DOMAIN_SEPARATOR`, and with the same failure mode: silently wrong rather than loudly broken.
+CLAUDE.md's address should be read as one candidate, not as the answer; this row is the
+correction.
+
+### Finding 34 — the corridor is unfunded by 375 EURC, and no AMM venue with USDC/EURC liquidity exists on Arc testnet
+
+**The EURC funding position.** Read first, reported as a branch, `branch UNFUNDED`, exit 0.
+
+| | |
+|---|---|
+| Deployer | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` |
+| `eurcHeld` | **0 EURC** |
+| `usdcHeld` | 80.43295 USDC |
+| `EURC_SEED_REQUIRED` | **375 EURC** |
+| **`shortfall`** | **375 EURC** |
+
+`EURC_SEED_REQUIRED` is 300 of book capitalisation plus the 75 ticket: finding 13's arithmetic
+applied to the second currency, because UW-02's compiled band caps Tier-0 paper at 25% of the
+pool and a 75 ticket therefore needs 4× that behind it before the headroom reaches it. Widening a
+Tier-0 band or the reserve floor to make a live run fit is forbidden (DEC-02) — the requirement is
+the control working, exactly as it was for the dollar book.
+
+**This is on top of the USDC gap, not instead of it.** The credit half is still 329.40705 USDC
+short of the 409.84 peak requirement recorded above. Phase 7's live EURC criteria and Phase 6's
+GOV-08 witness are two separate funding asks against the same faucet.
+
+**The faucet question, answered honestly.** `faucet.circle.com` is an interactive, captcha-gated
+web form with no public API, so the spike does not pretend to call it. What it measures instead is
+how much EURC any address this repo controls has ever held — the deployer plus the first three
+derived collection addresses `faucet.ts` stands up:
+
+| Address | EURC |
+|---|---|
+| `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` (deployer) | 0 EURC |
+| `0x1b585B3d43Fb9B98B468F6736F7dfc6E2074ee3F` (faucet[0]) | 0 EURC |
+| `0xAa42c3F24064e701cC9a16Bf210205a392a58EA4` (faucet[1]) | 0 EURC |
+| `0x86705A863AeEb6A70b8D0da3C8C4f4f322C1708a` (faucet[2]) | 0 EURC |
+| **Total ever obtained** | **0 EURC** |
+
+**This project has never held any EURC on Arc testnet.** Whether the faucet dispenses EURC at
+all, and at what drip, is therefore still unknown — and it is unknowable from code, because the
+form is captcha-gated. The addresses are derived from `DEPLOYER_PRIVATE_KEY` and no key file is
+written. To close it: request EURC on **Arc Testnet** at `https://faucet.circle.com` for the four
+addresses above and re-run `pnpm --filter @plazo/arc-verify spike:fx`, which re-reads and
+re-branches and attempts nothing until the precondition is met.
+
+**The AMM answer: there is not one.**
+
+| | |
+|---|---|
+| Candidates probed | 7 |
+| Holding bytecode | **0** |
+| Returning a quote for 100 USDC → EURC | **0** |
+| `best` | **`null`** |
+
+Every candidate — the canonical Uniswap v2/v3 factory, router, quoter and UniversalRouter
+addresses that forks most often reuse, plus Curve's cross-chain Router NG — holds **no bytecode
+on Arc testnet**. Each row carries `confidence: "low"` and its source in code, because a
+LOW-confidence address from a web search must never be able to enter this repo as a verified
+venue. `07-RESEARCH.md`'s three named candidates (Coco DEX, Tower Exchange, the "Curve is on Arc"
+claim) could not be probed at all: **none of them publishes an Arc-testnet contract address**, and
+inventing one to fill the row would have been the exact defect this spike exists to prevent.
+
+**No venue with USDC/EURC liquidity was found on Arc testnet.** Arc's official contract-address
+reference lists no DEX at all, and this probe agrees with it. That is a recorded absence and a
+successful spike, not a failure.
+
+**Consequence.** FX-05's deviation guard ships against a **stubbed** venue whose router is a
+constructor argument set to `address(0)`, and plan 07-03's `test_ammVenueWithZeroRouterRefuses`
+makes that the shipped, tested configuration: the guard refuses rather than fabricating a
+plausible rate. An unexercised guard on a stub venue is still the audited artefact FX-05 asks for.
+A fabricated liquidity claim would be a wrong price on a real loan.
+
+**The deliberate-failure control, because a probe that finds nothing and a probe that is broken
+print the same thing.** Re-running `probeAmmVenues` with two extra rows — a fabricated address
+holding nothing, and Multicall3 `0xcA11bde05977b3631167028862bE2a173976CA11`, which holds code and
+is emphatically not a venue — returned `probed 9 · withCode 1 · quoting 0 · best null`. The
+fabricated address appeared under `probed` and **not** under `withCode`; Multicall3 appeared under
+`withCode` and **not** under `quoting`, with `getAmountsOut refused: The contract function
+"getAmountsOut" reverted.` The three fields are genuinely distinct, so "something is deployed
+there" can never be reported as "it quotes".
+
+**Manual-Only, and it is an access item rather than a code item.** A live EURC origination on
+chain 5042002 is gated on obtaining EURC, and obtaining EURC is a captcha-gated web form. The
+Foundry proof of the corridor is complete and green against `MockArcEurc`; only the live witness
+defers. It sits in `07-VALIDATION.md`'s Manual-Only table rather than as a green tick, because a
+deferred assertion that reads as a delivered one is worse than an absent one.
