@@ -77,4 +77,15 @@ library ParameterKeys {
 
     bytes32 internal constant MERCHANT_CONCENTRATION_BPS = keccak256("plazo.concentration.merchantBps");
     bytes32 internal constant CORRIDOR_CONCENTRATION_BPS = keccak256("plazo.concentration.corridorBps");
+
+    // ─── Settlement escrow (Phase 6) ─────────────────────────────────────────
+    //
+    // D-08. All three land before either escrow is written, so that `RefundEscrow`
+    // and `SettlementEscrow` read rows that already exist rather than taking a
+    // constructor immutable and quietly leaving GOV-01. Neither of those contracts
+    // may add a key of its own here, and neither may compile any of these three in.
+
+    bytes32 internal constant ESCROW_ATTESTATION_DEADLINE = keccak256("plazo.escrow.attestationDeadline");
+    bytes32 internal constant ESCROW_RELEASE_TIMER = keccak256("plazo.escrow.releaseTimer");
+    bytes32 internal constant ESCROW_DISPUTE_TIMELOCK = keccak256("plazo.escrow.disputeTimelock");
 }

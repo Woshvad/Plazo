@@ -190,6 +190,33 @@ contract ParameterRegistry is Ownable {
 
         _define(ParameterKeys.MERCHANT_CONCENTRATION_BPS, 2_000, 100, 10_000);
         _define(ParameterKeys.CORRIDOR_CONCENTRATION_BPS, 5_000, 100, 10_000);
+
+        // ─── Settlement escrow (Phase 6) ─────────────────────────────────────
+
+        // D-08's launch hypothesis for how long a merchant has to attest shipment
+        // before the settlement goes back to the pool. The floor is a day because a
+        // merchant who has not touched an order in twenty-four hours has not
+        // necessarily abandoned it — warehouses close and weekends exist — and the
+        // ceiling is thirty because capital held for a month against a shipment
+        // nobody has attested is capital the pool is not earning on.
+        _define(ParameterKeys.ESCROW_ATTESTATION_DEADLINE, 7 days, 1 days, 30 days);
+        // D-08's other launch hypothesis: how long after attested shipment the
+        // settlement sits before anyone can release it. The floor is an hour, which
+        // is long enough to be a window and short enough that a digital-adjacent
+        // merchant is not financed for a day; the ceiling is a fortnight, past which
+        // the escrow has stopped being a fraud control and started being working
+        // capital taken from the merchant. Both timers are recalibration targets on
+        // the standing cohort track, like every other Appendix A value.
+        _define(ParameterKeys.ESCROW_RELEASE_TIMER, 72 hours, 1 hours, 14 days);
+        // D-03. The window between an arbiter opening a dispute and anyone being able
+        // to reach a merchant's bond. **The floor is the security property, not a
+        // default.** Twenty-four hours is the smallest window in which a merchant
+        // watching the chain can see a slash coming and answer it; a compiled band is
+        // what stops governance from setting this to zero and turning `SLASHER_ROLE`
+        // back into an instant key over every bond on the book. A later reader trying
+        // to speed up adjudication will reach for exactly this number — the band is
+        // the answer, and widening it needs a redeployment.
+        _define(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 72 hours, 24 hours, 30 days);
     }
 
     /// @notice The current value for `key`.

@@ -48,7 +48,10 @@ contract ParameterRegistryTest is Test {
     function test_everySeededKeyIsEnumerable() public view {
         bytes32[] memory keys = parameters.keys();
         assertEq(keys.length, parameters.keyCount());
-        assertGt(keys.length, 20, "the seeded set is suspiciously small");
+        // Raised by three in Phase 6 with the settlement-escrow rows. The floor moves
+        // with the seed set rather than being deleted, because a count assertion that
+        // nobody maintains is a count assertion that stops noticing a dropped `_define`.
+        assertGt(keys.length, 23, "the seeded set is suspiciously small");
 
         for (uint256 i = 0; i < keys.length; ++i) {
             assertTrue(parameters.isDefined(keys[i]), "an enumerated key is not defined");
@@ -171,6 +174,126 @@ contract ParameterRegistryTest is Test {
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         parameters.narrowBand(ParameterKeys.MDR_BPS, 300, 500);
+    }
+
+    // ─── Settlement escrow (Phase 6) ─────────────────────────────────────────
+
+    /// @notice All three escrow timers are seeded rows, not compiled constants.
+    ///
+    /// @dev D-08. They land in wave 1 so that neither escrow can take one as a
+    ///      constructor immutable — a timer outside the registry is a timer outside
+    ///      GOV-01, and the dispute timelock is the most dangerous control in the
+    ///      phase to put there.
+    function test_theEscrowTimersAreSeededRows() public view {
+        assertEq(parameters.get(ParameterKeys.ESCROW_ATTESTATION_DEADLINE), 7 days);
+        assertEq(parameters.get(ParameterKeys.ESCROW_RELEASE_TIMER), 72 hours);
+        assertEq(parameters.get(ParameterKeys.ESCROW_DISPUTE_TIMELOCK), 72 hours);
+
+        assertTrue(parameters.isDefined(ParameterKeys.ESCROW_ATTESTATION_DEADLINE));
+        assertTrue(parameters.isDefined(ParameterKeys.ESCROW_RELEASE_TIMER));
+        assertTrue(parameters.isDefined(ParameterKeys.ESCROW_DISPUTE_TIMELOCK));
+    }
+
+    /// @notice The attestation deadline moves inside its band and nowhere else.
+    /// @dev A month is the ceiling because capital held that long against a shipment
+    ///      nobody attested is capital the pool is not earning on.
+    function test_theAttestationDeadlineIsBanded() public {
+        vm.prank(governance);
+        parameters.set(ParameterKeys.ESCROW_ATTESTATION_DEADLINE, 3 days);
+        assertEq(parameters.get(ParameterKeys.ESCROW_ATTESTATION_DEADLINE), 3 days);
+
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.ESCROW_ATTESTATION_DEADLINE, 23 hours);
+
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.ESCROW_ATTESTATION_DEADLINE, 31 days);
+    }
+
+    /// @notice So does the post-shipment release timer.
+    function test_theReleaseTimerIsBanded() public {
+        vm.prank(governance);
+        parameters.set(ParameterKeys.ESCROW_RELEASE_TIMER, 12 hours);
+        assertEq(parameters.get(ParameterKeys.ESCROW_RELEASE_TIMER), 12 hours);
+
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.ESCROW_RELEASE_TIMER, 59 minutes);
+
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.ESCROW_RELEASE_TIMER, 15 days);
+    }
+
+    /// @notice Governance cannot shorten the window that protects a merchant's bond.
+    ///
+    /// @dev D-03, and the reason this row exists at all. The dispute timelock is the
+    ///      only thing between an `ARBITER_ROLE` key and every merchant's bond. Zero
+    ///      would make `SLASHER_ROLE` an instant key again, and twenty-three hours is
+    ///      the nearest miss — both have to revert, and the floor has to be a compiled
+    ///      band rather than a value governance happens to have chosen, because a
+    ///      control that can be set to nothing is not a control.
+    function test_disputeTimelockCannotBeSetBelowItsFloor() public {
+        ParameterRegistry.Parameter memory p = parameters.parameter(ParameterKeys.ESCROW_DISPUTE_TIMELOCK);
+        assertEq(p.min, 24 hours, "the floor is not a day");
+
+        vm.prank(governance);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ParameterRegistry.OutOfBand.selector, ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 0, p.min, p.max
+            )
+        );
+        parameters.set(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 0);
+
+        vm.prank(governance);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ParameterRegistry.OutOfBand.selector,
+                ParameterKeys.ESCROW_DISPUTE_TIMELOCK,
+                23 hours,
+                p.min,
+                p.max
+            )
+        );
+        parameters.set(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 23 hours);
+
+        // And the floor is exactly reachable, so the band is a floor rather than an
+        // off-by-one that hides one.
+        vm.prank(governance);
+        parameters.set(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 24 hours);
+        assertEq(parameters.get(ParameterKeys.ESCROW_DISPUTE_TIMELOCK), 24 hours);
+    }
+
+    /// @notice Nor can it be stretched past a month.
+    /// @dev The ceiling matters for the opposite reason: a timelock long enough to
+    ///      outlive the dispute is a bond nobody can ever reach, which turns the
+    ///      merchant's stake into a deposit the protocol cannot use as a control.
+    function test_theDisputeTimelockHasACeilingToo() public {
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 31 days);
+    }
+
+    /// @notice The floor survives the ratchet — narrowing can only raise it.
+    /// @dev `narrowBand` is the one path that changes a band after deployment, and it
+    ///      is one-way. Confirming the timelock's floor cannot be walked down through
+    ///      it is what makes "24 hours minimum" a property rather than a default.
+    function test_narrowingCannotWalkTheDisputeFloorDown() public {
+        vm.prank(governance);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ParameterRegistry.BandNotNarrower.selector, ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 0, 30 days
+            )
+        );
+        parameters.narrowBand(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 0, 30 days);
+
+        vm.prank(governance);
+        parameters.narrowBand(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 48 hours, 7 days);
+
+        vm.prank(governance);
+        vm.expectRevert();
+        parameters.set(ParameterKeys.ESCROW_DISPUTE_TIMELOCK, 24 hours);
     }
 
     // ─── Bulk reads ──────────────────────────────────────────────────────────
