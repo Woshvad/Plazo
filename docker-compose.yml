@@ -1,0 +1,46 @@
+# The one database.
+#
+# D-17: PostgreSQL 17 via Docker Compose, and graphile-worker over the same
+# Postgres. No Redis. Docker is present on this machine; `psql` is not, which is
+# why every database operation in this repository goes through Drizzle or
+# `docker compose exec postgres psql …` rather than a host client. A contributor
+# who cannot run `psql` locally must still be able to bring the database up, and
+# a committed Compose file is what makes that true.
+#
+# One database, two Postgres schemas. Ponder owns `public` — everything there is
+# reproducible from the chain alone. The operator services own `operator` —
+# sessions, keys, delivery logs, the audit log, and every join key that touches a
+# person. That split is OPS-08 and specification §9.3: PII never touches the
+# chain, and separate schemas are what make the claim checkable rather than
+# conventional.
+#
+# The credentials below are deliberately trivial and deliberately committed.
+# T-06-02a-06 is accepted, not mitigated: this file is local development and CI
+# infrastructure, it is not a deployment artefact, and every real environment
+# supplies its own `DATABASE_URL`. Recorded here rather than hidden.
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: plazo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: plazo
+      POSTGRES_USER: plazo
+      POSTGRES_PASSWORD: plazo
+    ports:
+      - "5432:5432"
+    volumes:
+      - plazo-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `docker compose ps` reports healthy off this. CI waits on it rather than
+      # sleeping, because a fixed sleep is a flake that only shows up on a slow
+      # runner.
+      test: ["CMD-SHELL", "pg_isready -U plazo -d plazo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  plazo-pgdata:

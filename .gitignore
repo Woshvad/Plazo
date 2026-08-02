@@ -27,6 +27,15 @@ packages/abi/generated/
 # against real testnet money — evidence for a finding, not repo content.
 packages/arc-verify/.spike/
 
+# drizzle-kit's machine-local scratch only.
+#
+# The generated SQL under `services/*/drizzle/*.sql` and the snapshots under
+# `services/*/drizzle/meta/` are committed and stay committed: the DDL is the
+# artefact a reviewer reads instead of running a database, and the snapshots are
+# what the next `generate` diffs against. Ignoring them would make every schema
+# change unreviewable and every migration a fresh baseline.
+services/*/.drizzle/
+
 # Local
 *.log
 .DS_Store

@@ -8,3 +8,19 @@ packages:
 allowBuilds:
   esbuild: true
   sharp: true
+
+# One copy of Drizzle across the workspace.
+#
+# CLAUDE.md's Version Compatibility table: `ponder@0.17.1` bundles
+# `drizzle-orm@0.41.0` internally while the operator services want `0.45.2`
+# directly. Two copies means two SQL generators over one database, and the
+# divergence shows up as DDL that does not match what a reviewer read
+# (T-06-02a-04).
+#
+# This lives here and not in the root `package.json`'s `pnpm.overrides` field
+# because pnpm 11 reads overrides from the workspace manifest. The
+# `package.json` entry was present, was silently ignored, and the lockfile
+# carried both versions regardless — which is precisely the failure CLAUDE.md
+# says to "verify at setup". Do not move it back.
+overrides:
+  drizzle-orm: 0.45.2

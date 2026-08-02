@@ -8,16 +8,21 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push"
   },
   "dependencies": {
     "@plazo/events": "workspace:*",
     "@plazo/plan-core": "workspace:*",
+    "drizzle-orm": "0.45.2",
     "hono": "4.12.32",
+    "postgres": "3.4.9",
     "viem": "2.55.10"
   },
   "devDependencies": {
     "@types/node": "26.1.2",
+    "drizzle-kit": "0.31.10",
     "typescript": "5.9.3",
     "vitest": "3.2.4"
   }
