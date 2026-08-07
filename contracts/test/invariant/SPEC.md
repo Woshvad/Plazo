@@ -54,6 +54,14 @@ Phase 1 wrote the properties above before any contract existed and proved they b
 | `overdueInstallmentRecordable` | `invariant_everyOverdueInstallmentIsRecordable` | The collection guarantee, stated as something a contract can actually promise. Checked by *performing* the crank from an unrelated address and rolling the state back, so it asserts what the contract does rather than what its views claim. |
 | `refundNeverReturnsToMerchant` | `invariant_refundNeverReturnsToTheMerchant` | Added in Phase 6. The half of `refundOnlyToBorrower` a live system can be asked directly: the merchant's balance is exactly what was minted to them minus what they successfully refunded, so any path returning refunded value to the merchant — by any route, in any order — shows up as a surplus. The merchant is the address to watch because they are the only party with both a motive and a call. |
 
+## Added in Phase 7 — `FxInvariants.sol`
+
+| Certora rule | Foundry check | What it rules out |
+|---|---|---|
+| `sweeperNeverHoldsValue` | `check_sweeperNeverHoldsValue` | **`PayrollSweeper` becoming a custody contract.** UW-05's plain-language form — "the installment splits from inbound payroll before it reaches spendable balance" — describes exactly the thing C3 forbids, and an implementation that held wages for one block would still look like it worked. The design receives the borrower's authorised value and repays the plan in one transaction, returns every unit of residue to the borrower, and reverts `SweeperRetainedValue` on a non-zero closing balance. This asserts the observable consequence over arbitrary histories: whatever sequence of sweeps, collections, cures, opt-ins and opt-outs produced the state, the sweeper's balance between transactions is zero. Stated over protocol flows — an unsolicited transfer to the sweeper's address is not one, and nothing in the tree performs it. |
+
+`FxInvariants.sol` is created by plan 07-05 and extended by 07-10 with the cross-pool isolation and corridor-counter properties. Its harness signs its own sweep authorizations rather than replaying one, and `test_theHandlerDrivesTheSystem` requires every counter to move — a handler whose actions all revert is a campaign of no-ops reporting green.
+
 ### Why the two Phase 6 plan properties bind to a separate view
 
 `check_refundOnlyToBorrower` and `check_escrowNeverStrandsSettlement` read an `IPlanFlowView` bound alongside `subject`, not `IInstallmentPlan`. The reason is deliberate: they are stated over **flows** (`refundInflow`, `refundToBorrower`) and over an escrow row that lives in a different contract, and the real `InstallmentPlan` stores neither — it pays every unit out in the same transaction it arrives. Adding storage to a live contract so a test could read it would be the test changing the system it is supposed to constrain.
