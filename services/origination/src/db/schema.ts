@@ -32,7 +32,18 @@
  * dashboard filters by gets an `index()`.
  */
 import {sql} from "drizzle-orm";
-import {check, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, uuid} from "drizzle-orm/pg-core";
+import {
+  bigint,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgSchema,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 import type {CheckoutSession} from "../session.js";
 
@@ -220,5 +231,99 @@ export const merchantExternalRef = operator.table(
   (table) => [
     /** The reconciliation query is "this merchant's order X", so the pair is the index. */
     index("merchant_external_ref_merchant_external_idx").on(table.merchantId, table.externalId),
+  ],
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tier-1 inflow evidence (Phase 7, UW-04)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A borrower's verified inflow, folded to one row per month.
+ *
+ * ## Why this is a table and not a query
+ *
+ * Ninety days of Arc at 0.514 s per block is roughly 15.1 million blocks against a
+ * 10,000-block `eth_getLogs` cap, on an endpoint that sheds about a quarter of what it
+ * is asked — some 1,510 requests per borrower per quote. A scan inside a quote request
+ * times out, and it times out looking exactly like a code bug rather than like an
+ * architecture that was never going to work. So the history is folded continuously by
+ * the indexer and read here as one row (Pitfall 6).
+ *
+ * ## Why the key is a salted subject and can never be a wallet
+ *
+ * Income joined to an identity is the most sensitive data this project holds, and a
+ * table of wallet addresses against monthly income figures is that join with none of
+ * the protection. Every Passport record in this repo keys on
+ * `keccak256(prefix ‖ salt ‖ borrower)` with the operator holding the salt; this is the
+ * database side of the same rule (OPS-08, and `@plazo/events`' privacy test is the
+ * event side). The wallet-to-subject mapping lives behind the consent gate, where a
+ * deletion request can actually be honoured — and severing it is what a deletion does.
+ *
+ * ## House rules
+ *
+ * Money is `bigint` in 6-decimal minor units, narrowed exactly once by the indexer at
+ * write time (`toMinor6`) and never re-narrowed here. No sequence-backed column, no
+ * identity column, no database-level enum, no view and no function anywhere in the
+ * `operator` schema, in either service (DEC-57 — measured, not inferred: one such
+ * column on a `@plazo/servicing` table made *this* service's push emit a drop for a
+ * sequence it had never heard of). Keys are writer-chosen (DEC-58).
+ */
+export const inflowSummary = operator.table(
+  "inflow_summary",
+  {
+    /** `keccak256(prefix ‖ salt ‖ borrower)`. Never a wallet. */
+    subjectId: text("subject_id").notNull(),
+    /** `YYYY-MM`. The cadence test counts distinct values of this column. */
+    monthBucket: text("month_bucket").notNull(),
+    /** Distinct surviving counterparties in this bucket — the diversity test's input. */
+    counterpartyCount: integer("counterparty_count").notNull().default(0),
+    /**
+     * 6-decimal minor units. Narrowed once, upstream.
+     *
+     * No column default, deliberately: `drizzle-kit` 0.31.10 cannot serialise a
+     * `bigint` default and fails the whole `generate` with `Do not know how to
+     * serialize a BigInt`. It is also the better shape — a summary row is written by a
+     * fold that has already computed the total, so a default would only ever mask a
+     * writer that forgot to.
+     */
+    totalMinor: bigint("total_minor", {mode: "bigint"}).notNull(),
+    updatedAt: timestamp("updated_at", {withTimezone: true, mode: "date"}).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({columns: [table.subjectId, table.monthBucket]}),
+    /** The quote-time read is "this subject, every bucket", so the subject is the index. */
+    index("inflow_summary_subject_idx").on(table.subjectId),
+  ],
+);
+
+/**
+ * One counterparty of one subject, and the fact that makes the round-trip exclusion cheap.
+ *
+ * `sentToCount` is what stops Tier 1 being a self-serve limit printer. A borrower with
+ * two wallets can cycle the same funds between them forever and manufacture unlimited
+ * "income"; the exclusion is to discard every counterparty the borrower has ever *sent
+ * to*, and counting that at write time is what keeps it out of the quote path. A
+ * non-zero value here means this counterparty has received from the subject at least
+ * once, and every inflow from them is discarded on that basis alone.
+ *
+ * `counterparty` is a wallet and is named as one, because it is the *other* party's
+ * public address rather than the subject's identity. The subject is still a salted
+ * subject and the two are deliberately different kinds of column.
+ */
+export const inflowCounterparty = operator.table(
+  "inflow_counterparty",
+  {
+    subjectId: text("subject_id").notNull(),
+    /** The other party's public chain address, lower-cased hex. */
+    counterparty: text("counterparty").notNull(),
+    firstSeen: timestamp("first_seen", {withTimezone: true, mode: "date"}).notNull().defaultNow(),
+    lastSeen: timestamp("last_seen", {withTimezone: true, mode: "date"}).notNull().defaultNow(),
+    /** How many times the subject has paid *them*. Non-zero excludes every inflow. */
+    sentToCount: integer("sent_to_count").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({columns: [table.subjectId, table.counterparty]}),
+    index("inflow_counterparty_subject_idx").on(table.subjectId),
   ],
 );

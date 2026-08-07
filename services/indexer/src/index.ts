@@ -313,3 +313,4 @@ import "./origination.js";
 import "./capital.js";
 import "./payout.js";
 import "./merchant.js";
+import "./inflow.js";

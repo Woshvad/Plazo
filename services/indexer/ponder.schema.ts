@@ -712,6 +712,70 @@ export const consentEvent = onchainTable(
   }),
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The inflow stream (Phase 7) — UW-04's evidence
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One inbound native movement, at **both** scales, narrowed exactly once.
+ *
+ * ## Why both columns exist
+ *
+ * Arc emits an ERC-20 `Transfer` from a system emitter for every native movement, and
+ * that log's `value` is **18 decimals**. The USDC contract's own `Transfer` for the
+ * same movement is **6**. Only the system stream is written here (E-08, and see
+ * `src/inflow.ts` for the rule and the gate that enforces it), so this table is a
+ * faithful copy of an 18-decimal stream that the credit system counts in 6.
+ *
+ * `valueMinor` is `toMinor6(valueNative)`, computed **once, at write time**, by the
+ * one narrowing function `@plazo/plan-core` exposes for this purpose. Storing only the
+ * narrowed figure would leave a consumer unable to audit the narrowing; storing only
+ * the raw figure would make every consumer narrow it again, and a 10^12 error made in
+ * three places is a 10^12 error found in none. One narrowing, both figures, and the
+ * arithmetic is checkable from the row.
+ *
+ * ## Why `recipient` is a wallet here and a salted subject next door
+ *
+ * Every other identity-adjacent table in this schema keys on a salted subject, because
+ * the events behind them carry one. This one carries a wallet because the *log* does,
+ * and a log on a public chain is already public — hiding it here would protect nothing
+ * and cost the ability to reconcile a row against the chain it came from. What is not
+ * here is the join from a wallet to a person: that lives in `operator.inflow_summary`
+ * and `operator.inflow_counterparty`, both keyed on a salted subject, behind the
+ * consent gate where a deletion can actually be honoured (OPS-08).
+ *
+ * The table is also not an enumerable income file over all of Arc, because the handler
+ * writes only for wallets the operator was explicitly told to track. See `src/inflow.ts`.
+ *
+ * The primary key is writer-chosen — `${txHash}:${logIndex}` — for DEC-58's reason: a
+ * server-assigned value is not known until after the insert, so an idempotent handler
+ * cannot use one. There is no sequence-backed column, no identity column and no
+ * database-level enum anywhere in this schema (DEC-57).
+ */
+export const inflow = onchainTable(
+  "inflow",
+  (t) => ({
+    /** `${txHash}:${logIndex}`. Writer-chosen, so a replay is a no-op. */
+    id: t.text().primaryKey(),
+    /** The `to` field of the system emitter's log. Tracked wallets only. */
+    recipient: t.hex().notNull(),
+    /** The `from` field. Who paid — the diversity and round-trip exclusions read this. */
+    counterparty: t.hex().notNull(),
+    /** The log's own `value`, at the 18 decimals the system emitter writes. */
+    valueNative: t.bigint().notNull(),
+    /** `toMinor6(valueNative)`. Narrowed once, here, and never again downstream. */
+    valueMinor: t.bigint().notNull(),
+    blockNumber: t.bigint().notNull(),
+    blockTimestamp: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+  }),
+  (table) => ({
+    recipientIdx: index().on(table.recipient),
+    counterpartyIdx: index().on(table.counterparty),
+    timeIdx: index().on(table.blockTimestamp),
+  }),
+);
+
 /**
  * Collections the operator's gate made.
  *

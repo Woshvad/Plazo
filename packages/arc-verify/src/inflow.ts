@@ -58,6 +58,7 @@ import {arcTestnet} from "viem/chains";
 
 import {
   ARC_MAX_LOG_RANGE,
+  ARC_NATIVE_TRANSFER_EMITTER,
   ARC_TESTNET_RPC_URL,
   ARC_USDC,
   native18,
@@ -75,16 +76,13 @@ import {shed} from "./slice.js";
 /**
  * Arc's EIP-7708 native-transfer system emitter.
  *
- * Provenance: `docs.arc.io` "USDC system events", and confirmed live against chain
- * 5042002 on 2026-08-07 — canonical `Transfer` topic0, `from` and `to` indexed, `value`
- * in the data field at **18 decimals**.
- *
- * **This literal appears exactly once in this file, and that is a gate.** Every other
- * reference is to the constant. A second copy is how one of them ends up filtering a
- * different stream than the one the comment above it describes.
+ * Re-exported rather than restated. The literal lives once in the whole repository, in
+ * `@plazo/plan-core`'s `arc.ts` beside `ARC_USDC` and `ARC_EURC`, because it is a
+ * network constant with two consumers — this gate and `services/indexer` — and a second
+ * copy is how one of them ends up filtering a different stream than the comment above
+ * it describes. It carries its provenance and the E-08 rule at its definition.
  */
-export const ARC_NATIVE_TRANSFER_EMITTER: Address =
-  "0xfffffffffffffffffffffffffffffffffffffffe";
+export {ARC_NATIVE_TRANSFER_EMITTER} from "@plazo/plan-core";
 
 /** Canonical ERC-20 `Transfer`. Both emitters use it; only the scale differs. */
 const TRANSFER_EVENT = parseAbiItem(

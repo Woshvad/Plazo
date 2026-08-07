@@ -28,11 +28,40 @@
  * not neutral: it is the difference between an indexer that carries vintage-3
  * origination history and one that reports those originations never happened. See
  * `atAll`.
+ *
+ * Phase 7 adds one more, and it carries the same class of silent loss:
+ *
+ * - `PLAZO_INFLOW_START_BLOCK` — where the EIP-7708 native-transfer sweep begins.
+ *
+ * **Leaving it unset means the stream indexes from `latest` and Tier 1 has no
+ * history**, which is not an error, an empty table or a warning at quote time — it is
+ * a borrower whose verified income is zero and whose limit is therefore zero, for a
+ * reason nothing in the request can see. `INFLOW_LOOKBACK` defaults to 90 days, which
+ * at 0.514 s per block is roughly 15.1 million blocks; set this to
+ * `head - 15_100_000` or to whatever earlier block the operator's own record begins
+ * at. The variable is a block number rather than an address, which is exactly why the
+ * emitter's address is written in this file beside it (DEC-55) — the address was
+ * never the thing that varies.
+ *
+ * ## The backfill blocker this file must state rather than let someone discover
+ *
+ * The sweep this variable enables has never completed. Measured on 2026-08-02 against
+ * the live deployment: **390 blocks of a 194,092-block range in nine minutes, with 641
+ * shed responses escaping the transport's retries.** CLAUDE.md's prescribed escape —
+ * Envio HyperRPC — became **token-gated behind an interactive signup the same day**, so
+ * it is an access-acquisition item and not a configuration change. Until an endpoint
+ * exists that will answer, a ninety-day inflow backfill against the public RPC is not
+ * achievable, and the honest consequence is that Tier 1 proposes **zero** rather than a
+ * plausible number. `services/origination/src/tier1.ts` defaults to exactly that.
  */
 import {createConfig, factory} from "ponder";
 import {parseAbi, parseAbiItem} from "viem";
 
-import {ARC_MAX_LOG_RANGE, ARC_TESTNET_CHAIN_ID} from "@plazo/plan-core";
+import {
+  ARC_MAX_LOG_RANGE,
+  ARC_NATIVE_TRANSFER_EMITTER,
+  ARC_TESTNET_CHAIN_ID,
+} from "@plazo/plan-core";
 import {
   CHECKOUT_ROUTER_ABI,
   TRANCHED_CREDIT_POOL_ABI,
@@ -115,10 +144,18 @@ const startBlock = START_BLOCK ? Number(START_BLOCK) : ("latest" as const);
  * decode, and the process still comes up and still serves. That is what "indexes
  * nothing" was always supposed to mean.
  */
-const watch = (name: string) => ({
-  address: at(name),
-  startBlock: process.env[name] ? startBlock : ("latest" as const),
-});
+const watch = (name: string, fixed?: `0x${string}`) => {
+  const configured = process.env[name];
+  const address = fixed ?? at(name);
+  // For a Plazo deployment `name` holds the address, and the whole stack shares one
+  // `PLAZO_START_BLOCK` because it was all deployed together. For a **network
+  // constant** — the EIP-7708 system emitter, which is not ours to deploy and whose
+  // address is written into this file — `name` holds the block to start from instead,
+  // because the address was never the variable and the start block is. Either way the
+  // pairing is the rule: a source is registered with a start block or not at all.
+  if (!configured) return {address, startBlock: "latest" as const};
+  return {address, startBlock: fixed ? Number(configured) : startBlock};
+};
 
 /** The same, for a contract that has been deployed more than once. See `atAll`. */
 const watchAll = (...names: string[]) => ({
@@ -137,6 +174,18 @@ const watchAll = (...names: string[]) => ({
 const PLAN_DEPLOYED = parseAbiItem(
   "event PlanDeployed(bytes32 indexed planId, address indexed plan, address indexed implementation)",
 );
+
+/**
+ * The system emitter's whole surface: one canonical ERC-20 `Transfer`.
+ *
+ * Written here rather than taken from `@plazo/events`, which versions the *protocol's*
+ * event schema and freezes it against a hash. This is not a Plazo event — it is Arc's,
+ * it is the standard signature every ERC-20 has emitted since 2015, and putting it
+ * behind a schema-version bump would tie a network constant to a governance artefact.
+ */
+const NATIVE_TRANSFER_ABI = [
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+] as const;
 
 export default createConfig({
   chains: {
@@ -267,6 +316,20 @@ export default createConfig({
       chain: "arcTestnet",
       abi: parseAbi(SETTLEMENT_ESCROW_ABI),
       ...watch("PLAZO_SETTLEMENT_ESCROW_ADDRESS"),
+    },
+    // The inflow stream (Phase 7). Not a Plazo deployment: this is Arc's own EIP-7708
+    // system emitter, which logs a canonical ERC-20 `Transfer` for every native
+    // movement because USDC is the gas token. Its address is a network constant and
+    // therefore lives here rather than in a deployment record (DEC-55); what varies is
+    // the block to begin at, and the header says what leaving it unset costs.
+    //
+    // **Its values are 18-decimal.** The USDC contract's own `Transfer` for the same
+    // movement is 6-decimal, and that contract is deliberately not registered as a
+    // second source for this stream. See `src/inflow.ts` and E-08.
+    NativeTransferEmitter: {
+      chain: "arcTestnet",
+      abi: parseAbi(NATIVE_TRANSFER_ABI),
+      ...watch("PLAZO_INFLOW_START_BLOCK", ARC_NATIVE_TRANSFER_EMITTER),
     },
   },
 });

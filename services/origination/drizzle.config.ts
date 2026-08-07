@@ -51,6 +51,8 @@ export default defineConfig({
     "merchant_api_key",
     "rate_limit_bucket",
     "merchant_external_ref",
+    "inflow_summary",
+    "inflow_counterparty",
   ],
   strict: true,
   verbose: true,

@@ -77,6 +77,33 @@ export const MULTICALL3_FROM: Address = "0x522fAf9A91c41c443c66765030741e4AaCe14
 export const ENTRYPOINT_V07: Address = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
 
 /**
+ * Arc's EIP-7708 native-transfer system emitter.
+ *
+ * Because USDC is the gas token, Arc emits a canonical ERC-20 `Transfer` log from this
+ * address for **every** native movement — payroll, remittances, contract endowments,
+ * precompile movements. A borrower's complete inflow history is therefore a filtered
+ * log scan, which is the mechanism UW-04's Tier-1 limit is built on and which no
+ * incumbent underwriting against a bank rail has.
+ *
+ * **Its `value` is 18 decimals. The USDC contract's own `Transfer` for the same
+ * movement is 6.** One balance change, two logs, two emitters, two scales. Summing
+ * them inflates income by 10^12 if the scales are never reconciled and by exactly 2× if
+ * they are reconciled and the duplication is not, and neither figure looks wrong. E-08.
+ *
+ * The rule is: filter by this address, use this stream alone, and narrow exactly once
+ * through `toMinor6` — which takes a `Native18`, a brand deliberately distinct from
+ * `Wei18` so that a log value and a balance cannot be interchanged by accident.
+ *
+ * It lives here, beside `ARC_USDC` and `ARC_EURC`, because it is a network constant
+ * rather than a Plazo deployment: `@plazo/arc-verify` reads the stream against the live
+ * chain, `services/indexer` registers it as a source, and one literal that both consume
+ * is one literal that cannot disagree with itself. Confirmed live on chain 5042002 on
+ * 2026-08-07 — canonical topic0, `from` and `to` indexed, `value` at 18 decimals.
+ */
+export const ARC_NATIVE_TRANSFER_EMITTER: Address =
+  "0xfffffffffffffffffffffffffffffffffffffffe";
+
+/**
  * The public RPC hard-errors (-32614) above this range. Any indexer or log sweep
  * must chunk below it.
  */
