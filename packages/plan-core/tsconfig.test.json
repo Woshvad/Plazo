@@ -1,0 +1,35 @@
+/*
+ * Typechecks `test/`, which `tsconfig.json` deliberately does not.
+ *
+ * `tsconfig.json` scopes itself to `src/` because it emits `dist/` with
+ * `rootDir: "src"`, and adding tests to it would emit them. So without this file the
+ * test tree is transpiled by vitest and never type-checked — which is fine for an
+ * ordinary assertion and **not** fine for a `@ts-expect-error`.
+ *
+ * A `@ts-expect-error` is an assertion that the next line does not compile, and an
+ * unused one is itself a compile error. That makes it the only way to assert that
+ * `Native18` and `Wei18` are genuinely distinct types rather than two names for a
+ * branded bigint — E-08's compile-time half. Under vitest alone the directive is a
+ * comment, the test passes either way, and the brand is decoration.
+ *
+ * `package.json`'s `typecheck` script runs both projects for that reason.
+ *
+ * ## Why `include` names one test file rather than the tree
+ *
+ * The other four test files predate any typechecking and do not pass one: the parity
+ * suites pass a `string` where a `number | bigint` is wanted and widen a `12500n`
+ * literal type to `bigint` in three places. None of that is this plan's to fix —
+ * they are pre-existing and they are in files 07-06 does not touch — and widening
+ * this `include` to the tree would either fail the build for unrelated reasons or,
+ * worse, invite someone to make them green by loosening `tsconfig.base.json`.
+ *
+ * Logged as a deferred item. When those four are cleaned up, this becomes
+ * `test/**\/*.ts` and the guard covers the whole tree.
+ */
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/units.test.ts"]
+}
