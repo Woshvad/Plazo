@@ -28,6 +28,12 @@ import {PlanParams} from "../libraries/PlanParams.sol";
 ///      quotes honestly and fills badly is invisible to anything that reads the
 ///      quote, and it is the exact failure this contract exists to catch.
 ///
+///      The same argument runs one step further, so the check goes one step further
+///      too: `settle`'s **return value** is also the venue's word. What the guard
+///      compares against the floor is the lesser of that figure and the recipient's
+///      measured balance delta, because a venue willing to fill badly is willing to
+///      say it did not.
+///
 ///      **Nothing here stores `midE18` past the transaction, and that is C1's line.**
 ///      The moment a rate this contract has seen could be read to answer "what is this
 ///      position worth", the protocol has an oracle, whatever the file is called. The
@@ -145,14 +151,21 @@ contract FxDeviationGuard is AccessControl, ReentrancyGuard {
         sold.safeTransferFrom(msg.sender, address(this), amountIn);
         sold.forceApprove(address(venue), amountIn);
 
-        amountOut = venue.settle(mid.fromToken, mid.toToken, amountIn, floor_, recipient);
+        uint256 held = IERC20(mid.toToken).balanceOf(recipient);
+        uint256 reported = venue.settle(mid.fromToken, mid.toToken, amountIn, floor_, recipient);
+        uint256 delivered = IERC20(mid.toToken).balanceOf(recipient) - held;
+
+        // The lesser of what the venue said and what actually arrived. A venue that
+        // fills short and reports it truthfully is caught by the first; a venue that
+        // fills short and *overstates* it is caught by the second, and the second is
+        // the one a caller trusting the return value alone would miss.
+        amountOut = reported < delivered ? reported : delivered;
 
         // Both the `minOut` handed to the venue and this check are here on purpose and
         // neither is redundant. The first lets an honest venue fail cheaply, before it
-        // has moved anything. The second is what holds when the venue is *not* honest:
-        // a venue that ignores `minOut` and returns an inflated figure is caught here,
-        // and a venue that fills short and reports it truthfully is caught here too.
-        // Deleting either one leaves a venue that can take the money and say so.
+        // has moved anything. The second is what holds when the venue is *not* honest,
+        // because `minOut` is enforced by the party being checked. Deleting either one
+        // leaves a venue that can take the money and say it did not.
         if (amountOut < floor_) revert FillOutsideGuard(amountOut, floor_);
 
         // No standing claim on this contract's balance survives the call. An allowance
