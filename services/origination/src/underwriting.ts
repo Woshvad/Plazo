@@ -34,6 +34,8 @@ import {
 } from "@plazo/plan-core";
 import type {Address, Hex} from "viem";
 
+import {NO_TIER1, type Tier1Decision, type Tier1Reader} from "./tier1.js";
+
 /**
  * Reads the chain. Implemented over viem in production; a function here so the
  * decision logic is testable without a node.
@@ -67,6 +69,16 @@ export interface UnderwriterConfig {
    * router enforces — an attestation valid for longer is refused on arrival.
    */
   ttlSeconds?: number;
+  /**
+   * UW-04's inflow scorer, injected.
+   *
+   * Defaults to `NO_TIER1`, which proposes zero. An unconfigured credit input has to
+   * decline rather than throw or guess: the inflow backfill has never completed on this
+   * chain, so "Tier 1 has nothing to say" is the ordinary case and it must not be able
+   * to turn into a plausible number by accident. `ServicingDeps.merchants` is the
+   * precedent (DEC-64/DEC-77).
+   */
+  tier1?: Tier1Reader;
 }
 
 /**
@@ -98,13 +110,28 @@ export interface Decision {
   band: number;
   /** The largest principal that would actually originate, all constraints applied. */
   maxPrincipal: bigint;
+  /**
+   * What Tier 1 proposed, and why.
+   *
+   * **It is not folded into `attestation.limit`, and it must not be.** This service
+   * cannot raise anyone's credit — the router takes the minimum of the attestation and
+   * every onchain cap — so an operator-side uplift would be a number that never binds
+   * and a claim the chain would silently refuse. The place a Tier-1 figure becomes
+   * binding is `TieredUnderwriter.capFor` on chain (plan 07-07), which reads
+   * `PayrollSweeper.isOptedIn` for itself. What this field is for is the borrower's own
+   * answer to "why is my limit what it is" (UW-08) and the operator's ability to see
+   * the scorer's distribution before it is wired to anything.
+   */
+  tier1: Tier1Decision;
 }
 
 export class Underwriter {
   private readonly ttl: number;
+  private readonly tier1: Tier1Reader;
 
   constructor(private readonly config: UnderwriterConfig) {
     this.ttl = config.ttlSeconds ?? DEFAULT_ATTESTATION_TTL;
+    this.tier1 = config.tier1 ?? NO_TIER1;
   }
 
   /**
@@ -129,7 +156,7 @@ export class Underwriter {
     // and the pause plane are folded in. The attestation carries the first because it
     // is a statement about the borrower; the quote uses the second because it is a
     // statement about this purchase.
-    const [limit, maxPrincipal] = await Promise.all([
+    const [limit, maxPrincipal, tier1] = await Promise.all([
       this.config.reader.capFor(personId, identity, request.signerClass),
       this.config.reader.maxPrincipalFor({
         personId,
@@ -138,6 +165,7 @@ export class Underwriter {
         merchant: request.merchant,
         token: request.token,
       }),
+      this.tier1.proposeFor({borrower: request.borrower, personId, identity}),
     ]);
 
     const attestation: LimitAttestation = {
@@ -160,6 +188,7 @@ export class Underwriter {
       attestor: this.config.signer.address,
       band: bandOf(limit),
       maxPrincipal,
+      tier1,
     };
   }
 }

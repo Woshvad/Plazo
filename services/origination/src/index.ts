@@ -31,6 +31,7 @@ import type {MerchantPlane} from "./api.js";
 
 export * from "./session.js";
 export * from "./underwriting.js";
+export * from "./tier1.js";
 export * from "./compliance.js";
 export * from "./keys.js";
 export * from "./auth.js";
