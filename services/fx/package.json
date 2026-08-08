@@ -1,0 +1,29 @@
+{
+  "name": "@plazo/fx",
+  "version": "0.1.0",
+  "description": "The FX quoting service: the StableFX taker client, the venue seam and the corridor circuit breaker. Proprietary operator service.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@plazo/events": "workspace:*",
+    "@plazo/plan-core": "workspace:*",
+    "graphile-worker": "0.17.3",
+    "hono": "4.12.32",
+    "viem": "2.55.10",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
