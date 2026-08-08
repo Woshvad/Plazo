@@ -13,6 +13,7 @@ import {AllowlistCompliance} from "../../src/AllowlistCompliance.sol";
 import {ArcLocalPayout} from "../../src/ArcLocalPayout.sol";
 import {ReceivableToken} from "../../src/ReceivableToken.sol";
 import {MerchantRegistry} from "../../src/MerchantRegistry.sol";
+import {MerchantCurrencyRegistry} from "../../src/MerchantCurrencyRegistry.sol";
 import {TranchedCreditPool} from "../../src/TranchedCreditPool.sol";
 import {PoolRegistry} from "../../src/PoolRegistry.sol";
 import {PlazoPassport} from "../../src/PlazoPassport.sol";
@@ -23,9 +24,16 @@ import {Tier0Underwriter} from "../../src/Tier0Underwriter.sol";
 import {OriginationPause} from "../../src/OriginationPause.sol";
 import {CheckoutRouter} from "../../src/CheckoutRouter.sol";
 import {SettlementEscrow} from "../../src/SettlementEscrow.sol";
+import {FxDeviationGuard} from "../../src/fx/FxDeviationGuard.sol";
+import {AmmVenue} from "../../src/fx/AmmVenue.sol";
+import {PledgeVault} from "../../src/underwriting/PledgeVault.sol";
+import {PayrollSweeper} from "../../src/underwriting/PayrollSweeper.sol";
+import {PartnerUnderwriterStub} from "../../src/underwriting/PartnerUnderwriterStub.sol";
+import {TieredUnderwriter} from "../../src/underwriting/TieredUnderwriter.sol";
 import {IComplianceOracle} from "../../src/interfaces/IComplianceOracle.sol";
 import {ICreditPool} from "../../src/interfaces/ICreditPool.sol";
 import {IUnderwritingPartner} from "../../src/interfaces/IUnderwritingPartner.sol";
+import {FxMidAttestation} from "../../src/libraries/FxMidAttestation.sol";
 import {LimitAttestation} from "../../src/libraries/LimitAttestation.sol";
 import {ParameterKeys} from "../../src/libraries/ParameterKeys.sol";
 import {PlanId} from "../../src/libraries/PlanId.sol";
@@ -53,6 +61,7 @@ abstract contract OriginationFixture is PlanFixture {
     ArcLocalPayout internal payout;
     ReceivableToken internal receivable;
     MerchantRegistry internal merchants;
+    MerchantCurrencyRegistry internal currencies;
     TranchedCreditPool internal creditPool;
     PoolRegistry internal poolRegistry;
     PlazoPassport internal passport;
@@ -60,8 +69,14 @@ abstract contract OriginationFixture is PlanFixture {
     RelayerGate internal relayer;
     FirstPaymentDefaultSwitch internal killSwitch;
     Tier0Underwriter internal tier0;
+    PledgeVault internal pledges;
+    PayrollSweeper internal sweeper;
+    PartnerUnderwriterStub internal partnerStub;
+    TieredUnderwriter internal tiered;
     OriginationPause internal pauses;
     SettlementEscrow internal settlementEscrow;
+    FxDeviationGuard internal fxGuard;
+    AmmVenue internal fxVenue;
     CheckoutRouter internal checkout;
 
     uint256 internal constant UNDERWRITER_KEY = 0x0DDE511;
@@ -126,36 +141,45 @@ abstract contract OriginationFixture is PlanFixture {
         implementation = address(new InstallmentPlan());
         factory = new PlanFactory(implementation, address(jurisdictions), address(this));
 
+        // The composite the router now holds. Tier 0 is still the floor and still the
+        // veto; with no pledge, no payroll opt-in and an unengaged partner this returns
+        // Tier 0's own figure, which is why the whole existing suite is unmoved by it.
+        pledges = new PledgeVault(address(this), address(usdc), address(parameters));
+        sweeper = new PayrollSweeper(address(factory));
+        partnerStub = new PartnerUnderwriterStub();
+        tiered = new TieredUnderwriter(
+            address(this),
+            address(tier0),
+            address(pledges),
+            address(sweeper),
+            address(parameters),
+            address(partnerStub)
+        );
+
+        // FX-05's guard, and the venue it settles through. `AmmVenue` ships with a zero
+        // router and refuses every fill — the shipped configuration, because plan 07-01
+        // probed seven AMM candidates on Arc testnet and none holds bytecode (finding
+        // 34). A corridor test that needs a fill supplies its own double.
+        fxGuard = new FxDeviationGuard(address(this), address(parameters));
+        fxVenue = new AmmVenue(address(0), address(usdc), address(usdc));
+
+        currencies = new MerchantCurrencyRegistry(address(this));
+
         // Before the router, because the router takes it as a constructor immutable.
         // The reference back is installed by `setRouter` below, the same handshake
         // `setOriginator` performs for the factory and the pool.
         settlementEscrow =
             new SettlementEscrow(address(this), address(merchants), address(payout), address(parameters));
 
-        checkout = new CheckoutRouter(
-            address(this),
-            CheckoutRouter.Wiring({
-                factory: address(factory),
-                pools: address(poolRegistry),
-                passport: address(passport),
-                merchants: address(merchants),
-                receivable: address(receivable),
-                underwriter: address(tier0),
-                killSwitch: address(killSwitch),
-                pauses: address(pauses),
-                parameters: address(parameters),
-                compliance: address(compliance),
-                payout: address(payout),
-                settlementEscrow: address(settlementEscrow),
-                fxRouter: address(router)
-            })
-        );
+        checkout = new CheckoutRouter(address(this), _wiring());
 
         factory.setOriginator(address(checkout));
         settlementEscrow.setRouter(address(checkout));
         creditPool.setOriginator(address(checkout));
         receivable.grantRole(receivable.ISSUER_ROLE(), address(checkout));
-        tier0.grantRole(tier0.ORIGINATOR_ROLE(), address(checkout));
+        tier0.grantRole(tier0.ORIGINATOR_ROLE(), address(tiered));
+        tiered.grantRole(tiered.ORIGINATOR_ROLE(), address(checkout));
+        pledges.grantRole(pledges.BINDER_ROLE(), address(tiered));
         killSwitch.grantRole(killSwitch.REGISTRAR_ROLE(), address(checkout));
         merchants.grantRole(merchants.BOOKKEEPER_ROLE(), address(checkout));
         merchants.grantRole(merchants.KYB_ROLE(), address(this));
@@ -172,6 +196,30 @@ abstract contract OriginationFixture is PlanFixture {
         tier0.setPassport(address(passport));
 
         pool = address(creditPool);
+    }
+
+    /// @dev Assembled field by field into a memory local rather than as one struct
+    ///      literal. Seventeen addresses in a single expression is one slot past what
+    ///      the stack will carry even through the IR pipeline, and the failure is a
+    ///      compile error rather than anything subtle.
+    function _wiring() private view returns (CheckoutRouter.Wiring memory w) {
+        w.factory = address(factory);
+        w.pools = address(poolRegistry);
+        w.passport = address(passport);
+        w.merchants = address(merchants);
+        w.currencies = address(currencies);
+        w.receivable = address(receivable);
+        w.underwriter = address(tiered);
+        w.killSwitch = address(killSwitch);
+        w.pauses = address(pauses);
+        w.parameters = address(parameters);
+        w.compliance = address(compliance);
+        w.payout = address(payout);
+        w.settlementEscrow = address(settlementEscrow);
+        w.fxGuard = address(fxGuard);
+        w.fxVenue = address(fxVenue);
+        w.fxRouter = address(router);
+        w.baseToken = address(usdc);
     }
 
     /// @notice Capitalise the book and open the gate.
@@ -332,7 +380,24 @@ abstract contract OriginationFixture is PlanFixture {
         return CheckoutRouter.OriginationInput({
             request: _request(terms, _detail()),
             attestation: attestation,
-            attestationSignature: _signAttestation(attestation, UNDERWRITER_KEY)
+            attestationSignature: _signAttestation(attestation, UNDERWRITER_KEY),
+            fxMid: _noMid(),
+            fxMidSignature: ""
+        });
+    }
+
+    /// @notice The mid an origination that crosses no currency carries.
+    /// @dev Named rather than inlined so the *absence* is legible at each call site.
+    ///      A dollar plan settled to a merchant who has elected no payout currency reads
+    ///      neither of these two fields, and the whole pre-Phase-7 suite is that case.
+    function _noMid() internal pure returns (FxMidAttestation.Mid memory) {
+        return FxMidAttestation.Mid({
+            corridor: bytes32(0),
+            fromToken: address(0),
+            toToken: address(0),
+            midE18: 0,
+            validUntil: 0,
+            sessionId: bytes32(0)
         });
     }
 

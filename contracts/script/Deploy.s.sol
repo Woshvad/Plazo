@@ -14,6 +14,7 @@ import {AllowlistCompliance} from "../src/AllowlistCompliance.sol";
 import {ArcLocalPayout} from "../src/ArcLocalPayout.sol";
 import {ReceivableToken} from "../src/ReceivableToken.sol";
 import {MerchantRegistry} from "../src/MerchantRegistry.sol";
+import {MerchantCurrencyRegistry} from "../src/MerchantCurrencyRegistry.sol";
 import {TranchedCreditPool} from "../src/TranchedCreditPool.sol";
 import {PoolRegistry} from "../src/PoolRegistry.sol";
 import {PlazoPassport} from "../src/PlazoPassport.sol";
@@ -25,6 +26,12 @@ import {Tier0Underwriter} from "../src/Tier0Underwriter.sol";
 import {OriginationPause} from "../src/OriginationPause.sol";
 import {SettlementEscrow} from "../src/SettlementEscrow.sol";
 import {CheckoutRouter} from "../src/CheckoutRouter.sol";
+import {FxDeviationGuard} from "../src/fx/FxDeviationGuard.sol";
+import {AmmVenue} from "../src/fx/AmmVenue.sol";
+import {PledgeVault} from "../src/underwriting/PledgeVault.sol";
+import {PayrollSweeper} from "../src/underwriting/PayrollSweeper.sol";
+import {PartnerUnderwriterStub} from "../src/underwriting/PartnerUnderwriterStub.sol";
+import {TieredUnderwriter} from "../src/underwriting/TieredUnderwriter.sol";
 
 /// @title Deploy
 /// @notice Deploys the Phase 3 origination stack to Arc.
@@ -79,6 +86,7 @@ contract Deploy is Script {
         ArcLocalPayout payout;
         ReceivableToken receivable;
         MerchantRegistry merchants;
+        MerchantCurrencyRegistry currencies;
         PoolRegistry pools;
         TranchedCreditPool pool;
         ParkedYieldVenue venue;
@@ -87,10 +95,16 @@ contract Deploy is Script {
         RelayerGate relayer;
         FirstPaymentDefaultSwitch killSwitch;
         Tier0Underwriter underwriter;
+        PledgeVault pledges;
+        PayrollSweeper sweeper;
+        PartnerUnderwriterStub partnerStub;
+        TieredUnderwriter tiered;
         OriginationPause pauses;
         InstallmentPlan implementation;
         PlanFactory factory;
         SettlementEscrow settlementEscrow;
+        FxDeviationGuard fxGuard;
+        AmmVenue fxVenue;
         CheckoutRouter router;
     }
 
@@ -119,6 +133,9 @@ contract Deploy is Script {
 
         s.receivable = new ReceivableToken(deployer, address(s.eligibility));
         s.merchants = new MerchantRegistry(deployer, token, address(s.parameters));
+        // MERCH-07's currency half, as a side-car. `MerchantRegistry` custodies bonds and
+        // is deliberately not superseded to carry one field.
+        s.currencies = new MerchantCurrencyRegistry(deployer);
         s.pools = new PoolRegistry(deployer);
         s.passport = new PlazoPassport(deployer, address(s.parameters));
         s.schemas = new AttestationSchemaRegistry(deployer);
@@ -149,6 +166,26 @@ contract Deploy is Script {
         s.implementation = new InstallmentPlan();
         s.factory = new PlanFactory(address(s.implementation), address(s.jurisdictions), deployer);
 
+        // The composite the router holds. Tier 0 stays the floor and stays the veto; this
+        // is what makes Tiers 1, 2 and 3 reachable through the five-argument `capFor`.
+        s.pledges = new PledgeVault(deployer, token, address(s.parameters));
+        s.sweeper = new PayrollSweeper(address(s.factory));
+        s.partnerStub = new PartnerUnderwriterStub();
+        s.tiered = new TieredUnderwriter(
+            deployer,
+            address(s.underwriter),
+            address(s.pledges),
+            address(s.sweeper),
+            address(s.parameters),
+            address(s.partnerStub)
+        );
+
+        // FX-05. `AmmVenue` ships with a zero router and refuses every fill, because
+        // seven AMM candidates were probed on Arc testnet and none holds bytecode
+        // (07-01, finding 34). That is the shipped configuration, not a placeholder.
+        s.fxGuard = new FxDeviationGuard(deployer, address(s.parameters));
+        s.fxVenue = new AmmVenue(address(0), token, token);
+
         // MERCH-04. Deployed before the router, because the router takes it as a
         // constructor immutable; the reference back is installed in `_wire`.
         s.settlementEscrow =
@@ -161,15 +198,19 @@ contract Deploy is Script {
                 pools: address(s.pools),
                 passport: address(s.passport),
                 merchants: address(s.merchants),
+                currencies: address(s.currencies),
                 receivable: address(s.receivable),
-                underwriter: address(s.underwriter),
+                underwriter: address(s.tiered),
                 killSwitch: address(s.killSwitch),
                 pauses: address(s.pauses),
                 parameters: address(s.parameters),
                 compliance: address(s.compliance),
                 payout: address(s.payout),
                 settlementEscrow: address(s.settlementEscrow),
-                fxRouter: address(s.fx)
+                fxGuard: address(s.fxGuard),
+                fxVenue: address(s.fxVenue),
+                fxRouter: address(s.fx),
+                baseToken: token
             })
         );
     }
@@ -184,7 +225,12 @@ contract Deploy is Script {
         s.pools.register(PAY_IN_4, address(s.pool));
         s.pool.setOriginator(address(s.router));
         s.receivable.grantRole(s.receivable.ISSUER_ROLE(), address(s.router));
-        s.underwriter.grantRole(s.underwriter.ORIGINATOR_ROLE(), address(s.router));
+        // The router originates through the composite, and the composite through Tier 0.
+        // Granting one and forgetting the other is an origination that passes every gate
+        // and reverts on the last write.
+        s.tiered.grantRole(s.tiered.ORIGINATOR_ROLE(), address(s.router));
+        s.underwriter.grantRole(s.underwriter.ORIGINATOR_ROLE(), address(s.tiered));
+        s.pledges.grantRole(s.pledges.BINDER_ROLE(), address(s.tiered));
         s.killSwitch.grantRole(s.killSwitch.REGISTRAR_ROLE(), address(s.router));
         s.merchants.grantRole(s.merchants.BOOKKEEPER_ROLE(), address(s.router));
 
@@ -228,6 +274,7 @@ contract Deploy is Script {
         console.log("ArcLocalPayout        ", address(s.payout));
         console.log("ReceivableToken       ", address(s.receivable));
         console.log("MerchantRegistry      ", address(s.merchants));
+        console.log("MerchantCurrencyReg   ", address(s.currencies));
         console.log("PoolRegistry          ", address(s.pools));
         console.log("TranchedCreditPool    ", address(s.pool));
         console.log("SeniorShares          ", address(s.pool.seniorShares()));
@@ -238,6 +285,12 @@ contract Deploy is Script {
         console.log("RelayerGate           ", address(s.relayer));
         console.log("FirstPaymentDefault   ", address(s.killSwitch));
         console.log("Tier0Underwriter      ", address(s.underwriter));
+        console.log("PledgeVault           ", address(s.pledges));
+        console.log("PayrollSweeper        ", address(s.sweeper));
+        console.log("PartnerUnderwriterStub", address(s.partnerStub));
+        console.log("TieredUnderwriter     ", address(s.tiered));
+        console.log("FxDeviationGuard      ", address(s.fxGuard));
+        console.log("AmmVenue              ", address(s.fxVenue));
         console.log("OriginationPause      ", address(s.pauses));
         console.log("InstallmentPlan (impl)", address(s.implementation));
         console.log("PlanFactory           ", address(s.factory));

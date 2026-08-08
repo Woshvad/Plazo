@@ -8,6 +8,7 @@ import {ParameterRegistry} from "../src/ParameterRegistry.sol";
 import {EligibilityRegistry} from "../src/EligibilityRegistry.sol";
 import {ReceivableToken} from "../src/ReceivableToken.sol";
 import {MerchantRegistry} from "../src/MerchantRegistry.sol";
+import {MerchantCurrencyRegistry} from "../src/MerchantCurrencyRegistry.sol";
 import {TranchedCreditPool} from "../src/TranchedCreditPool.sol";
 import {PlazoPassport} from "../src/PlazoPassport.sol";
 import {FirstPaymentDefaultSwitch} from "../src/FirstPaymentDefaultSwitch.sol";
@@ -17,6 +18,12 @@ import {PayoutRouter} from "../src/PayoutRouter.sol";
 import {RefundEscrow} from "../src/RefundEscrow.sol";
 import {SettlementEscrow} from "../src/SettlementEscrow.sol";
 import {CheckoutRouter} from "../src/CheckoutRouter.sol";
+import {FxDeviationGuard} from "../src/fx/FxDeviationGuard.sol";
+import {AmmVenue} from "../src/fx/AmmVenue.sol";
+import {PledgeVault} from "../src/underwriting/PledgeVault.sol";
+import {PayrollSweeper} from "../src/underwriting/PayrollSweeper.sol";
+import {PartnerUnderwriterStub} from "../src/underwriting/PartnerUnderwriterStub.sol";
+import {TieredUnderwriter} from "../src/underwriting/TieredUnderwriter.sol";
 
 /// @title Rewire
 /// @notice Puts the Phase 6 merchant plane on the live book, in one broadcast.
@@ -154,10 +161,26 @@ contract Rewire is Script {
     }
 
     /// @dev What this script puts on chain.
+    ///
+    ///      **Phase 7 additions, and whose job the live rewire is.** The router now
+    ///      resolves an FX router, a parameter set and an underwriter *per corridor*, and
+    ///      holds a merchant-currency side-car and a deviation guard. This script is
+    ///      updated to deploy them so the tree compiles and so a run produces a coherent
+    ///      stack — but **plan 07-12 owns the Phase 7 broadcast**, including the second
+    ///      book, the EURC corridor row and the migration of governed values onto the
+    ///      registry the tier rows live on. Do not read this struct as that plan.
     struct Stack {
         MerchantRegistry merchants;
+        MerchantCurrencyRegistry currencies;
         PayoutRouter payout;
         ParameterRegistry escrowParameters;
+        ParameterRegistry corridorParameters;
+        PledgeVault pledges;
+        PayrollSweeper sweeper;
+        PartnerUnderwriterStub partnerStub;
+        TieredUnderwriter tiered;
+        FxDeviationGuard fxGuard;
+        AmmVenue fxVenue;
         SettlementEscrow settlementEscrow;
         CheckoutRouter router;
         RefundEscrow refundEscrow;
@@ -215,6 +238,10 @@ contract Rewire is Script {
         // velocity cap and window — carries across unchanged.
         s.merchants = new MerchantRegistry(deployer, token, address(e.parameters));
 
+        // MERCH-07's currency half, as a side-car precisely so `MerchantRegistry` does
+        // not have to be superseded a third time to carry one preference field.
+        s.currencies = new MerchantCurrencyRegistry(deployer);
+
         s.payout = new PayoutRouter(deployer, messenger);
 
         // Deployment reason 2 in the header (DEC-72). Read by the two escrows and by
@@ -229,6 +256,32 @@ contract Rewire is Script {
             deployer, address(s.merchants), address(s.payout), address(s.escrowParameters)
         );
 
+        // **A fourth `ParameterRegistry`, and it is forced rather than chosen.**
+        // `_define` is private and constructor-only, `get()` reverts on an undefined key,
+        // and the six `plazo.tier{1,2,3}.*` rows plus the FX rows exist on **neither**
+        // already-deployed registry (DEC-72, finding 29). Pointing the composite or the
+        // guard at the live registry would turn every origination into a revert rather
+        // than a smaller limit. Migrating the operator's governed values onto this one is
+        // plan 07-12's job and is deliberately not attempted here.
+        s.corridorParameters = new ParameterRegistry(deployer);
+
+        s.pledges = new PledgeVault(deployer, token, address(s.corridorParameters));
+        s.sweeper = new PayrollSweeper(address(e.factory));
+        s.partnerStub = new PartnerUnderwriterStub();
+        s.tiered = new TieredUnderwriter(
+            deployer,
+            address(e.underwriter),
+            address(s.pledges),
+            address(s.sweeper),
+            address(s.corridorParameters),
+            address(s.partnerStub)
+        );
+
+        // FX-05. The venue ships refusing (07-01 finding 34: no AMM on Arc testnet holds
+        // bytecode), which is the shipped configuration rather than a placeholder.
+        s.fxGuard = new FxDeviationGuard(deployer, address(s.corridorParameters));
+        s.fxVenue = new AmmVenue(address(0), token, token);
+
         s.router = new CheckoutRouter(
             deployer,
             CheckoutRouter.Wiring({
@@ -236,15 +289,19 @@ contract Rewire is Script {
                 pools: e.pools,
                 passport: address(e.passport),
                 merchants: address(s.merchants),
+                currencies: address(s.currencies),
                 receivable: address(e.receivable),
-                underwriter: address(e.underwriter),
+                underwriter: address(s.tiered),
                 killSwitch: address(e.killSwitch),
                 pauses: e.pauses,
                 parameters: address(e.parameters),
                 compliance: e.compliance,
                 payout: address(s.payout),
                 settlementEscrow: address(s.settlementEscrow),
-                fxRouter: e.fx
+                fxGuard: address(s.fxGuard),
+                fxVenue: address(s.fxVenue),
+                fxRouter: e.fx,
+                baseToken: token
             })
         );
 
@@ -278,7 +335,13 @@ contract Rewire is Script {
         e.pool.setOriginator(address(s.router));
 
         e.receivable.grantRole(e.receivable.ISSUER_ROLE(), address(s.router));
-        e.underwriter.grantRole(e.underwriter.ORIGINATOR_ROLE(), address(s.router));
+        // The router originates through the composite and the composite through Tier 0.
+        // Two grants where there used to be one, and both are load-bearing: granting
+        // either alone is an origination that passes every gate and reverts on the last
+        // write.
+        s.tiered.grantRole(s.tiered.ORIGINATOR_ROLE(), address(s.router));
+        e.underwriter.grantRole(e.underwriter.ORIGINATOR_ROLE(), address(s.tiered));
+        s.pledges.grantRole(s.pledges.BINDER_ROLE(), address(s.tiered));
         e.killSwitch.grantRole(e.killSwitch.REGISTRAR_ROLE(), address(s.router));
         s.merchants.grantRole(s.merchants.BOOKKEEPER_ROLE(), address(s.router));
         e.passport.grantRole(e.passport.READER_ROLE(), address(s.router));
@@ -331,8 +394,16 @@ contract Rewire is Script {
         console.log("");
         console.log("-- deployed --");
         console.log("MerchantRegistry      ", address(s.merchants));
+        console.log("MerchantCurrencyReg   ", address(s.currencies));
         console.log("PayoutRouter          ", address(s.payout));
         console.log("ParameterRegistry(esc)", address(s.escrowParameters));
+        console.log("ParameterRegistry(cor)", address(s.corridorParameters));
+        console.log("PledgeVault           ", address(s.pledges));
+        console.log("PayrollSweeper        ", address(s.sweeper));
+        console.log("PartnerUnderwriterStub", address(s.partnerStub));
+        console.log("TieredUnderwriter     ", address(s.tiered));
+        console.log("FxDeviationGuard      ", address(s.fxGuard));
+        console.log("AmmVenue              ", address(s.fxVenue));
         console.log("SettlementEscrow      ", address(s.settlementEscrow));
         console.log("CheckoutRouter        ", address(s.router));
         console.log("RefundEscrow          ", address(s.refundEscrow));

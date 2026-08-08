@@ -57,11 +57,17 @@ contract TieredUnderwriterTest is OriginationFixture {
     bytes32 internal constant PROSPECTIVE = keccak256("uw07-prospective-plan");
 
     MockArcStablecoin internal usyc;
-    PledgeVault internal pledges;
-    PayrollSweeper internal sweeper;
-    TieredUnderwriter internal tiered;
     MockPartner internal mockPartner;
-    PartnerUnderwriterStub internal partnerStub;
+
+    /// @dev `pledges`, `sweeper`, `tiered` and `partnerStub` are **inherited** from
+    ///      `OriginationFixture`, which deploys the composite the router now holds
+    ///      (07-09). `setUp` re-points them at this suite's own instances — a USYC-backed
+    ///      vault and a settable partner — and deliberately does **not** re-point the
+    ///      router's corridor at them. The router keeps the fixture's composite, whose
+    ///      partner is the refusing stub and whose pledge vault is empty, so it answers
+    ///      exactly the Tier-0 figure it answered before this plan. That is what keeps
+    ///      `test_theChainRefusesWhatTheCompositeProposes` meaning what it meant: a
+    ///      proposal is one thing and the chain's own refusal is another.
 
     /// @dev A person who has never originated anything. `Tier0Underwriter` holds no plan
     ///      record for them and `activePlans == 0`, which is the only state in which a

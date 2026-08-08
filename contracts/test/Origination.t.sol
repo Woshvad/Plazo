@@ -164,7 +164,9 @@ contract OriginationTest is OriginationFixture {
         CheckoutRouter.OriginationInput memory input = CheckoutRouter.OriginationInput({
             request: _request(terms, _detail()),
             attestation: a,
-            attestationSignature: _signAttestation(a, impostor)
+            attestationSignature: _signAttestation(a, impostor),
+            fxMid: _noMid(),
+            fxMidSignature: ""
         });
 
         vm.expectRevert(
@@ -201,7 +203,9 @@ contract OriginationTest is OriginationFixture {
         CheckoutRouter.OriginationInput memory input = CheckoutRouter.OriginationInput({
             request: _request(terms, _detail()),
             attestation: a,
-            attestationSignature: _signAttestation(a, UNDERWRITER_KEY)
+            attestationSignature: _signAttestation(a, UNDERWRITER_KEY),
+            fxMid: _noMid(),
+            fxMidSignature: ""
         });
 
         vm.expectRevert(
@@ -223,7 +227,9 @@ contract OriginationTest is OriginationFixture {
         CheckoutRouter.OriginationInput memory input = CheckoutRouter.OriginationInput({
             request: _request(terms, _detail()),
             attestation: a,
-            attestationSignature: _signAttestation(a, UNDERWRITER_KEY)
+            attestationSignature: _signAttestation(a, UNDERWRITER_KEY),
+            fxMid: _noMid(),
+            fxMidSignature: ""
         });
 
         vm.expectRevert(
@@ -338,7 +344,9 @@ contract OriginationTest is OriginationFixture {
         CheckoutRouter.OriginationInput memory input = CheckoutRouter.OriginationInput({
             request: _request(terms, detail),
             attestation: a,
-            attestationSignature: _signAttestation(a, UNDERWRITER_KEY)
+            attestationSignature: _signAttestation(a, UNDERWRITER_KEY),
+            fxMid: _noMid(),
+            fxMidSignature: ""
         });
 
         vm.expectRevert(abi.encodeWithSelector(CheckoutRouter.SettlementRecipientNotAPool.selector, merchant));
