@@ -22,9 +22,61 @@
  * every test, all of them runnable today with no key (E-03). Not complete: execution.
  * `resolveFxVenue()` returns a venue that **refuses**, and says so in the banner.
  */
+import {readFxConfig, type FxConfig} from "./config.js";
+import {corridorOf} from "./mid.js";
+import {resolveFxVenue} from "./venue.js";
+import type {Hex} from "viem";
+import type {FxVenue} from "./venue.js";
+
 export * from "./config.js";
 export * from "./schemas.js";
 export * from "./stablefx.js";
 export * from "./venue.js";
 export * from "./mid.js";
 export * from "./api.js";
+export * from "./breaker.js";
+
+/** What came up when this process started, and the lines that said so. */
+export interface FxComposition {
+  readonly config: FxConfig;
+  readonly venue: FxVenue;
+  /** `corridorOf(EURC)` — the one corridor a trip can pause. */
+  readonly corridor: Hex;
+  /** Whether the corridor poll can actually write a pause. */
+  readonly canPause: boolean;
+  readonly banner: readonly string[];
+}
+
+/**
+ * The composition root.
+ *
+ * Two banner lines, both unconditional, in the same spirit as `resolveSessionStore`'s: an
+ * operator must never have to infer whether the venue in front of them is real or whether
+ * a trip would reach the chain. "The breaker is armed" and "the breaker has nowhere to
+ * write" look identical from a poll that found nothing wrong, and the difference only
+ * surfaces during the incident the breaker exists for.
+ *
+ * `canPause` is deliberately a separate fact from the venue's. A configured venue with no
+ * `PLAZO_ORIGINATION_PAUSE_ADDRESS` is a breaker that can detect and cannot act — which is
+ * a worse state than having neither, because it looks armed.
+ */
+export function composeFxService(
+  config: FxConfig = readFxConfig(),
+  log: (line: string) => void = (line) => {
+    // eslint-disable-next-line no-console
+    console.log(line);
+  },
+): FxComposition {
+  const resolved = resolveFxVenue({config, log});
+  const corridor = corridorOf(config.eurc);
+  const canPause = config.originationPause !== undefined;
+
+  const pauseLine = canPause
+    ? `[plazo:fx] breaker: armed — a trip pauses corridor ${corridor} and nothing else. ` +
+      `Restarting is the admin's, never this service's.`
+    : `[plazo:fx] breaker: detecting only — PLAZO_ORIGINATION_PAUSE_ADDRESS is unset, so a trip ` +
+      `has nowhere to write. It will page and it will not stop new credit.`;
+  log(pauseLine);
+
+  return {config, venue: resolved.venue, corridor, canPause, banner: [resolved.banner, pauseLine]};
+}
