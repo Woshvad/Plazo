@@ -76,7 +76,7 @@ abstract contract OriginationFixture is PlanFixture {
     OriginationPause internal pauses;
     SettlementEscrow internal settlementEscrow;
     FxDeviationGuard internal fxGuard;
-    AmmVenue internal fxVenue;
+    address internal fxVenue;
     CheckoutRouter internal checkout;
 
     uint256 internal constant UNDERWRITER_KEY = 0x0DDE511;
@@ -156,12 +156,8 @@ abstract contract OriginationFixture is PlanFixture {
             address(partnerStub)
         );
 
-        // FX-05's guard, and the venue it settles through. `AmmVenue` ships with a zero
-        // router and refuses every fill — the shipped configuration, because plan 07-01
-        // probed seven AMM candidates on Arc testnet and none holds bytecode (finding
-        // 34). A corridor test that needs a fill supplies its own double.
         fxGuard = new FxDeviationGuard(address(this), address(parameters));
-        fxVenue = new AmmVenue(address(0), address(usdc), address(usdc));
+        fxVenue = _deployFxVenue();
 
         currencies = new MerchantCurrencyRegistry(address(this));
 
@@ -198,6 +194,22 @@ abstract contract OriginationFixture is PlanFixture {
         pool = address(creditPool);
     }
 
+    /// @notice The venue FX-05's guard settles through.
+    ///
+    /// @dev **The shipped configuration, and it refuses every fill.** `AmmVenue` holds a
+    ///      zero router because plan 07-01 probed seven AMM candidates on Arc testnet and
+    ///      none of them holds bytecode (finding 34) — so this is a measurement, not a
+    ///      placeholder, and `Deploy.s.sol` deploys exactly this.
+    ///
+    ///      It is a hook rather than a line so a corridor suite can substitute a double
+    ///      that actually fills, which is the only way any currency crossing is
+    ///      observable on a chain with no venue. Overriding it is the *one* thing a
+    ///      derived fixture may change about this stack; every role grant stays here, so
+    ///      a deployment gap cannot hide behind an override (finding 16).
+    function _deployFxVenue() internal virtual returns (address) {
+        return address(new AmmVenue(address(0), address(usdc), address(usdc)));
+    }
+
     /// @dev Assembled field by field into a memory local rather than as one struct
     ///      literal. Seventeen addresses in a single expression is one slot past what
     ///      the stack will carry even through the IR pipeline, and the failure is a
@@ -217,7 +229,7 @@ abstract contract OriginationFixture is PlanFixture {
         w.payout = address(payout);
         w.settlementEscrow = address(settlementEscrow);
         w.fxGuard = address(fxGuard);
-        w.fxVenue = address(fxVenue);
+        w.fxVenue = fxVenue;
         w.fxRouter = address(router);
         w.baseToken = address(usdc);
     }

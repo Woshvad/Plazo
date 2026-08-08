@@ -4,7 +4,11 @@ pragma solidity 0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
+import {CorridorFixture} from "./helpers/CorridorFixture.sol";
+
+import {CheckoutRouter} from "../src/CheckoutRouter.sol";
 import {MerchantCurrencyRegistry} from "../src/MerchantCurrencyRegistry.sol";
+import {PlanParams} from "../src/libraries/PlanParams.sol";
 
 /// @notice MERCH-07's currency half — a preference, an allowlist, and a zero default.
 ///
@@ -142,5 +146,134 @@ contract MerchantCurrencyRegistryTest is Test {
         currencies.allowCurrency(usdc, true);
 
         assertFalse(currencies.isAllowed(usdc), "an unauthorised caller changed the allowlist");
+    }
+}
+
+/// @notice The second book exists, opens, and is not the first one.
+///
+/// @dev A smoke suite rather than the corridor's behavioural tests, which plan 07-10
+///      carries. What it holds is that `CorridorFixture` builds something real: a EURC
+///      pool whose accounting currency is EURC, whose gate is open because *its own*
+///      lender was accredited and *its own* reserve was funded, and whose Tier-0
+///      headroom is a different number from the dollar book's. That last assertion is
+///      the one that would catch B-2a not having landed — two instances agreeing would
+///      mean one is reading the other's pool.
+contract CorridorFixtureSmokeTest is CorridorFixture {
+    function setUp() public {
+        _deployStack();
+        _prepareCorridorOrigination();
+    }
+
+    function test_theEurcBookOpensForOrigination() public view {
+        assertEq(address(eurcPool.token()), address(eurc), "the second book is not denominated in EURC");
+        assertTrue(eurcPool.originationOpen(), "the EURC book will not front anything");
+        assertEq(
+            eurcFxRouter.accountingToken(),
+            address(eurc),
+            "the corridor's identity router normalizes the wrong currency"
+        );
+        assertEq(
+            checkout.fxRouterOf(address(eurc)),
+            address(eurcFxRouter),
+            "the corridor does not resolve to its own router"
+        );
+    }
+
+    /// @notice A EURC plan originates end to end, and the money lands in two currencies.
+    ///
+    /// @dev The fixture's origination helper, exercised rather than shipped untested —
+    ///      an unrun helper is a helper plan 07-10 would discover does not work. What it
+    ///      demonstrates is the whole B-2b split in one transaction: the merchant's
+    ///      settlement stays in the plan's own currency and reaches the escrow as EURC,
+    ///      while the withholding is converted through the guard and reaches the
+    ///      single-currency bond ledger as dollars. The merchant is not paid less for it;
+    ///      the withheld reserve simply changes denomination.
+    function test_aEurcPlanOriginatesAndTheTwoLegsLandSeparately() public {
+        // Read from the corridor's own registry, which is the point: `MIN_TICKET` is a
+        // money row and a EURC plan is measured against the EURC set.
+        // 90 rather than 100: the Tier-0 cap for a pseudonymous first-timer is exactly
+        // 100e6, and 100 loaded by the 5% corridor haircut is 105. That is the haircut
+        // binding, and `test_theCorridorHaircutLoadsTheHeadroom` below is where it is
+        // asserted rather than worked around.
+        uint256 principal = 90e6;
+        uint256 mdr = (principal * 400) / PlanParams.BPS;
+        uint256 net = principal - mdr;
+        uint256 withheldEurc = (net * merchants.vestingBpsFor(merchant)) / PlanParams.BPS;
+        assertTrue(withheldEurc > 0, "the fixture's merchant is seasoned, so nothing is withheld");
+
+        uint256 bondBefore = merchants.bondOf(merchant);
+
+        _originateEurcPlan(principal, 7, keccak256("corridor-smoke"), 5000e6);
+
+        // The merchant's leg never left EURC, and it is exactly the invoice less MDR
+        // less the withholding. The haircut loaded the credit headroom and took nothing.
+        assertEq(
+            eurc.balanceOf(address(settlementEscrow)),
+            net - withheldEurc,
+            "the merchant's settlement was not held in the plan's own currency, in full"
+        );
+
+        // The withholding crossed once, at the attested mid, into the ledger's currency.
+        assertEq(
+            merchants.bondOf(merchant) - bondBefore,
+            (withheldEurc * EUR_USD_E18) / 1e18,
+            "the withheld reserve did not reach the bond ledger in its own currency"
+        );
+
+        // And the exposure the bond is priced off is the converted figure, not the raw
+        // one — the two call sites of `_bondEquivalent`, seen from the ledger's side.
+        assertEq(
+            merchants.outstandingFrontedFor(merchant),
+            (principal * EUR_USD_E18) / 1e18,
+            "a EURC principal entered the single-currency exposure ledger unconverted"
+        );
+
+        // The dollar book funded none of it.
+        assertEq(creditPool.merchantExposure(merchant), 0, "the dollar book fronted a EURC plan");
+        assertEq(eurcPool.merchantExposure(merchant), principal, "the EURC book did not front its own plan");
+    }
+
+    /// @notice FX-04. The corridor haircut is what refuses a plan the dollar book takes.
+    ///
+    /// @dev A pseudonymous first-timer's Tier-0 cap is exactly 100e6 on both books,
+    ///      because the two parameter sets are seeded at parity. The identical 100-unit
+    ///      plan therefore originates in dollars and is refused in euro — at **105e6
+    ///      against 100e6**, which is the raw principal loaded by the 5% haircut and
+    ///      nothing else. The currency risk the book carries from origination to the last
+    ///      due date is priced there, in credit, where an LP can see it.
+    function test_theCorridorHaircutLoadsTheHeadroom() public {
+        CheckoutRouter.OriginationInput memory input = _eurcOriginationInput(
+            _eurcTerms(PRINCIPAL, COUNT, 9),
+            keccak256("corridor-haircut"),
+            5000e6,
+            _eurcMid(keccak256("corridor-haircut"))
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CheckoutRouter.LimitExceeded.selector,
+                PRINCIPAL + (PRINCIPAL * 500) / PlanParams.BPS,
+                PRINCIPAL
+            )
+        );
+        checkout.originate(input);
+
+        // The control: the same size, the same borrower, the same merchant, on the book
+        // whose currency is the router's base. Nothing is loaded and it goes through.
+        _checkoutDefault();
+    }
+
+    /// @notice The two books are two balance sheets, measured rather than asserted.
+    /// @dev They are capitalised differently on purpose. If these agreed, one
+    ///      `Tier0Underwriter` would be dividing by the other's `totalAssets()`.
+    function test_theTwoBooksHaveSeparateHeadroom() public view {
+        assertTrue(
+            eurcPool.totalAssets() != creditPool.totalAssets(),
+            "the two books are capitalised identically, so the next assertion proves nothing"
+        );
+        assertTrue(
+            eurcTier0.bookHeadroom() != tier0.bookHeadroom(),
+            "the EURC underwriter is reading the dollar book's assets"
+        );
     }
 }
