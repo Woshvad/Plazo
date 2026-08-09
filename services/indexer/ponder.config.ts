@@ -132,6 +132,8 @@ import {
 
 import {arcTransport} from "./src/transport.js";
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+
 const PLAN_FACTORY = process.env["PLAZO_PLAN_FACTORY_ADDRESS"] as `0x${string}` | undefined;
 const START_BLOCK = process.env["PLAZO_START_BLOCK"];
 
@@ -144,7 +146,25 @@ const START_BLOCK = process.env["PLAZO_START_BLOCK"];
  * have to take the indexer down between steps.
  */
 const at = (name: string): `0x${string}` =>
-  (process.env[name] as `0x${string}` | undefined) ?? "0x0000000000000000000000000000000000000000";
+  (process.env[name] as `0x${string}` | undefined) ?? ZERO_ADDRESS;
+
+/**
+ * An address this file records but the indexer **compares against** rather than watches.
+ *
+ * Deliberately not `at`, and the distinction is the point rather than a style choice.
+ * `at` and `watch` are about *sources*: something Ponder subscribes to, backfills, and
+ * must therefore be given a start block (DEC-54, measured — an unconfigured contract on
+ * `at` alone spent 30% of one run's `eth_getLogs` calls on the zero address). Nothing is
+ * swept from an address obtained here, so there is no start block to pair it with and
+ * pairing one would be a lie about what happens to it.
+ *
+ * Keeping the two apart also keeps the DEC-54 diff gate readable. That gate asserts no
+ * new `at(` appears in this file, because a new `at(` used to mean a source registered
+ * without a start block; an address that is not a source should not have to be argued
+ * past it.
+ */
+const comparedAgainst = (name: string): `0x${string}` =>
+  (process.env[name] as `0x${string}` | undefined) ?? ZERO_ADDRESS;
 
 /**
  * Every address a contract has ever been deployed at, newest first.
@@ -428,4 +448,4 @@ export default createConfig({
  * produces an empty sweep stream rather than a stream that claims every collection was
  * payroll.
  */
-export const PAYROLL_SWEEPER = at("PLAZO_PAYROLL_SWEEPER_ADDRESS");
+export const PAYROLL_SWEEPER = comparedAgainst("PLAZO_PAYROLL_SWEEPER_ADDRESS");
