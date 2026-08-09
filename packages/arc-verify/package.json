@@ -9,7 +9,9 @@
     "arc-slice": "./dist/slice-cli.js",
     "arc-faucet": "./dist/faucet-cli.js",
     "arc-fx-spike": "./dist/fx-spike-cli.js",
-    "arc-inflow": "./dist/inflow-cli.js"
+    "arc-inflow": "./dist/inflow-cli.js",
+    "arc-corridor": "./dist/corridor-cli.js",
+    "arc-xch01": "./dist/xch01-cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -21,7 +23,9 @@
     "spike:cctp": "tsx src/spike-cli.ts",
     "spike:fx": "tsx src/fx-spike-cli.ts",
     "inflow": "tsx src/inflow-cli.ts",
-    "gov08": "tsx src/gov08-cli.ts"
+    "gov08": "tsx src/gov08-cli.ts",
+    "corridor": "tsx src/corridor-cli.ts",
+    "xch01": "tsx src/xch01-cli.ts"
   },
   "dependencies": {
     "@plazo/plan-core": "workspace:*",
