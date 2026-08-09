@@ -1032,3 +1032,247 @@ chain 5042002 is gated on obtaining EURC, and obtaining EURC is a captcha-gated 
 Foundry proof of the corridor is complete and green against `MockArcEurc`; only the live witness
 defers. It sits in `07-VALIDATION.md`'s Manual-Only table rather than as a green tick, because a
 deferred assertion that reads as a delivered one is worse than an absent one.
+
+---
+
+### Finding 35 — the corridor deployed in one broadcast, and three authorities the plan's rewire list did not name
+
+**Broadcast** `DeployCorridor.s.sol` on chain 5042002, block **56,051,844**. Seventeen top-level
+creations plus two nested `TrancheToken`s, and twenty-eight wires, in one run.
+
+| | |
+|---|---|
+| Deployer | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` |
+| Balance before | 80.432950115415575 (18-dec native) = **80.432950 USDC** |
+| Balance after | 79.588537469415575 = **79.588537 USDC** |
+| **Measured cost, as a balance delta** | **0.844413 USDC** |
+| Foundry's pre-flight estimate | 2.150070 USDC at an estimated 41 gwei |
+| Gas estimated | 52,440,721 |
+
+The estimate was 2.5x the truth because Arc's base fee sat at its 20 gwei floor rather than at the
+41 the estimator assumed. Recorded as a **measured delta and not as a quote** (DEC-32); the quote
+would have been wrong in the expensive direction, which is the safe one to be wrong in but is
+still not a measurement.
+
+**The eighteen new record keys, every one confirmed to hold code.**
+
+| Key | Address | Bytes |
+|---|---|---|
+| `fxParameterRegistry` (USDC) | `0x842581672c6dc68e74ae645b7827ec8d57c6dcd1` | 2,000 |
+| `eurcParameterRegistry` (EURC) | `0x9bea011716f44ad96ca39b7a87a71017e4dbd795` | 2,000 |
+| `fxRouterEurc` | `0x3c6fb691b229b77db3ddd2da7b727f4393154cd3` | 369 |
+| `eurcPool` | `0x435998554e99ce0caefdd0988569665f5ccff7fc` | 22,692 |
+| `eurcSeniorShares` | `0x8cff7bc4de2cdb20916b1ec3b31f7c1e8031f4b9` | 3,981 |
+| `eurcJuniorShares` | `0x0657c99b5b5c55d5d1231272e1cff21399ea7e3f` | 3,981 |
+| `fxDeviationGuard` | `0x37a7db8f9b692bfab56f0f131acb96ee77ae5e0b` | yes |
+| `ammVenue` | `0x69731eb6fedf5c65621ac0042bf7c6df6bcafd26` | yes |
+| `stableFxVenueStub` | `0x4d8e1cd3a70efdfc7cd9fb830002e2d095687ec6` | 576 |
+| `pledgeVault` | `0x81437d8fa662a5119ef15fe88300ee69899e1fbb` | 5,623 |
+| `payrollSweeper` | `0x822a113c9faacd230895487f79e4544de8a04621` | 3,080 |
+| `tieredUnderwriter` (USDC) | `0xf6a36ebdaca2554685bd8e32dde663c8608a91c5` | 7,254 |
+| `eurcTier0Underwriter` | `0xfccb8f6cb793240a7730af94ecedda8db87be5a2` | 6,889 |
+| `eurcTieredUnderwriter` | `0x01df580518a96f16026b5bf1d0f5677549624ece` | 7,254 |
+| `partnerUnderwriterStub` | `0x37d3d94d4c675825f73321f90a8eb4d8af217596` | 535 |
+| `merchantCurrencyRegistry` | `0xeb93b0666334a488d180ab757649a0b391925a71` | 1,904 |
+| `checkoutRouterLegacyV2` | `0x19ca030eca2dd611bb74a178204f1efdce139f9f` | 16,634 |
+| `rewireBlock2` | 56,051,844 | — |
+
+The live router is now `checkoutRouter` = `0x652cb3f5d43678a92ba6b092c9eef32bc2d7d076`.
+
+**Three authorities the plan's rewire list did not name, each read off the chain before the
+script was written (finding 30, DEC-73), each forced.**
+
+1. **`PlanFactory.setOriginator`.** `planFactory.originator()` read `0x19Ca030e...` and
+   `PlanFactory.originate` refuses any caller that is not `originator`. A rewire that moved the
+   pool's originator and not the factory's would have deployed a router that passes every gate and
+   reverts at plan creation. `setOriginator` therefore appears **three** times in the script and
+   not two, and the acceptance gate's "returns 2" is wrong in the direction that would have
+   shipped a dead router.
+2. **`SettlementEscrow` had to be redeployed.** `setRouter` reverts `RouterAlreadySet` once set —
+   deliberately, because a rotatable router on a contract holding merchant money is an admin key
+   that can redirect where a settlement is pulled from — and `settlementEscrow.router()` already
+   read `0x19Ca030e...`. Since `SettlementCategory.Escrowed` is ordinal zero, *every* unseasoned
+   merchant escrows, so a new router pointed at the old escrow would have reverted `OnlyRouter` on
+   every origination. The new escrow reuses `escrowParameterRegistry`, which already defines the
+   three escrow rows.
+3. **`RefundEscrow` had to be redeployed**, because it takes the router as a constructor argument.
+   `MerchantRegistry.SLASHER_ROLE` moved to the new one (D-03).
+
+**Nothing was revoked, from anything (D-24).** `creditPool.openPlans()` read **0** before the
+broadcast and the EURC book opened at 0. The superseded router still holds `ISSUER_ROLE`,
+`BOOKKEEPER_ROLE`, `REGISTRAR_ROLE` and `READER_ROLE` — verified still held, on purpose:
+`recognise` is permissionless and `poolOf[planId]` for every plan it originated lives there.
+
+**The registries do not agree, and that is the second-order hazard made concrete.** Four instances
+now answer the same key and two of them answer in a different currency. The record carries a
+`registryCurrencies` map for exactly that reason. Measured:
+
+| Key | live `0x753e08a6...` | `fxParameterRegistry` | `eurcParameterRegistry` |
+|---|---|---|---|
+| `plazo.tier0.bookShareBps` | **2500** (governed) | 1000 | 1000 |
+| `plazo.merchant.bondFloor` | **0** (governed) | 250 USDC | 250 EUR |
+| `plazo.concentration.merchantBps` | **2500** (governed) | 2000 | 2000 |
+| `plazo.fx.corridorHaircutBps` | **undefined** | 500 | 500 |
+| `plazo.tier2.pledgeHaircutBps` | **undefined** | 2000 | 2000 |
+
+A constructor seeds from compiled constants, so **a fresh instance does not inherit a governed
+value**. The live registry's three governed rows did not carry across, and the EURC book's Tier-0
+book share consequently starts at 1000 bp where the dollar book's live figure is 2500. That is a
+recalibration for the standing cohort track through `set` inside the compiled band, not a defect —
+but a reconciliation that did not say which instance it read would report it as one. DEC-90: the
+EURC set's parity with the USD set is a **launch hypothesis**, not a measurement.
+
+**The blunt D-24 grep gate fired on a log string.** The non-comment sweep matched
+`console.log("nothing was revoked from it...")`. Same class as DEC-94's `PAUSER` hit on a comment.
+Resolved by rewording the log line rather than by narrowing the gate to exclude string literals —
+narrowing it would be widening it for the convenience of one line, and the sentence says the same
+thing either way.
+
+**A bare local `forge script` run cannot be the finding-10 gate for this script, or for
+`Rewire.s.sol`.** Both read live contracts, and on an empty local EVM the first `openPlans()`
+reverts `call to non-contract address` — measured. The gate that actually proves no token moves is
+the **fork simulation**: `forge script ... --rpc-url arc_testnet` with no `--broadcast`, which
+executed the whole body against live state and completed. The USDC precompile is never touched;
+the EURC and USYC reads that do happen are ordinary contracts a fork can execute.
+
+---
+
+### Finding 36 — MERCH-07 closed against the deployed bytecode, and the corridor read back off the chain
+
+`pnpm --filter @plazo/arc-verify corridor` — **104 checks passed, 0 failed, 12 noted and not
+counted**, `branch UNFUNDED`, exit **0**. Measured balance delta across the run: **0 USDC**. The
+module writes nothing and can write nothing.
+
+**The funding precondition, read first.**
+
+| | |
+|---|---|
+| Deployer | `0xF4ee61950B63cCA5C82f1146484d018Ac95Bd0F2` |
+| USDC held | **79.588537 USDC** |
+| USDC still required (credit half) | **87.840000 USDC** — shortfall **8.251463** |
+| EURC held, deployer + three derived collection addresses | **0 EURC** |
+| `EURC_SEED_REQUIRED` | **375 EURC** |
+| **EURC shortfall** | **375 EURC** — 19 faucet trips at ~20 per address, if EURC drips at all |
+
+The USDC gap moved from the 7.41 STATE.md records to **8.251463**, because this deployment spent
+0.844413. Before a faucet trip: **46 USDC is still recoverable** by `withdrawBond` on the
+superseded `MerchantRegistry` at `0xcbab6e5e...` — merchant-callable, `requiredBond` reads zero, no
+fronted exposure outstanding. It closes the credit half of the gap and not the EURC half.
+
+**MERCH-07, both halves, against the deployed addresses (E-11, D-13, DEC-73).**
+
+*Chain half* (Phase 6), against `PayoutRouter` `0xa27adaf8...`:
+
+- `supportsDomain(6)` -> `true`; `supportsDomain(0)` -> `true`
+- `queued(token, recipient, domain)` takes **three** arguments and answered `0` (DEC-36 — a
+  two-key queue would let any stranger choose where a merchant's settlement lands, and the burn is
+  irreversible)
+
+*Currency half* (Phase 7), against the deployed corridor:
+
+- `MerchantCurrencyRegistry.payoutCurrencyOf(unconfigured)` -> `address(0)` — the plan's own
+  currency, always payable since the pool already holds it (DEC-118)
+- `isAllowed(EURC)` -> `true`; `isAllowed(USDC)` -> `true`
+- `checkoutRouter.fxRouterOf(EURC)` -> `0x3C6FB691...`, and **that router's `accountingToken()`
+  reads EURC** — E-01 in one constructor argument, no second contract
+
+**Both halves have landed, so MERCH-07 is closed.** The chain half was Phase 6's; the currency
+half is this deployment's; both are now verified against bytecode rather than against source.
+
+**The finding-30 defence, run in full.** Every selector the new router will invoke was `eth_call`ed
+by name against every contract it depends on. `MerchantRegistry.categoryOf` — the exact selector
+that reverted on the vintage-3 registry while `vestingBpsFor`, `payoutRouteOf` and
+`velocityCapFor` all answered — was probed first and answered `0`. Thirty-six selector probes in
+total, all answering. `corridorConfigOf(USDC)` and `corridorConfigOf(EURC)` each returned **three
+non-zero fields**, so `CorridorIncomplete` is unreachable by omission on either corridor.
+
+**B-2a proven by distinctness, not by assertion.** The two `ParameterRegistry` instances, the two
+`Tier0Underwriter`s, the two `TieredUnderwriter`s, the two pools, the two `IdentityFXRouter`s and
+both tranche-token pairs are all pairwise different addresses. The consequence is visible in one
+pair of numbers: `Tier0(USD).bookHeadroom()` reads **87,144,687** and `Tier0(EUR).bookHeadroom()`
+reads **0**, because the EURC book holds no capital. A single instance would have reported the
+dollar figure for a euro plan.
+
+Both new registries define **all fifteen** of plan 07-02's rows. The live registry defines
+**neither** `plazo.tier2.pledgeHaircutBps` nor `plazo.fx.parBandBps` — measured, which is DEC-72
+and finding 29 confirmed on chain rather than reasoned about.
+
+**The funded branch is declared and not written.** `runTheCorridorLoop()` throws with its full
+specification in its docstring, on `gov08.ts`'s `runTheLoop()` precedent (T-07-12-11). EURC held is
+zero; shipping hundreds of lines of capitalisation-and-origination code that has never executed
+against Arc, for a funded operator to run blind, is the hazard findings 20-27 exist to prevent.
+
+**Cross-currency merchant settlement remains unwitnessable on the shipped configuration.**
+`AmmVenue.supportsPair(USDC, EURC)` -> **`false`**, as designed: the router is `address(0)`
+(finding 34, DEC-93), and `StableFxVenueStub` reverts `NotAccessible` because StableFX access is
+KYB/AML-gated and not held (E-03). The Foundry proof is complete and green —
+`test_currencyLegsAreIndependent` covers all four combinations against a mock venue — so what
+defers is the live witness and nothing else. It has a Manual-Only row, not a green tick.
+
+---
+
+### Finding 37 — XCH-01 has an owner and a measured gap, and its sharpest assertion needs no capital
+
+`PLAZO_XCH01=1 pnpm --filter @plazo/arc-verify xch01` — **14 checks passed, 0 failed, 2 noted**,
+`branch UNFUNDED`, exit **0**. Nothing was spent on either branch and nothing could be.
+
+**The precondition, read first, in the three units the gap is actually paid in.**
+
+| | |
+|---|---|
+| Origin chain | **84532 — Base Sepolia**, Gateway/CCTP domain **6** |
+| `PLAZO_XCH01_ORIGIN_RPC_URL` | **not configured** |
+| Origin EOA (`PLAZO_XCH01_ORIGIN_KEY`) | **NONE** |
+| Origin USDC held | **unreadable** — no RPC, no key |
+| `XCH01_REQUIRED` | **3.000000 USDC** = 1.00 deposit + 2.00 unmeasured Gateway fee allowance |
+| Origin USDC shortfall | **3.000000 USDC** — 1 faucet trip |
+| Origin native gas required | **0.002 ETH** — `approve` + `GatewayWallet.deposit`, a **second unit** |
+| Origin gas shortfall | **0.002 ETH** |
+| Arc USDC held | 79.588537 (1.000000 required for the mint submission) |
+
+**This is a precondition that was not met, not a failure, and what is missing is an access item
+rather than a code item.** Gateway burn intents accept **EOA signatures only** (DEC-38), and
+DEC-01 keeps the tranche shares as transfer-restricted Reg-D securities held by institutions — so
+the lender surface assumes a multisig signer, and XCH-01 needs an EOA on a second
+Gateway-supported testnet that this project does not hold. The 2.00 fee allowance is stated as an
+**allowance and named as unmeasured**: DEC-32 measured CCTP's protocol fee out of Arc at exactly
+zero, but Gateway is a different rail and this project has never seen a Gateway invoice.
+
+**The zero-capital assertion, which is the point of running the unfunded branch at all (DEC-37).**
+
+- The Gateway EIP-712 domain has **exactly two fields**, `name` and `version` — no `chainId`, no
+  `verifyingContract`
+- `keccak256("EIP712Domain(string name,string version)")` =
+  `0xb03948446334eb9b2196d5eb166f69b9d49403eb4a12f36de8d3f9f3cb8e15c3`, matching
+  `circlefin/evm-gateway-contracts@ee628dc` `src/lib/EIP712Domain.sol`
+- The two-field separator is `0x23a37920eca61226...`; the four-field one is `0x297b0976d4022f33...`.
+  **Different values entirely**, and a signature against the second is invalid with nothing
+  reporting an error
+
+**Demonstrated firing, twice.** `assertTwoFieldDomain` is handed a domain with `chainId` added on
+every run and must refuse it — a permanent negative control rather than a one-off. And the
+constant itself was mutated to `{name, version, chainId: 5042002}` and the run watched going red:
+
+```
+XX  the domain has exactly two fields — name, version, chainId
+XX  no chainId — the four-field form is wrong here
+XX  assertTwoFieldDomain accepts the correct domain
+ok  and refuses one with chainId added
+EXIT=1
+```
+
+Three checks red and a non-zero exit. Reverted, re-run green, `git status --porcelain` clean.
+
+**Both routes' Arc side still answers.** `GatewayWallet` and `GatewayMinter` hold code (163 bytes
+each — they are proxies); both report `domain() == 26`; `GatewayMinter.isTokenSupported(ARC_USDC)`
+-> `true`. The CCTP fallback: `MessageTransmitterV2.localDomain() == 26` and
+`TokenMessengerV2.localMinter()` names the recorded `TokenMinterV2` `0xb43db544...`.
+
+**Still true, and the reason XCH-01 does not tick:** no burn intent has ever been signed and
+accepted, and **no USDC has ever moved into Arc**. Phase 6 burned 1.000000 out of Arc at a measured
+zero protocol fee (DEC-32, finding 28); the inbound half of both routes has never run. The funded
+branch is declared and not written, on `gov08.ts`'s `runTheLoop()` precedent.
+
+**XCH-01's owner is now Phase 7**, its traceability row says so, and its Manual-Only row in
+`07-VALIDATION.md` carries this exact command with its precondition — so the next owner does not
+have to reconstruct it. It is **not ticked**, because its evidence is a deferred manual row.
