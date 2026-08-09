@@ -1,5 +1,5 @@
 /**
- * The Plazo event schema, version 4.
+ * The Plazo event schema, version 5.
  *
  * The schema is the API. Four surfaces, an indexer, a merchant SDK and every LP
  * report read it, so changing it after they exist is a full-stack refactor rather
@@ -129,10 +129,135 @@
  * `SettlementEscrow.RouterSet` is deliberately not listed. It is the one-way wiring call
  * of DEC-42, it fires once per deployment, and the deployment artefact already records
  * the answer; an indexer that subscribed to it would be storing a constant.
+ *
+ * ## What changed in v5, and why this one is not additive either
+ *
+ * The corridor and the credit ladder. Phase 7 built the FX deviation guard, the pledge
+ * vault, the payroll sweeper, the tiered underwriter composite and the merchant currency
+ * registry. Fifteen events describe them on chain. **Nine are listed here and six are
+ * deliberately not, and the six are the substance of this bump rather than a gap in it.**
+ *
+ * ### The bump is not additive, and the hash is not what says so
+ *
+ * Nothing above was removed, renamed or given a different field, and `computeSchemaHash`
+ * covers exactly names, types, indexed flags and field order. On the evidence the hash
+ * can see, v5 is a pure append. That is precisely why the determination had to be made by
+ * walking the definitions instead of by reading the diff.
+ *
+ * **`TranchedCreditPool` stopped being a singleton.** Phase 7 deploys a second instance
+ * for the EURC corridor, so all nineteen pool definitions above now describe *a* book
+ * where a v4 consumer read them as *the* book. No log changed. What changed is that the
+ * emitting address became part of the key and was not before. `EpochClosed(1, …)` is two
+ * facts now; `RedeemRequested(tranche, holder, …)` is a position in one of two queues;
+ * `QueueFilled`'s "one fill per tranche per epoch, at one rate" is one fill *per book*
+ * per tranche per epoch, and a consumer checking POOL-09's uniformity across both books
+ * at once would read two correct rates as one violated invariant. A consumer that keyed
+ * any of these by anything other than the emitting address is not merely incomplete — it
+ * is summing two balance sheets into one NAV and reporting the total as either book's.
+ *
+ * So the migration for a v4 consumer is **not** "ignore what you do not know", for the
+ * first time in this file's history. It is: add the emitting address to the key of every
+ * pool-derived row you hold, and re-derive the rows you already wrote. A v4 block range
+ * replayed with v4's definitions remains correct, because there genuinely was one pool in
+ * that range — which is what makes keeping v4's hash in `PRIOR_SCHEMA_HASHES` load-bearing
+ * rather than courteous. The hash is how a replay knows which ranges it may key by
+ * `epoch` alone and which it may not.
+ *
+ * The second candidate was checked and rejected. `CheckoutRouter` is redeployed again, so
+ * there are now three vintages of it; but a redeployment moves an address, not a meaning,
+ * and `OriginationCompleted` says the same thing from all three. That is a configuration
+ * problem for the indexer, handled in `ponder.config.ts`, and not a schema one.
+ *
+ * ### Six events on chain that this file declines to name
+ *
+ * Listing an event here is an instruction: the indexer subscribes to it and materialises
+ * it into a public, queryable table. Declining to list one is the only privacy lever this
+ * file has once a contract is written, and it is a documented lever — see `abiForContract`,
+ * which says a contract emitting an event this file does not list is a contract the
+ * indexer will not index, deliberately.
+ *
+ * **`PledgeVault.PledgeBound`, `.PledgeUnbound` and `.PledgeSeized` are not listed.** Each
+ * pairs an indexed `planId` with an indexed wallet, and on the only path that emits them
+ * in production the wallet is the plan's own counterparty: `TieredUnderwriter.bindPlan`
+ * passes the same address it computed the offer for straight through to
+ * `PledgeVault.bindPlan`, and its own docstring says why — the collateral secures a plan
+ * the pledger themselves took. Indexing that stream gives a permanent, enumerable
+ * wallet → plans map, and `PledgeSeized` makes it a wallet → defaults map. That is a
+ * public credit file with the salt taken off, which is the exact exposure the Passport
+ * plane keys by `keccak256(prefix | salt | subject)` to prevent, one layer out.
+ *
+ * The omission costs one thing and it is worth stating: the collateral recovery behind a
+ * Tier-2 default is not in the indexed stream. What is: `TranchedCreditPool.LossAbsorbed`
+ * and `InstallmentPlan.PlanChargedOff` for the credit loss, both keyed by `planId`. The
+ * seized asset is USYC and `seize` deliberately does not convert it, so it was never going
+ * to reconcile against the book from a log in any case; the recovery is reconciled in the
+ * operator's private schema, joined on `planId`, which is the side of the line where a
+ * wallet may legitimately live. And the live binding is not hidden — `bindingOf(planId)`
+ * is a public view. What the log would add over that view is the reverse direction and
+ * the history after `delete`, which are the two properties that turn a collateral position
+ * into a credit file.
+ *
+ * **`PayrollSweeper.SweepOptedIn`, `.SweepOptedOut` and `.Swept` are not listed**, for the
+ * same reason and one more. All three carry the plan's counterparty as an indexed address
+ * beside a `planId`; the two consent events move no money at all, so listing them would
+ * create a wallet-keyed register of who is on salary deduction that exists nowhere else,
+ * and `isOptedIn(planId, who)` already answers the question per plan for anyone entitled
+ * to ask it. The one more is that `Swept` is redundant: a sweep settles an installment
+ * through `InstallmentPlan.repay`, so the plan's own `CheckCleared(planId, index, amount,
+ * keeper)` already records it with the sweeper's contract address in `keeper`. "This
+ * installment was settled by payroll deduction" is a comparison against one configured
+ * address, not a second event. The only field lost is the residue, which is the payer's
+ * own change coming back to them in a `Transfer` in the same transaction.
+ *
+ * This is the same judgement `SettlementEscrow.RouterSet` gets, applied to a privacy case
+ * rather than a constancy case, and it is the judgement plan 07-05 handed forward when it
+ * wrote that `Swept` "would need the salted-subject treatment before it becomes a
+ * Passport-adjacent event". It does. Until the contracts can reach a salt — which today
+ * they cannot, because the salt lives in `PlazoPassport` and neither contract knows it —
+ * the honest answer is not to build the table.
+ *
+ * **`TieredUnderwriter.PartnerSet` is not listed**, on the constancy branch of the same
+ * judgement. It fires at wiring, the current value is a public getter, and the Tier-3
+ * limit it governs is the partner's own answer and is not on chain — so unlike
+ * `ParameterSet`, which is listed precisely because it moves a number a lender can price,
+ * a log of who the partner is buys a consumer nothing it can act on. When Tier 3 quotes on
+ * chain, this gets listed beside the thing it moves.
+ *
+ * `MerchantCurrencyRegistry.CurrencyAllowed` and `CheckoutRouter.CorridorSet` were put to
+ * the same test and **included**, which is what makes the judgement a judgement rather
+ * than a habit. `CurrencyAllowed` is `DomainDenied` in a different plane: DEC-112 has
+ * `payoutCurrencyOf` re-read the allowlist on every call, so withdrawing an allowance
+ * silently sends a merchant's settlements back to dollars, and "when did it stop and who
+ * did it" is unanswerable from a current-value getter. `CorridorSet` is not one-way and
+ * not once-per-deployment — it wires one corridor's token to its FX router, its parameter
+ * registry and its underwriter, there will be one per corridor, and the deployment record
+ * holds a single router key rather than a per-token map, so for corridor two onwards the
+ * artefact does not already record the answer.
+ *
+ * ### The pledge that is listed, and why the wallet on it is allowed
+ *
+ * `Pledged`, `Released` and `YieldPaid` keep an indexed wallet, and the argument is the
+ * v3 redemption-queue argument rather than an inheritance of the merchant rule. Each names
+ * a capital position and no plan: what it discloses is that an address deposited or
+ * withdrew collateral, which `pledgedValueOf(address)` and `lockedOf(address)` already
+ * answer for any address anyone cares to type, exactly as an ERC-20's holder set is
+ * already public in every `Transfer`. Withholding it would protect nothing and would stop
+ * a capital provider seeing their own position without an archive query.
+ *
+ * The distinction being drawn is not "who the address belongs to" — very often it is the
+ * same person on both sides — it is **whether the event joins that address to a plan**.
+ * The three that do are the three that are missing. That line is drawn here rather than
+ * left to the reader because a pledger is not obviously a business counterparty the way a
+ * merchant is, and a rule that has to be re-derived at each addition is a rule that will
+ * eventually be derived the convenient way.
+ *
+ * `TieredOrigination` is the other side of the same line and is the UW-07 boundary itself:
+ * `planId`, tier, principal, and nothing else. No person id, no wallet, and none of the
+ * inputs the tier was computed from. Only the answer crosses.
  */
 import {keccak256, toHex} from "viem";
 
-export const SCHEMA_VERSION = 4 as const;
+export const SCHEMA_VERSION = 5 as const;
 
 export interface EventField {
   name: string;
@@ -922,6 +1047,116 @@ const SERVICING_EVENTS: EventDefinition[] = [
   },
 ];
 
+/**
+ * The corridor. Added in v5 — the deviation guard, the merchant's payout currency and
+ * the per-token wiring a second currency forces.
+ *
+ * Nothing on this plane names a person. A corridor is a pair of tokens, a venue is a
+ * contract, and a merchant is a business counterparty indexed under the v4 rule.
+ */
+const CORRIDOR_EVENTS: EventDefinition[] = [
+  {
+    name: "FillGuarded",
+    contract: "FxDeviationGuard",
+    fields: [
+      field("corridor", "bytes32", true),
+      field("venue", "address", true),
+      field("amountIn", "uint256"),
+      field("amountOut", "uint256"),
+      field("floor", "uint256"),
+    ],
+    purpose:
+      "FX-04. Every fill that cleared the guard, with the floor it had to clear. `floor` is emitted rather than recomputed because it was derived from a signed mid that has since been consumed — an observer checking the band after the fact has no way to reconstruct it, and a guard whose threshold is unauditable is a guard nobody can hold to account.",
+  },
+  {
+    name: "PayoutCurrencySet",
+    contract: "MerchantCurrencyRegistry",
+    fields: [field("merchant", "address", true), field("currency", "address", true)],
+    purpose:
+      "A merchant electing the currency they are settled in. Indexed on both sides: a merchant enumerates their own history, and an operator enumerates who is exposed to a currency before withdrawing its allowance. Carries the election, not the effect — DEC-112 re-reads the allowlist at payout, so what this event records is what was asked for and never a promise about what will be paid.",
+  },
+  {
+    name: "CurrencyAllowed",
+    contract: "MerchantCurrencyRegistry",
+    fields: [
+      field("currency", "address", true),
+      field("allowed", "bool"),
+      field("by", "address", true),
+    ],
+    purpose:
+      "`DomainDenied` in the currency plane. DEC-112 has `payoutCurrencyOf` re-read this allowlist on every call, so withdrawing an allowance silently returns every merchant who elected that currency to dollars — and a merchant asking why needs when it stopped and who did it, which a current-value getter cannot answer.",
+  },
+  {
+    name: "CorridorSet",
+    contract: "CheckoutRouter",
+    fields: [
+      field("token", "address", true),
+      field("fxRouter", "address"),
+      field("parameters", "address"),
+      field("underwriter", "address"),
+      field("by", "address", true),
+    ],
+    purpose:
+      "One corridor's token wired to the FX router, parameter registry and underwriter that price it. Listed where `SettlementEscrow.RouterSet` is not, because it is neither one-way nor once-per-deployment: there is one of these per corridor, and the deployment artefact holds a single router key rather than a per-token map, so from the second corridor onwards it does not already record the answer.",
+  },
+];
+
+/**
+ * The credit ladder. Added in v5 — pledged collateral and the tier composite.
+ *
+ * **Six of Phase 7's underwriting events are absent by decision, not by oversight**, and
+ * the header says which and why at length. The short form: an event that joins a wallet
+ * to a `planId` is a credit file once it is indexed, and three pledge events and three
+ * sweep events do exactly that. What is left names a capital position with no plan
+ * attached, or a plan with no wallet attached, and never both.
+ */
+const UNDERWRITING_EVENTS: EventDefinition[] = [
+  {
+    name: "Pledged",
+    contract: "PledgeVault",
+    fields: [
+      field("pledger", "address", true),
+      field("amount", "uint256"),
+      field("shares", "uint256"),
+    ],
+    purpose:
+      "UW-06. Dollar collateral in, against vault shares. The wallet is indexed on the v3 redemption-queue reasoning rather than the merchant one: this names a capital position and no plan, `pledgedValueOf(address)` already answers it for any address, and withholding it would protect nothing while stopping a capital provider seeing their own position.",
+  },
+  {
+    name: "Released",
+    contract: "PledgeVault",
+    fields: [
+      field("pledger", "address", true),
+      field("amount", "uint256"),
+      field("shares", "uint256"),
+    ],
+    purpose:
+      "Collateral out. The pair of `Pledged`, and the two together are the only honest measure of how much of the vault is genuinely at risk rather than parked — a balance alone cannot distinguish capital that stayed from capital that churned.",
+  },
+  {
+    name: "YieldPaid",
+    contract: "PledgeVault",
+    fields: [
+      field("from", "address", true),
+      field("amount", "uint256"),
+      field("totalAssets", "uint256"),
+    ],
+    purpose:
+      "DEC-95. The accrual that makes 'the pledge keeps earning while it is locked' observable rather than asserted: the lock is on par, so `totalAssets` rising above the locked total is the yield the pledger may withdraw without weakening the collateral.",
+  },
+  {
+    name: "TieredOrigination",
+    contract: "TieredUnderwriter",
+    fields: [
+      field("planId", "bytes32", true),
+      field("tier", "uint8"),
+      field("principal", "uint256"),
+    ],
+    purpose:
+      "UW-07's boundary, and the whole of it. Only the tier and the amount it supported reach the chain — no person id, no wallet, and none of the inputs the tier was computed from. A counterparty may act on the tier; which wallet's collateral or income history produced it is not theirs to read off a log.",
+  },
+];
+
 export const EVENT_SCHEMA: readonly EventDefinition[] = Object.freeze([
   ...PLAN_EVENTS,
   ...POOL_EVENTS,
@@ -929,6 +1164,8 @@ export const EVENT_SCHEMA: readonly EventDefinition[] = Object.freeze([
   ...PASSPORT_EVENTS,
   ...ORIGINATION_EVENTS,
   ...SERVICING_EVENTS,
+  ...CORRIDOR_EVENTS,
+  ...UNDERWRITING_EVENTS,
 ]);
 
 /** Solidity event signature, e.g. `CheckCleared(bytes32,uint256,uint256,address)`. */
@@ -997,6 +1234,9 @@ export const INSTALLMENT_PLAN_ABI = [
 export const CHECKOUT_ROUTER_ABI = [
   "event LimitAttested(bytes32 indexed sessionId, uint8 band, address indexed attestor)",
   "event OriginationCompleted(bytes32 indexed planId, address indexed merchant, uint256 principal, uint256 mdr, uint256 withheld)",
+  // v5. Listed after the origination pair because `abiForContract` preserves
+  // `EVENT_SCHEMA` order and the corridor group is appended last.
+  "event CorridorSet(address indexed token, address fxRouter, address parameters, address underwriter, address indexed by)",
 ] as const;
 
 export const RECEIVABLE_TOKEN_ABI = [
@@ -1100,6 +1340,34 @@ export const ORIGINATION_PAUSE_ABI = [
   "event CorridorPauseSet(bytes32 indexed corridor, bool paused, address indexed by)",
 ] as const;
 
+export const FX_DEVIATION_GUARD_ABI = [
+  "event FillGuarded(bytes32 indexed corridor, address indexed venue, uint256 amountIn, uint256 amountOut, uint256 floor)",
+] as const;
+
+export const MERCHANT_CURRENCY_REGISTRY_ABI = [
+  "event PayoutCurrencySet(address indexed merchant, address indexed currency)",
+  "event CurrencyAllowed(address indexed currency, bool allowed, address indexed by)",
+] as const;
+
+/**
+ * Three of six. `PledgeBound`, `PledgeUnbound` and `PledgeSeized` exist on chain and are
+ * deliberately absent — each joins a wallet to a `planId`, and the header argues it.
+ */
+export const PLEDGE_VAULT_ABI = [
+  "event Pledged(address indexed pledger, uint256 amount, uint256 shares)",
+  "event Released(address indexed pledger, uint256 amount, uint256 shares)",
+  "event YieldPaid(address indexed from, uint256 amount, uint256 totalAssets)",
+] as const;
+
+/**
+ * One of two. `PartnerSet` is absent on the `SettlementEscrow.RouterSet` reasoning: it
+ * fires at wiring, the current value is a public getter, and the Tier-3 limit it governs
+ * is not on chain for a consumer to price against it.
+ */
+export const TIERED_UNDERWRITER_ABI = [
+  "event TieredOrigination(bytes32 indexed planId, uint8 tier, uint256 principal)",
+] as const;
+
 /**
  * Canonical hash over the whole schema.
  *
@@ -1124,27 +1392,31 @@ export function computeSchemaHash(): `0x${string}` {
  * the migration, then update this.
  */
 export const SCHEMA_HASH: `0x${string}` =
-  "0x732d16a75801f32d51c3f8b0e2f76b427a599da63d1efee9e8cf23df32e10a42";
+  "0x82c87934de04be1a8da7bd0f41c94b6967ace73395d9c56087ec5396195595a6";
 
 /**
  * Every prior schema hash, newest first.
  *
  * Kept so a migration can be verified rather than asserted: an indexer replaying
  * history knows exactly which schema each block range was written under, and a
- * reviewer can tell a deliberate bump from an accidental one. v3 is
- * `0x5805e5ca…212a9` — Phases 4 and 5's capital plane and the Passport. v2 is
- * `0x4407b0ce…4295e` — Phase 3's origination plane. v1 is `0x84a83a60…3663d` —
- * Phases 1 and 2.
+ * reviewer can tell a deliberate bump from an accidental one. v4 is
+ * `0x732d16a7…10a42` — Phase 6's merchant plane. v3 is `0x5805e5ca…212a9` — Phases 4
+ * and 5's capital plane and the Passport. v2 is `0x4407b0ce…4295e` — Phase 3's
+ * origination plane. v1 is `0x84a83a60…3663d` — Phases 1 and 2.
  *
- * Neither v3 nor v4 is additive, so this list is load-bearing rather than courteous. A
- * consumer replaying history has to decode blocks written under v2 with v2's
- * definitions, because six of them named a contract that no longer exists; and blocks
+ * None of v3, v4 or v5 is additive, so this list is load-bearing rather than courteous.
+ * A consumer replaying history has to decode blocks written under v2 with v2's
+ * definitions, because six of them named a contract that no longer exists; blocks
  * written under v3 with v3's, because two of those named events no contract ever
- * emitted. Dropping an entry here would not break a build — it would break a replay,
- * quietly, on a range nobody is looking at. `test/schema.test.ts` asserts all three by
- * value for that reason.
+ * emitted; and blocks written under **v4** with v4's, because in that range
+ * `TranchedCreditPool` was a singleton and a pool row keyed by `epoch` alone was
+ * correct. From v5 it is not, and the two ranges cannot be re-keyed by the same rule.
+ * Dropping an entry here would not break a build — it would break a replay, quietly, on
+ * a range nobody is looking at. `test/schema.test.ts` asserts all four by value for
+ * that reason.
  */
 export const PRIOR_SCHEMA_HASHES: readonly `0x${string}`[] = Object.freeze([
+  "0x732d16a75801f32d51c3f8b0e2f76b427a599da63d1efee9e8cf23df32e10a42",
   "0x5805e5cae7e607b0a68c13886383207e5053bebe5de18c59be7561c1cc6212a9",
   "0x4407b0ce57e557bf9f9c1232ddca2ee5edab6c4465b0d67e568a84a267f4295e",
   "0x84a83a60587bb9269844f7ec68d3ca09fd1e50a18d7dad7dad3e4e251af3663d",

@@ -1,3 +1,6 @@
+import {existsSync, readFileSync} from "node:fs";
+import {fileURLToPath} from "node:url";
+
 import {describe, expect, it} from "vitest";
 import {parseAbi} from "viem";
 
@@ -27,6 +30,10 @@ import {
   KILL_SWITCH_ABI,
   PARAMETER_REGISTRY_ABI,
   ORIGINATION_PAUSE_ABI,
+  FX_DEVIATION_GUARD_ABI,
+  MERCHANT_CURRENCY_REGISTRY_ABI,
+  PLEDGE_VAULT_ABI,
+  TIERED_UNDERWRITER_ABI,
   PRIOR_SCHEMA_HASHES,
   SCHEMA_HASH,
   SCHEMA_VERSION,
@@ -59,11 +66,13 @@ describe("the schema is frozen", () => {
   /**
    * The replay contract, asserted by value rather than by count.
    *
-   * Neither v3 nor v4 was additive: v3 rewrote six pool entries that named contracts
-   * nobody built, and v4 retired two merchant entries that nothing ever emitted. A
-   * consumer replaying history therefore has to decode each block range with the
-   * definitions that range was written under, and these three hashes are how it knows
-   * which is which.
+   * None of v3, v4 or v5 was additive: v3 rewrote six pool entries that named contracts
+   * nobody built, v4 retired two merchant entries that nothing ever emitted, and v5
+   * stopped `TranchedCreditPool` being a singleton so that a pool row keyed by `epoch`
+   * alone — correct through the whole v4 range — is wrong from v5 on. A consumer
+   * replaying history therefore has to decode each block range with the definitions
+   * that range was written under, and these four hashes are how it knows which is
+   * which.
    *
    * Dropping one would not break a build. It would break a replay, silently, on a
    * range nobody is currently looking at — which is precisely the class of failure a
@@ -71,6 +80,8 @@ describe("the schema is frozen", () => {
    */
   it("retains every prior hash, newest first", () => {
     expect(PRIOR_SCHEMA_HASHES).toEqual([
+      // v4 — Phase 6: the merchant plane.
+      "0x732d16a75801f32d51c3f8b0e2f76b427a599da63d1efee9e8cf23df32e10a42",
       // v3 — Phases 4 and 5: the capital plane and the Passport.
       "0x5805e5cae7e607b0a68c13886383207e5053bebe5de18c59be7561c1cc6212a9",
       // v2 — Phase 3: the origination plane.
@@ -78,11 +89,26 @@ describe("the schema is frozen", () => {
       // v1 — Phases 1 and 2: the plan and the check strip.
       "0x84a83a60587bb9269844f7ec68d3ca09fd1e50a18d7dad7dad3e4e251af3663d",
     ]);
+    expect(PRIOR_SCHEMA_HASHES).toHaveLength(4);
     expect(PRIOR_SCHEMA_HASHES).toHaveLength(SCHEMA_VERSION - 1);
   });
 
   it("does not carry the current hash in the prior list", () => {
     expect(PRIOR_SCHEMA_HASHES).not.toContain(SCHEMA_HASH);
+  });
+
+  /**
+   * The bump is only real if the hash moved.
+   *
+   * A version number incremented beside an unchanged hash is the failure this whole
+   * mechanism exists to catch from the other direction: it would tell a replaying
+   * consumer that two ranges need different definitions when they do not, and the next
+   * person to notice would "fix" it by deleting an entry.
+   */
+  it("gives v5 a hash that differs from v4's", () => {
+    const v4 = "0x732d16a75801f32d51c3f8b0e2f76b427a599da63d1efee9e8cf23df32e10a42";
+    expect(SCHEMA_HASH).not.toBe(v4);
+    expect(PRIOR_SCHEMA_HASHES[0]).toBe(v4);
   });
 });
 
@@ -225,6 +251,91 @@ describe("privacy is enforced by the schema, not by policy", () => {
     expect(found?.type).toBe("bytes32");
     // Unindexed as well: a commitment nobody can invert is still a correlation key.
     expect(found?.indexed).toBe(false);
+  });
+
+  /**
+   * The v5 addition, and the rule it states is narrower and sharper than "no wallets".
+   *
+   * Phase 7's contracts emit wallets. `PledgeVault` names a pledger on six events and
+   * `PayrollSweeper` names a borrower on three, and neither contract can be changed
+   * from this package. What the schema controls is which of them it *lists*, because a
+   * listed event is one the indexer materialises into a public queryable table.
+   *
+   * The line drawn is not "which addresses are data subjects" — a pledger is very often
+   * the borrower, and `TieredUnderwriter.bindPlan` passes the borrower straight through
+   * as the pledger on the only production path. It is **whether the event joins an
+   * address to a `planId`**. An address alone is a capital position that
+   * `pledgedValueOf` already discloses. An address beside a `planId` is a credit file
+   * the moment it is indexed, and `PledgeSeized` is a default record keyed by wallet.
+   *
+   * So: no v5 definition may carry both an address and a `planId`.
+   */
+  it("no Phase 7 definition joins a wallet to a planId", () => {
+    const phase7 = EVENT_SCHEMA.filter((d) =>
+      ["FxDeviationGuard", "PledgeVault", "PayrollSweeper", "TieredUnderwriter", "MerchantCurrencyRegistry"].includes(
+        d.contract,
+      ),
+    );
+    expect(phase7.length).toBeGreaterThan(0);
+
+    for (const d of phase7) {
+      const namesAPlan = d.fields.some((f) => /planId/i.test(f.name));
+      const addresses = d.fields.filter((f) => f.type === "address").map((f) => f.name);
+      if (namesAPlan) {
+        expect(
+          addresses,
+          `${d.contract}.${d.name} joins ${addresses.join(", ")} to a planId — that is a credit file once indexed`,
+        ).toEqual([]);
+      }
+    }
+  });
+
+  /**
+   * The mechanical half of the same rule, over every v5 definition rather than only the
+   * ones that name a plan. No person id, no borrower-shaped field name, and no `string`.
+   *
+   * `string` is on the list because it is the only ABI type in this file that can carry
+   * a cleartext pointer into somebody's life — a tracking number, a dispute note, a
+   * reason. `carrierRef` and `evidenceRef` are `bytes32` for exactly that reason, and
+   * every new plane inherits the constraint rather than re-deciding it.
+   */
+  it("no v5 definition carries a person id, a borrower or a string", () => {
+    const v5 = EVENT_SCHEMA.filter((d) =>
+      [
+        "FxDeviationGuard",
+        "PledgeVault",
+        "PayrollSweeper",
+        "TieredUnderwriter",
+        "MerchantCurrencyRegistry",
+      ].includes(d.contract) || (d.contract === "CheckoutRouter" && d.name === "CorridorSet"),
+    );
+    expect(v5.length).toBeGreaterThan(0);
+
+    for (const d of v5) {
+      const offenders = d.fields.filter((f) =>
+        /person|borrower|buyer|payer|consumer|customer|wallet|email|phone/i.test(f.name),
+      );
+      expect(offenders.map((f) => f.name), `${d.contract}.${d.name}`).toEqual([]);
+      expect(
+        d.fields.filter((f) => f.type === "string").map((f) => f.name),
+        `${d.contract}.${d.name} carries a string`,
+      ).toEqual([]);
+    }
+  });
+
+  /**
+   * UW-07's boundary, asserted by value rather than by absence.
+   *
+   * The requirement is that only the resulting limit and the tier reach the chain. An
+   * assertion that the event *lacks* a person id would pass against an event that also
+   * lacked the tier, so the field list is pinned exactly.
+   */
+  it("lets only the tier and the amount cross the TieredUnderwriter boundary", () => {
+    const d = EVENT_SCHEMA.find((x) => x.name === "TieredOrigination");
+    expect(d).toBeDefined();
+    expect(d!.fields.map((f) => f.name)).toEqual(["planId", "tier", "principal"]);
+    expect(d!.fields.map((f) => f.type)).toEqual(["bytes32", "uint8", "uint256"]);
+    expect(d!.fields.filter((f) => f.indexed).map((f) => f.name)).toEqual(["planId"]);
   });
 
   it("Passport emits commitments, and the only address is a reader", () => {
@@ -516,5 +627,160 @@ describe("const-typed ABI views", () => {
     expect(abiForContract("PlanFactory").length).toBeGreaterThan(0);
     expect(abiForContract("InstallmentPlan").length).toBeGreaterThan(0);
     expect(abiForContract("NoSuchContract")).toEqual([]);
+  });
+
+  it("match the schema they duplicate, for the v5 additions", () => {
+    expect([...FX_DEVIATION_GUARD_ABI]).toEqual(abiForContract("FxDeviationGuard"));
+    expect([...MERCHANT_CURRENCY_REGISTRY_ABI]).toEqual(abiForContract("MerchantCurrencyRegistry"));
+    expect([...PLEDGE_VAULT_ABI]).toEqual(abiForContract("PledgeVault"));
+    expect([...TIERED_UNDERWRITER_ABI]).toEqual(abiForContract("TieredUnderwriter"));
+  });
+});
+
+/**
+ * Completeness, read off the compiler's own output rather than off a list in this file.
+ *
+ * A hand-written expected set is a second copy of the schema, and a second copy is the
+ * thing that drifts. So the expected set is the `abi` array Foundry writes into
+ * `contracts/out`, which `forge build` regenerates — the artefact DEC-73 and finding 30
+ * are about, where a stale copy is what let a definition disagree with a contract.
+ *
+ * Two properties, and both are needed.
+ *
+ * **Nothing is forgotten.** Every event a Phase 7 contract emits is either defined here
+ * or named in `DELIBERATELY_UNLISTED` with the header explaining why. Adding an event to
+ * one of these contracts fails this test until somebody decides which it is, which is the
+ * point: an omission should cost a decision rather than happen by default.
+ *
+ * **Nothing drifts.** For every event that *is* defined, the full signature — types,
+ * order and every `indexed` flag — must equal the artefact's. A definition that dropped an
+ * `indexed` would still produce the right `topic0` and would decode into the wrong fields,
+ * which is the failure mode a `topic0`-only check cannot see.
+ *
+ * The plan for this work specified `packages/abi` as the source. That package has no
+ * generated content in this tree (`packages/abi/generated/` is gitignored and empty), so
+ * the artefact Foundry actually writes is used instead; it is the input that package would
+ * be generated *from*, so the property is the same one and the dependency is shorter.
+ */
+describe("every Phase 7 event is accounted for", () => {
+  const CONTRACTS_OUT = fileURLToPath(new URL("../../../contracts/out/", import.meta.url));
+
+  /**
+   * OpenZeppelin's `AccessControl`, inherited by four of these contracts. Filtered by
+   * name because the artefact records no provenance — and filtered by an explicit list
+   * rather than a pattern so that a Plazo event colliding with one of these names is a
+   * conversation rather than a silent exemption.
+   */
+  const INHERITED = new Set(["RoleAdminChanged", "RoleGranted", "RoleRevoked"]);
+
+  /**
+   * On chain, and deliberately not in the schema. The header argues each one; this list
+   * is what stops the argument being quietly re-decided by omission.
+   *
+   * The six privacy exclusions all join a wallet to a `planId`. `PartnerSet` is the
+   * constancy case, on the `SettlementEscrow.RouterSet` reasoning.
+   */
+  const DELIBERATELY_UNLISTED: Record<string, string[]> = {
+    PledgeVault: ["PledgeBound", "PledgeUnbound", "PledgeSeized"],
+    PayrollSweeper: ["SweepOptedIn", "SweepOptedOut", "Swept"],
+    TieredUnderwriter: ["PartnerSet"],
+  };
+
+  const PHASE_7_CONTRACTS = [
+    "FxDeviationGuard",
+    "PledgeVault",
+    "PayrollSweeper",
+    "TieredUnderwriter",
+    "MerchantCurrencyRegistry",
+    "CheckoutRouter",
+  ];
+
+  interface AbiEvent {
+    type: string;
+    name: string;
+    inputs: {name: string; type: string; indexed?: boolean}[];
+  }
+
+  const emittedBy = (contract: string): AbiEvent[] => {
+    const path = `${CONTRACTS_OUT}${contract}.sol/${contract}.json`;
+    if (!existsSync(path)) {
+      throw new Error(
+        `No Foundry artefact at ${path}.\n\n` +
+          "This test reads what the contracts actually emit rather than a list somebody\n" +
+          "maintained by hand, so it needs a build. Run `forge build --root contracts`.\n" +
+          "It is not skipped when the artefact is missing: a skip is a pass, and the\n" +
+          "failure this test exists to catch is a definition that silently disagrees\n" +
+          "with a contract.",
+      );
+    }
+    const artefact = JSON.parse(readFileSync(path, "utf8")) as {abi: AbiEvent[]};
+    return artefact.abi.filter((entry) => entry.type === "event" && !INHERITED.has(entry.name));
+  };
+
+  const signatureOf = (event: AbiEvent): string =>
+    `event ${event.name}(${event.inputs
+      .map((i) => `${i.type}${i.indexed ? " indexed" : ""} ${i.name}`)
+      .join(", ")})`;
+
+  it.each(PHASE_7_CONTRACTS)("leaves no event of %s undecided", (contract) => {
+    const emitted = emittedBy(contract).map((e) => e.name);
+    expect(emitted.length, `${contract} emits nothing — wrong artefact?`).toBeGreaterThan(0);
+
+    const defined = EVENT_SCHEMA.filter((d) => d.contract === contract).map((d) => d.name);
+    const excused = DELIBERATELY_UNLISTED[contract] ?? [];
+
+    const undecided = emitted.filter((name) => !defined.includes(name) && !excused.includes(name));
+    expect(
+      undecided,
+      `${contract} emits ${undecided.join(", ")} — add a definition, or add it to ` +
+        "DELIBERATELY_UNLISTED and say why in the schema header. An event with neither is " +
+        "a stream the indexer will silently never see.",
+    ).toEqual([]);
+
+    // The exclusion list may not name an event that does not exist: a stale entry there
+    // would excuse a future event that happened to reuse the name.
+    for (const name of excused) {
+      expect(emitted, `${contract}.${name} is excused but not emitted`).toContain(name);
+      expect(defined, `${contract}.${name} is both excused and defined`).not.toContain(name);
+    }
+  });
+
+  it.each(PHASE_7_CONTRACTS)("defines %s's events exactly as it emits them", (contract) => {
+    const emitted = new Map(emittedBy(contract).map((e) => [e.name, signatureOf(e)]));
+    const defined = EVENT_SCHEMA.filter((d) => d.contract === contract);
+
+    for (const d of defined) {
+      expect(
+        humanReadableAbi(d),
+        `${contract}.${d.name} disagrees with the compiled artefact`,
+      ).toBe(emitted.get(d.name));
+    }
+  });
+
+  /**
+   * The exclusions are a privacy decision, so the property that justifies them is
+   * asserted rather than trusted: every event left out of the schema on privacy grounds
+   * really does join an address to a `planId`.
+   *
+   * Without this, "deliberately unlisted" is an assertion about intent. With it, it is a
+   * claim about the ABI that fails if somebody adds a harmless event to the list to make
+   * a red test go away.
+   */
+  it("excludes only events that join a wallet to a planId, or the wiring call", () => {
+    for (const [contract, names] of Object.entries(DELIBERATELY_UNLISTED)) {
+      const emitted = new Map(emittedBy(contract).map((e) => [e.name, e]));
+      for (const name of names) {
+        if (contract === "TieredUnderwriter" && name === "PartnerSet") continue; // the constancy case
+        const event = emitted.get(name)!;
+        expect(
+          event.inputs.some((i) => /planId/i.test(i.name)),
+          `${contract}.${name} is excluded on privacy grounds but names no plan`,
+        ).toBe(true);
+        expect(
+          event.inputs.some((i) => i.type === "address"),
+          `${contract}.${name} is excluded on privacy grounds but carries no address`,
+        ).toBe(true);
+      }
+    }
   });
 });
