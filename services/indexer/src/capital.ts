@@ -17,6 +17,8 @@
  */
 import {ponder} from "ponder:registry";
 
+import {poolPositionId, poolTicketId} from "./pools.js";
+
 import {
   consentEvent,
   epoch,
@@ -33,7 +35,14 @@ import {
 const eventId = (event: {block: {number: bigint}; log: {logIndex: number}}) =>
   `${event.block.number}-${event.log.logIndex}`;
 
-const positionId = (tranche: number, holder: `0x${string}`) => `${tranche}-${holder.toLowerCase()}`;
+/**
+ * The emitting pool, which every handler below now reads.
+ *
+ * There are two `TranchedCreditPool` instances from Phase 7 and neither is "the" pool.
+ * `event.log.address` is the only thing in a log that tells them apart, and it is what
+ * every key and every row in this file is now qualified by.
+ */
+const poolOf = (event: {log: {address: `0x${string}`}}) => event.log.address;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Epochs
@@ -43,6 +52,7 @@ ponder.on("TranchedCreditPool:EpochClosed", async ({event, context}) => {
   await context.db
     .insert(epoch)
     .values({
+      pool: poolOf(event),
       number: event.args.epoch,
       seniorNav: event.args.seniorNav,
       juniorNav: event.args.juniorNav,
@@ -70,6 +80,7 @@ ponder.on("TranchedCreditPool:Provisioned", async ({event, context}) => {
     .insert(provision)
     .values({
       planId: event.args.planId,
+      pool: poolOf(event),
       epoch: event.args.epoch,
       raised: event.args.amount,
       outstanding: event.args.amount,
@@ -87,6 +98,7 @@ ponder.on("TranchedCreditPool:ProvisionReleased", async ({event, context}) => {
     .insert(provision)
     .values({
       planId: event.args.planId,
+      pool: poolOf(event),
       epoch: event.args.epoch,
       released: event.args.amount,
       updatedAt: Number(event.block.timestamp),
@@ -106,7 +118,8 @@ ponder.on("TranchedCreditPool:DepositRequested", async ({event, context}) => {
   await context.db
     .insert(lenderPosition)
     .values({
-      id: positionId(event.args.tranche, event.args.holder),
+      id: poolPositionId(poolOf(event), event.args.tranche, event.args.holder),
+      pool: poolOf(event),
       tranche: event.args.tranche,
       holder: event.args.holder,
       depositedAssets: event.args.assets,
@@ -122,7 +135,8 @@ ponder.on("TranchedCreditPool:SharesClaimed", async ({event, context}) => {
   await context.db
     .insert(lenderPosition)
     .values({
-      id: positionId(event.args.tranche, event.args.holder),
+      id: poolPositionId(poolOf(event), event.args.tranche, event.args.holder),
+      pool: poolOf(event),
       tranche: event.args.tranche,
       holder: event.args.holder,
       claimedShares: event.args.shares,
@@ -136,7 +150,8 @@ ponder.on("TranchedCreditPool:SharesClaimed", async ({event, context}) => {
 
 ponder.on("TranchedCreditPool:RedeemRequested", async ({event, context}) => {
   await context.db.insert(redemptionTicket).values({
-    id: `${event.args.tranche}-${event.args.holder.toLowerCase()}-${event.args.index}`,
+    id: poolTicketId(poolOf(event), event.args.tranche, event.args.holder, event.args.index),
+    pool: poolOf(event),
     tranche: event.args.tranche,
     holder: event.args.holder,
     index: event.args.index,
@@ -148,7 +163,8 @@ ponder.on("TranchedCreditPool:RedeemRequested", async ({event, context}) => {
   await context.db
     .insert(lenderPosition)
     .values({
-      id: positionId(event.args.tranche, event.args.holder),
+      id: poolPositionId(poolOf(event), event.args.tranche, event.args.holder),
+      pool: poolOf(event),
       tranche: event.args.tranche,
       holder: event.args.holder,
       redeemedShares: event.args.shares,
@@ -171,6 +187,7 @@ ponder.on("TranchedCreditPool:RedeemRequested", async ({event, context}) => {
 ponder.on("TranchedCreditPool:QueueFilled", async ({event, context}) => {
   await context.db.insert(queueFill).values({
     id: eventId(event),
+    pool: poolOf(event),
     tranche: event.args.tranche,
     epoch: event.args.epoch,
     shares: event.args.shares,
@@ -184,7 +201,8 @@ ponder.on("TranchedCreditPool:RedemptionClaimed", async ({event, context}) => {
   await context.db
     .insert(redemptionTicket)
     .values({
-      id: `${event.args.tranche}-${event.args.holder.toLowerCase()}-${event.args.index}`,
+      id: poolTicketId(poolOf(event), event.args.tranche, event.args.holder, event.args.index),
+      pool: poolOf(event),
       tranche: event.args.tranche,
       holder: event.args.holder,
       index: event.args.index,
@@ -200,7 +218,8 @@ ponder.on("TranchedCreditPool:RedemptionClaimed", async ({event, context}) => {
   await context.db
     .insert(lenderPosition)
     .values({
-      id: positionId(event.args.tranche, event.args.holder),
+      id: poolPositionId(poolOf(event), event.args.tranche, event.args.holder),
+      pool: poolOf(event),
       tranche: event.args.tranche,
       holder: event.args.holder,
       redeemedAssets: event.args.assets,

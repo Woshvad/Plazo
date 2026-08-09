@@ -126,6 +126,7 @@ ponder.on("TranchedCreditPool:Fronted", async ({event, context}) => {
     .insert(bookEntry)
     .values({
       planId: event.args.planId,
+      pool: event.log.address,
       merchant: event.args.merchant,
       principal: event.args.principal,
     })
@@ -137,6 +138,7 @@ ponder.on("TranchedCreditPool:Recognised", async ({event, context}) => {
     .insert(bookEntry)
     .values({
       planId: event.args.planId,
+      pool: event.log.address,
       merchant: ZERO_HASH.slice(0, 42) as `0x${string}`,
       principal: 0n,
       recognisedInflow: event.args.inflow,
@@ -159,6 +161,7 @@ ponder.on("TranchedCreditPool:LossAbsorbed", async ({event, context}) => {
     .insert(bookEntry)
     .values({
       planId: event.args.planId,
+      pool: event.log.address,
       merchant: ZERO_HASH.slice(0, 42) as `0x${string}`,
       principal: 0n,
       lossAbsorbed: total,
@@ -179,6 +182,7 @@ ponder.on("TranchedCreditPool:UnmarkedDelinquency", async ({event, context}) => 
     .insert(bookEntry)
     .values({
       planId: event.args.planId,
+      pool: event.log.address,
       merchant: ZERO_HASH.slice(0, 42) as `0x${string}`,
       principal: 0n,
       unmarked: event.args.unmarked,
@@ -196,6 +200,7 @@ ponder.on("TranchedCreditPool:UnmarkedDelinquency", async ({event, context}) => 
 ponder.on("TranchedCreditPool:OriginationGated", async ({event, context}) => {
   await context.db.insert(gateReading).values({
     id: eventId(event),
+    pool: event.log.address,
     open: event.args.open,
     subordinationBps: event.args.subordinationBps,
     reserveBps: event.args.reserveBps,

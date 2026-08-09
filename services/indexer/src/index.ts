@@ -19,6 +19,8 @@
 import {ponder} from "ponder:registry";
 import {collectionAttempt, installment, keeperStats, plan, planStateTransition} from "ponder:schema";
 
+import {recordSweep} from "./underwriting.js";
+
 /** Addresses the operator controls, so the keeper-market share means something. */
 const OPERATOR_ADDRESSES = new Set(
   (process.env["PLAZO_OPERATOR_ADDRESSES"] ?? "")
@@ -190,6 +192,22 @@ ponder.on("InstallmentPlan:CheckCleared", async ({event, context}) => {
     timestamp,
   });
 
+  // A payroll deduction, if the sweeper cranked it. `PayrollSweeper.Swept` carries the
+  // plan's counterparty as an indexed address beside a `planId`, so schema v5 declines to
+  // list it and the indexer cannot subscribe to it — but a sweep settles through
+  // `repay`, so this event already records the fact with the sweeper's contract address
+  // in `keeper`. Any other keeper writes nothing. See `underwriting.ts`.
+  await recordSweep(context.db as never, {
+    planId: event.args.planId,
+    index: Number(event.args.index),
+    value: event.args.amount,
+    keeper,
+    txHash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp,
+  });
+
   await context.db
     .update(plan, {planId: event.args.planId})
     .set((row) => ({totalCollected: row.totalCollected + event.args.amount}));
@@ -314,3 +332,5 @@ import "./capital.js";
 import "./payout.js";
 import "./merchant.js";
 import "./inflow.js";
+import "./fx.js";
+import "./underwriting.js";

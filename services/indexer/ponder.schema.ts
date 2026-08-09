@@ -224,7 +224,14 @@ export const merchant = onchainTable("merchant", (t) => ({
 export const bookEntry = onchainTable(
   "book_entry",
   (t) => ({
+    /**
+     * `planId` alone, for the same reason `provision` keeps it: a plan settles to the
+     * book named in its own signed terms and to no other, forever. `pool` is beside the
+     * key so "what is this book carrying" is a filter — nullable because the row is
+     * created by whichever crank fires first and `Fronted` is not guaranteed to be it.
+     */
     planId: t.hex().primaryKey(),
+    pool: t.hex(),
     merchant: t.hex().notNull(),
     principal: t.bigint().notNull(),
     /** Cash the plan has forwarded and the book has counted. */
@@ -256,6 +263,11 @@ export const gateReading = onchainTable(
   "gate_reading",
   (t) => ({
     id: t.text().primaryKey(),
+    /**
+     * Which book's gate. Two books have two subordination floors and close
+     * independently; a reading without the pool cannot say which one shut.
+     */
+    pool: t.hex().notNull(),
     open: t.boolean().notNull(),
     subordinationBps: t.bigint().notNull(),
     reserveBps: t.bigint().notNull(),
@@ -264,6 +276,7 @@ export const gateReading = onchainTable(
   }),
   (table) => ({
     timeIdx: index().on(table.timestamp),
+    poolIdx: index().on(table.pool),
   }),
 );
 
@@ -543,11 +556,27 @@ export const refund = onchainTable(
  * The NAV series a lender's chart is drawn from, and the only honest source for it:
  * a share price sampled between closes is an interpolation, because the price does
  * not exist until the epoch strikes it.
+ *
+ * ## `pool` is half the key, and it was not before
+ *
+ * Phase 7 deploys a second `TranchedCreditPool` for the EURC corridor, and both books
+ * number their epochs from one. A `number`-only primary key made the USDC book's epoch 1
+ * and the EURC book's epoch 1 the same row, so whichever closed second would silently
+ * overwrite the other's NAV — and the surface would show one book's price under both
+ * books' names with nothing anywhere reporting an error.
+ *
+ * This is the schema-v5 non-additivity made concrete: no event changed, the emitting
+ * address simply stopped being a constant. Every table below that a pool writes carries
+ * `pool` for the same reason, and the three whose natural key would otherwise collide —
+ * this one, `lenderPosition` and `redemptionTicket` — carry it *in* the key rather than
+ * beside it.
  */
 export const epoch = onchainTable(
   "epoch",
   (t) => ({
-    number: t.bigint().primaryKey(),
+    /** The `TranchedCreditPool` that struck it. Neither book is "the" book. */
+    pool: t.hex().notNull(),
+    number: t.bigint().notNull(),
     seniorNav: t.bigint().notNull(),
     juniorNav: t.bigint().notNull(),
     /** POOL-09. Zero in an ordinary epoch; the same for everybody when it is not. */
@@ -556,7 +585,9 @@ export const epoch = onchainTable(
     blockNumber: t.bigint().notNull(),
   }),
   (table) => ({
+    pk: primaryKey({columns: [table.pool, table.number]}),
     closedIdx: index().on(table.closedAt),
+    poolIdx: index().on(table.pool),
   }),
 );
 
@@ -572,7 +603,15 @@ export const epoch = onchainTable(
 export const provision = onchainTable(
   "provision",
   (t) => ({
+    /**
+     * Still keyed by `planId` alone, and that is a claim rather than an omission: a
+     * `planId` belongs to exactly one book forever (POOL-01, and `CheckoutRouter.poolOf`
+     * is written once at origination), so two books cannot provision the same plan and
+     * the key cannot collide. `pool` is carried beside it so a per-book provision total
+     * is a filter rather than a join.
+     */
     planId: t.hex().primaryKey(),
+    pool: t.hex(),
     epoch: t.bigint().notNull(),
     raised: t.bigint().notNull().default(0n),
     released: t.bigint().notNull().default(0n),
@@ -591,11 +630,17 @@ export const provision = onchainTable(
  * A tranche share is a transfer-restricted ERC-20 whose holder set is already public
  * in every `Transfer`, and the lender needs to see their own position — so hiding it
  * would cost a feature and protect nothing.
+ *
+ * **`id` is `pool-tranche-holder`, not `tranche-holder`.** An allocator holding senior in
+ * both books is two positions; without the pool in the key their EURC deposit would
+ * accumulate onto their USDC row and the surface would report one position worth the sum
+ * of two books' assets, denominated in neither.
  */
 export const lenderPosition = onchainTable(
   "lender_position",
   (t) => ({
     id: t.text().primaryKey(),
+    pool: t.hex().notNull(),
     tranche: t.integer().notNull(),
     holder: t.hex().notNull(),
     depositedAssets: t.bigint().notNull().default(0n),
@@ -606,6 +651,7 @@ export const lenderPosition = onchainTable(
   }),
   (table) => ({
     holderIdx: index().on(table.holder),
+    poolIdx: index().on(table.pool),
   }),
 );
 
@@ -614,11 +660,15 @@ export const lenderPosition = onchainTable(
  *
  * APP-04's queue position with an ETA. The ETA is the app's arithmetic over recent
  * fill rates; `position` and the epoch's fills are the inputs it needs.
+ *
+ * Keyed `pool-tranche-holder-index`. `index` is a per-tranche counter inside one pool,
+ * so two books hand out ticket 0 to two different lenders on the same day.
  */
 export const redemptionTicket = onchainTable(
   "redemption_ticket",
   (t) => ({
     id: t.text().primaryKey(),
+    pool: t.hex().notNull(),
     tranche: t.integer().notNull(),
     holder: t.hex().notNull(),
     index: t.bigint().notNull(),
@@ -631,14 +681,24 @@ export const redemptionTicket = onchainTable(
   (table) => ({
     holderIdx: index().on(table.holder),
     trancheIdx: index().on(table.tranche),
+    poolIdx: index().on(table.pool),
   }),
 );
 
-/** Each epoch's fill of each tranche's queue. */
+/**
+ * Each epoch's fill of each tranche's queue.
+ *
+ * `id` is the log's coordinates and was never at risk of collision, but `pool` is still
+ * required rather than optional: POOL-09's uniformity — one fill per tranche per epoch at
+ * one rate — is checked from this table, and with two books in it the check has to be run
+ * per book. Two correct rates in two pools' epoch 4 would otherwise read as one book
+ * charging two redeemers differently, which is the exact violation the fee replaced.
+ */
 export const queueFill = onchainTable(
   "queue_fill",
   (t) => ({
     id: t.text().primaryKey(),
+    pool: t.hex().notNull(),
     tranche: t.integer().notNull(),
     epoch: t.bigint().notNull(),
     shares: t.bigint().notNull(),
@@ -648,6 +708,7 @@ export const queueFill = onchainTable(
   }),
   (table) => ({
     epochIdx: index().on(table.epoch),
+    poolIdx: index().on(table.pool),
   }),
 );
 
@@ -795,5 +856,246 @@ export const relayedCollection = onchainTable(
   }),
   (table) => ({
     planIdx: index().on(table.plan),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The corridor and the credit ladder (Phase 7)
+//
+// Every id below is writer-chosen (DEC-58). There is no sequence-backed column, no
+// identity column, no database-level enum and no view here, as nowhere else in this
+// file (DEC-57) — a sequence emits a `DROP SEQUENCE` on the next cross-service push,
+// and an id the writer does not know until after the insert cannot make a handler
+// idempotent. The gate for this is a substring grep over the whole file, so the
+// prohibited constructs are described rather than named; the paragraph above `inflow`
+// sets the same precedent.
+//
+// **No table here joins a wallet to a `planId`.** That is the same line schema v5 draws:
+// `PledgeBound`, `PledgeUnbound`, `PledgeSeized`, `SweepOptedIn`, `SweepOptedOut` and
+// `Swept` all exist on chain and none is in `@plazo/events`, so none can be subscribed
+// to and none has a table. The pledge tables key on a wallet with no plan; the tier and
+// sweep tables key on a plan with no wallet.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Every fill that cleared the FX deviation guard, with the floor it had to clear.
+ *
+ * FX-04's observable. `floor` is stored rather than recomputed because it was derived
+ * from a signed mid the guard consumed at the same moment — the session id is spent and
+ * cannot be quoted twice, so an observer checking the band afterwards has no way to
+ * rebuild the threshold. A guard whose threshold is unauditable is one nobody can hold
+ * to account, which is the whole reason the contract emits it.
+ */
+export const fxFill = onchainTable(
+  "fx_fill",
+  (t) => ({
+    /** `${txHash}:${logIndex}`. Writer-chosen, so a replay overwrites rather than doubles. */
+    id: t.text().primaryKey(),
+    /** `keccak256(fromToken, toToken)` — a token pair, never a party. */
+    corridor: t.hex().notNull(),
+    venue: t.hex().notNull(),
+    amountIn: t.bigint().notNull(),
+    amountOut: t.bigint().notNull(),
+    floor: t.bigint().notNull(),
+    /** `amountOut - floor`. Stored so "how close did that come" is a sort, not a scan. */
+    headroom: t.bigint().notNull(),
+    blockNumber: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+    timestamp: t.integer().notNull(),
+  }),
+  (table) => ({
+    corridorIdx: index().on(table.corridor),
+    venueIdx: index().on(table.venue),
+    timeIdx: index().on(table.timestamp),
+  }),
+);
+
+/**
+ * A capital provider's position in the pledge vault.
+ *
+ * Keyed on the wallet and carrying **no plan**, which is the whole of the privacy
+ * decision made in `@plazo/events` v5: an address that deposited collateral is a fact
+ * `pledgedValueOf(address)` already discloses to anyone who types the address, so a table
+ * of it costs nothing and lets a pledger see their own position. An address joined to a
+ * `planId` would be a credit file, and the three events that would supply one are not in
+ * the schema and therefore cannot reach here.
+ *
+ * **There is no `totalLocked` column, and its absence is deliberate.** The lock is
+ * `lockedOf(pledger)`, a public getter on the vault and the live truth. Accumulating a
+ * copy of it here from `PledgeBound`/`PledgeUnbound` would need those two events —
+ * excluded — and would produce a second number that can drift from the first. Nothing
+ * here is derived by accumulation that the chain answers directly.
+ */
+export const pledgePosition = onchainTable(
+  "pledge_position",
+  (t) => ({
+    /** The pledger's address, lowercased. */
+    id: t.hex().primaryKey(),
+    totalPledged: t.bigint().notNull().default(0n),
+    totalReleased: t.bigint().notNull().default(0n),
+    sharesHeld: t.bigint().notNull().default(0n),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    updatedIdx: index().on(table.updatedAt),
+  }),
+);
+
+/**
+ * The pledge vault's log, one row per event.
+ *
+ * `kind` is a `text` column and not a database-level enum (DEC-57): such a type has to be
+ * altered before a value can be added, and the alter is the statement that breaks a
+ * cross-service push. The permitted values are `pledged`, `released` and `yieldPaid`,
+ * enforced in TypeScript by `PledgeKind` where a bad value is a compile error rather than
+ * a migration.
+ */
+export const pledgeEvent = onchainTable(
+  "pledge_event",
+  (t) => ({
+    id: t.text().primaryKey(),
+    kind: t.text().notNull(),
+    /** The pledger, or the yield funder. Never joined to a plan — see the header. */
+    account: t.hex().notNull(),
+    amount: t.bigint().notNull(),
+    /** Shares moved, or the vault's `totalAssets` after a yield payment. */
+    shares: t.bigint().notNull().default(0n),
+    blockNumber: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+    timestamp: t.integer().notNull(),
+  }),
+  (table) => ({
+    accountIdx: index().on(table.account),
+    kindIdx: index().on(table.kind),
+  }),
+);
+
+/**
+ * An installment settled by payroll deduction.
+ *
+ * **Derived from `InstallmentPlan.CheckCleared`, not from `PayrollSweeper.Swept`**, and
+ * that is the substance rather than a shortcut. All three sweeper events carry the plan's
+ * counterparty as an indexed address beside a `planId`, so schema v5 declines to list
+ * them and the indexer cannot subscribe to them. It does not need to: a sweep settles the
+ * installment through `repay`, so the plan emits `CheckCleared(planId, index, amount,
+ * keeper)` with the sweeper's own contract address in `keeper`. "This was payroll" is a
+ * comparison against one configured address.
+ *
+ * What is lost is `residue` — the payer's change coming back to them, which is a
+ * `Transfer` in the same transaction and not a fact the credit book needs.
+ */
+export const sweepEvent = onchainTable(
+  "sweep_event",
+  (t) => ({
+    id: t.text().primaryKey(),
+    planId: t.hex().notNull(),
+    index: t.integer().notNull(),
+    value: t.bigint().notNull(),
+    /** The `PayrollSweeper` that cranked it. A contract, never a wallet. */
+    sweeper: t.hex().notNull(),
+    blockNumber: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+    timestamp: t.integer().notNull(),
+  }),
+  (table) => ({
+    planIdx: index().on(table.planId),
+    timeIdx: index().on(table.timestamp),
+  }),
+);
+
+/**
+ * The tier a plan originated at, and nothing else about who took it.
+ *
+ * UW-07's boundary, indexed. `planId`, tier and principal are the whole event, so this
+ * table is the whole event — no person id, no wallet, and none of the inputs the tier was
+ * computed from. It is what makes the tier mix of the book measurable without making the
+ * book's counterparties enumerable.
+ */
+export const tierOrigination = onchainTable(
+  "tier_origination",
+  (t) => ({
+    id: t.hex().primaryKey(),
+    tier: t.integer().notNull(),
+    principal: t.bigint().notNull(),
+    blockNumber: t.bigint().notNull(),
+    txHash: t.hex().notNull(),
+    timestamp: t.integer().notNull(),
+  }),
+  (table) => ({
+    tierIdx: index().on(table.tier),
+    timeIdx: index().on(table.timestamp),
+  }),
+);
+
+/**
+ * The currency a merchant elected to be settled in.
+ *
+ * The election, and deliberately not the effect. DEC-112 has `payoutCurrencyOf` re-read
+ * the allowlist on every call, so a merchant whose elected currency has had its allowance
+ * withdrawn is paid in dollars while this row still says what they asked for. Joining
+ * against `currencyAllowance` is how a surface tells a merchant *why* their settlements
+ * changed without their having done anything — which is the question DEC-112 creates and
+ * a single current-value column could not answer.
+ */
+export const merchantCurrency = onchainTable(
+  "merchant_currency",
+  (t) => ({
+    /** The merchant's address, lowercased. */
+    id: t.hex().primaryKey(),
+    /** What they elected. Zero means the plan's own currency. */
+    currency: t.hex().notNull(),
+    blockNumber: t.bigint().notNull(),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    currencyIdx: index().on(table.currency),
+  }),
+);
+
+/**
+ * Whether a currency is allowed, and when that last changed.
+ *
+ * `DomainDenied` in the currency plane. A current-value getter can say a currency is not
+ * allowed; it cannot say when it stopped being allowed or who did it, and those are the
+ * two facts a merchant whose settlements silently reverted to dollars actually needs.
+ */
+export const currencyAllowance = onchainTable(
+  "currency_allowance",
+  (t) => ({
+    /** The currency's address, lowercased. */
+    id: t.hex().primaryKey(),
+    allowed: t.boolean().notNull(),
+    by: t.hex().notNull(),
+    blockNumber: t.bigint().notNull(),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    allowedIdx: index().on(table.allowed),
+  }),
+);
+
+/**
+ * One corridor's wiring: the token, and the three contracts that price it.
+ *
+ * Listed where `SettlementEscrow.RouterSet` is not because it is neither one-way nor
+ * once-per-deployment. There is one of these per corridor and the deployment record holds
+ * a single router key rather than a per-token map, so from the second corridor onwards the
+ * artefact does not already carry the answer — and an origination priced under a corridor
+ * that has since been re-pointed can only be explained from a log.
+ */
+export const corridorWiring = onchainTable(
+  "corridor_wiring",
+  (t) => ({
+    /** The corridor's settlement token, lowercased. */
+    id: t.hex().primaryKey(),
+    fxRouter: t.hex().notNull(),
+    parameters: t.hex().notNull(),
+    underwriter: t.hex().notNull(),
+    setBy: t.hex().notNull(),
+    blockNumber: t.bigint().notNull(),
+    updatedAt: t.integer().notNull(),
+  }),
+  (table) => ({
+    routerIdx: index().on(table.fxRouter),
   }),
 );

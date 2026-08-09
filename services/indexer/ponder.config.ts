@@ -29,7 +29,25 @@
  * origination history and one that reports those originations never happened. See
  * `atAll`.
  *
- * Phase 7 adds one more, and it carries the same class of silent loss:
+ * ## Three routers now, and two ways to lose a vintage
+ *
+ * Phase 7 redeploys the router again, so 06-13's router becomes legacy in its turn and
+ * there are three addresses to carry:
+ *
+ * - `PLAZO_CHECKOUT_ROUTER_ADDRESS` — the current, Phase 7 corridor-aware router. It
+ *   pairs with the Phase 7 rewire block, which is `PLAZO_START_BLOCK`.
+ * - `PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY` — 06-13's merchant-plane router, the one that
+ *   originated every plan between the 06-13 rewire and the Phase 7 one.
+ * - `PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY2` — vintage 3's router, from before the
+ *   merchant plane. 06-13 set `…_LEGACY` to this address; Phase 7 shifts it down one.
+ *
+ * **Leaving either legacy variable unset loses that vintage's origination history in
+ * silence** — not as an error, not as an empty table, but as an indexer that reports
+ * those plans were never originated. There are now two of them to forget instead of one,
+ * and shifting `…_LEGACY` down to `…_LEGACY2` without setting `…_LEGACY` to 06-13's
+ * router loses the middle vintage while looking like a completed migration.
+ *
+ * Phase 7 adds one more of the same class:
  *
  * - `PLAZO_INFLOW_START_BLOCK` — where the EIP-7708 native-transfer sweep begins.
  *
@@ -53,6 +71,32 @@
  * exists that will answer, a ninety-day inflow backfill against the public RPC is not
  * achievable, and the honest consequence is that Tier 1 proposes **zero** rather than a
  * plausible number. `services/origination/src/tier1.ts` defaults to exactly that.
+ *
+ * ## The corridor and the credit ladder (Phase 7)
+ *
+ * Six more sources, every one registered through `watch` or `watchAll` so that an address
+ * and a start block stay one decision (DEC-54):
+ *
+ * - `PLAZO_FX_GUARD_ADDRESS` — the FX deviation guard (07-03)
+ * - `PLAZO_PLEDGE_VAULT_ADDRESS` — pledged dollar collateral (07-04)
+ * - `PLAZO_TIERED_UNDERWRITER_ADDRESS` — the tier composite (07-07)
+ * - `PLAZO_MERCHANT_CURRENCY_ADDRESS` — payout-currency elections (07-09)
+ * - `PLAZO_EURC_POOL_ADDRESS` — **the second `TranchedCreditPool`**, joined to the USDC
+ *   book under one `TranchedCreditPool` key through `watchAll`. Both books emit the same
+ *   ABI; what tells their rows apart is `event.log.address`, which is why every pool
+ *   table now carries `pool`.
+ * - `PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY2` — the third router, above.
+ *
+ * And one address that is deliberately **not** a source:
+ *
+ * - `PLAZO_PAYROLL_SWEEPER_ADDRESS` — the payroll sweeper (07-05). Its three events all
+ *   carry the plan's counterparty as an indexed address beside a `planId`, so schema v5
+ *   declines to list them and there is nothing here to subscribe to. The address is still
+ *   needed, as a **comparison**: a sweep settles its installment through
+ *   `InstallmentPlan.repay`, so the plan emits `CheckCleared(…, keeper)` with this address
+ *   in `keeper`, and that equality is the whole of "this was payroll". It lives in this
+ *   file rather than in `.env.example` for DEC-55's reason, which is about where an
+ *   address is written down and not about whether it is watched.
  */
 import {createConfig, factory} from "ponder";
 import {parseAbi, parseAbiItem} from "viem";
@@ -80,6 +124,10 @@ import {
   REFUND_ESCROW_ABI,
   SETTLEMENT_ESCROW_ABI,
   TIER0_UNDERWRITER_ABI,
+  FX_DEVIATION_GUARD_ABI,
+  MERCHANT_CURRENCY_REGISTRY_ABI,
+  PLEDGE_VAULT_ABI,
+  TIERED_UNDERWRITER_ABI,
 } from "@plazo/events";
 
 import {arcTransport} from "./src/transport.js";
@@ -241,13 +289,28 @@ export default createConfig({
     CheckoutRouter: {
       chain: "arcTestnet",
       abi: parseAbi(CHECKOUT_ROUTER_ABI),
-      // Both the current router and the one it replaced. See `atAll`.
-      ...watchAll("PLAZO_CHECKOUT_ROUTER_ADDRESS", "PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY"),
+      // All three vintages. See `atAll` and the header: the current corridor-aware
+      // router, 06-13's merchant-plane router, and vintage 3's from before it. Either
+      // legacy left unset is that vintage's origination history reported as never having
+      // happened.
+      ...watchAll(
+        "PLAZO_CHECKOUT_ROUTER_ADDRESS",
+        "PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY",
+        "PLAZO_CHECKOUT_ROUTER_ADDRESS_LEGACY2",
+      ),
     },
+    // **Two books under one key.** Phase 7 deploys a second pool for the EURC corridor
+    // and both emit `TRANCHED_CREDIT_POOL_ABI`, so they are one Ponder source with two
+    // addresses rather than two sources — Ponder allows one contract entry per ABI, and
+    // splitting them would give the same event name two handler registrations.
+    //
+    // What keeps their rows apart is `event.log.address`. Every handler in `capital.ts`
+    // reads it, and every pool table carries `pool`, because an epoch number is a
+    // per-book counter and both books start at one.
     TranchedCreditPool: {
       chain: "arcTestnet",
       abi: parseAbi(TRANCHED_CREDIT_POOL_ABI),
-      ...watch("PLAZO_CREDIT_POOL_ADDRESS"),
+      ...watchAll("PLAZO_CREDIT_POOL_ADDRESS", "PLAZO_EURC_POOL_ADDRESS"),
     },
     PlazoPassport: {
       chain: "arcTestnet",
@@ -331,5 +394,38 @@ export default createConfig({
       abi: parseAbi(NATIVE_TRANSFER_ABI),
       ...watch("PLAZO_INFLOW_START_BLOCK", ARC_NATIVE_TRANSFER_EMITTER),
     },
+    // The corridor and the credit ladder (Phase 7). `PayrollSweeper` is absent by
+    // decision and the header says why — it is a comparison, not a source.
+    FxDeviationGuard: {
+      chain: "arcTestnet",
+      abi: parseAbi(FX_DEVIATION_GUARD_ABI),
+      ...watch("PLAZO_FX_GUARD_ADDRESS"),
+    },
+    PledgeVault: {
+      chain: "arcTestnet",
+      abi: parseAbi(PLEDGE_VAULT_ABI),
+      ...watch("PLAZO_PLEDGE_VAULT_ADDRESS"),
+    },
+    TieredUnderwriter: {
+      chain: "arcTestnet",
+      abi: parseAbi(TIERED_UNDERWRITER_ABI),
+      ...watch("PLAZO_TIERED_UNDERWRITER_ADDRESS"),
+    },
+    MerchantCurrencyRegistry: {
+      chain: "arcTestnet",
+      abi: parseAbi(MERCHANT_CURRENCY_REGISTRY_ABI),
+      ...watch("PLAZO_MERCHANT_CURRENCY_ADDRESS"),
+    },
   },
 });
+
+/**
+ * The `PayrollSweeper`, for comparison rather than for subscription.
+ *
+ * Exported so `src/underwriting.ts` reads the address from the same place every other
+ * address is written (DEC-55) instead of reaching into `process.env` beside it. Unset
+ * yields the zero address, which no `keeper` will ever equal — so an unconfigured sweeper
+ * produces an empty sweep stream rather than a stream that claims every collection was
+ * payroll.
+ */
+export const PAYROLL_SWEEPER = at("PLAZO_PAYROLL_SWEEPER_ADDRESS");
