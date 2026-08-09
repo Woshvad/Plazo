@@ -158,10 +158,11 @@ const at = (name: string): `0x${string}` =>
  * swept from an address obtained here, so there is no start block to pair it with and
  * pairing one would be a lie about what happens to it.
  *
- * Keeping the two apart also keeps the DEC-54 diff gate readable. That gate asserts no
- * new `at(` appears in this file, because a new `at(` used to mean a source registered
+ * Keeping the two apart also keeps the DEC-54 diff gate readable. That gate greps this
+ * file for a new bare-`at` call site, because one used to mean a source registered
  * without a start block; an address that is not a source should not have to be argued
- * past it.
+ * past it. The gate is a substring match, so — as in `ponder.schema.ts` for DEC-57 —
+ * the construct is described rather than spelled.
  */
 const comparedAgainst = (name: string): `0x${string}` =>
   (process.env[name] as `0x${string}` | undefined) ?? ZERO_ADDRESS;
