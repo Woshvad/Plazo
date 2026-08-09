@@ -302,7 +302,15 @@ function runGatewayDomainAssertion(): void {
     },
   });
   const wrong = hashDomain({
-    domain: {...GATEWAY_EIP712_DOMAIN, chainId: arcTestnet.id, verifyingContract: ARC_GATEWAY_WALLET},
+    // `BigInt` because the type array declares `chainId` as `uint256`, and viem infers the
+    // JavaScript type from the declaration rather than from the value. A `number` here is a
+    // compile error, which is the type system catching in miniature exactly the mismatch this
+    // whole assertion is about.
+    domain: {
+      ...GATEWAY_EIP712_DOMAIN,
+      chainId: BigInt(arcTestnet.id),
+      verifyingContract: ARC_GATEWAY_WALLET,
+    },
     types: {
       EIP712Domain: [
         {name: "name", type: "string"},
